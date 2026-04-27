@@ -1,0 +1,62 @@
+services:
+  postgres-to:
+    image: postgres:16-alpine
+    container_name: postgres-to
+    environment:
+      POSTGRES_DB:       inventory
+      POSTGRES_USER:     inventory
+      POSTGRES_PASSWORD: inventory
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inventory -d inventory"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - postgres-to-data:/var/lib/postgresql/data
+
+  api-to:
+    image: inventory-reservation:latest
+    container_name: api-to
+    environment:
+      DB_JDBC_URL:   "jdbc:postgresql://postgres-to:5432/inventory"
+      DB_R2DBC_URL:  "r2dbc:postgresql://postgres-to:5432/inventory"
+      DB_USER:       inventory
+      DB_PASSWORD:   inventory
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres-to:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres-to-data:
+  prometheus-data:
+  grafana-data:
