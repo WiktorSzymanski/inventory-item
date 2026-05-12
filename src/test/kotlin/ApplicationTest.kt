@@ -9,11 +9,12 @@ import org.springframework.http.MediaType
 import org.springframework.test.web.reactive.server.WebTestClient
 import pl.szymanski.wiktor.controller.InventoryController
 import pl.szymanski.wiktor.domain.InventoryItem
+import pl.szymanski.wiktor.exception.InsufficientStockException
 import pl.szymanski.wiktor.exception.ItemAlreadyExistsException
 import pl.szymanski.wiktor.exception.NotFoundException
+import pl.szymanski.wiktor.exception.OptimisticLockExhaustedException
+import pl.szymanski.wiktor.repository.InventoryProjection
 import pl.szymanski.wiktor.service.InventoryService
-import pl.szymanski.wiktor.service.command.CreateItemCommand
-import pl.szymanski.wiktor.service.command.ReserveItemCommand
 
 @WebFluxTest(InventoryController::class)
 class ApplicationTest {
@@ -26,8 +27,8 @@ class ApplicationTest {
 
     @Test
     fun `POST inventory creates item and returns 201`() {
-        coEvery { inventoryService.createItem(CreateItemCommand("ITEM-002", 500)) } returns
-            InventoryItem("ITEM-002", 500, mapOf(), 0L)
+        coEvery { inventoryService.createItem(any()) } returns
+            InventoryItem("ITEM-002", 500)
 
         webTestClient.post().uri("/inventory")
             .contentType(MediaType.APPLICATION_JSON)
@@ -37,7 +38,7 @@ class ApplicationTest {
     }
 
     @Test
-    fun `POST inventory returns 409 when item already exists`() {
+    fun `POST inventory returns 409 with message when item already exists`() {
         coEvery { inventoryService.createItem(any()) } throws
             ItemAlreadyExistsException("Item ITEM-001 already exists")
 
@@ -46,12 +47,14 @@ class ApplicationTest {
             .bodyValue("""{"id":"ITEM-001","availableQty":100}""")
             .exchange()
             .expectStatus().isEqualTo(409)
+            .expectBody()
+            .jsonPath("$.message").isEqualTo("Item ITEM-001 already exists")
     }
 
     @Test
     fun `GET inventory item returns 200`() {
         coEvery { inventoryService.getItem("ITEM-001") } returns
-            InventoryItem("ITEM-001", 1000, mapOf(), 0L)
+            InventoryProjection("ITEM-001", 1000)
 
         webTestClient.get().uri("/inventory/ITEM-001")
             .exchange()
@@ -72,7 +75,7 @@ class ApplicationTest {
 
     @Test
     fun `POST reserve returns 202 on success`() {
-        coEvery { inventoryService.reserveItem(ReserveItemCommand("ITEM-001", "RES-1", 5)) } returns "RES-1"
+        coEvery { inventoryService.reserveItem(any()) } returns "RES-1"
 
         webTestClient.post().uri("/inventory/reserve")
             .contentType(MediaType.APPLICATION_JSON)
@@ -82,7 +85,7 @@ class ApplicationTest {
     }
 
     @Test
-    fun `POST reserve returns 404 when item not found`() {
+    fun `POST reserve returns 404 with message when item not found`() {
         coEvery { inventoryService.reserveItem(any()) } throws
             NotFoundException("Item MISSING not found")
 
@@ -91,5 +94,35 @@ class ApplicationTest {
             .bodyValue("""{"id":"MISSING","reservationId":"RES-1","quantity":1}""")
             .exchange()
             .expectStatus().isNotFound
+            .expectBody()
+            .jsonPath("$.message").isEqualTo("Item MISSING not found")
+    }
+
+    @Test
+    fun `POST reserve returns 422 with message when stock is insufficient`() {
+        coEvery { inventoryService.reserveItem(any()) } throws
+            InsufficientStockException("Not enough stock of item ITEM-001")
+
+        webTestClient.post().uri("/inventory/reserve")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue("""{"id":"ITEM-001","reservationId":"RES-1","quantity":999}""")
+            .exchange()
+            .expectStatus().isEqualTo(422)
+            .expectBody()
+            .jsonPath("$.message").isEqualTo("Not enough stock of item ITEM-001")
+    }
+
+    @Test
+    fun `POST reserve returns 503 when optimistic lock is exhausted`() {
+        coEvery { inventoryService.reserveItem(any()) } throws
+            OptimisticLockExhaustedException("Optimistic lock exhausted for item ITEM-001")
+
+        webTestClient.post().uri("/inventory/reserve")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue("""{"id":"ITEM-001","reservationId":"RES-1","quantity":1}""")
+            .exchange()
+            .expectStatus().isEqualTo(503)
+            .expectBody()
+            .jsonPath("$.message").isEqualTo("Optimistic lock exhausted for item ITEM-001")
     }
 }

@@ -1,35 +1,25 @@
 package pl.szymanski.wiktor.service.command
 
-import kotlinx.coroutines.reactor.awaitSingle
 import org.springframework.stereotype.Service
-import org.springframework.transaction.annotation.Propagation
-import org.springframework.transaction.annotation.Transactional
-import pl.szymanski.wiktor.exception.NotFoundException
-import pl.szymanski.wiktor.repository.InventoryRepository
-import pl.szymanski.wiktor.service.OutboxService
+import pl.szymanski.wiktor.repository.EventStoreRepository
 import java.util.UUID
 
 data class ReserveItemCommand(
     val id: String,
     val reservationId: String,
     val quantity: Int,
-    val correlationId: UUID,
+    val correlationId: UUID = UUID.randomUUID(),
 )
 
 @Service
 class ReserveInventoryItemCommandHandler(
-    private val inventoryRepo: InventoryRepository,
-    private val outboxService: OutboxService,
+    private val eventStoreRepository: EventStoreRepository,
 ) {
-
-    @Transactional(propagation = Propagation.REQUIRED)
     suspend fun handle(command: ReserveItemCommand): String {
-        val (item, event) = inventoryRepo.findById(command.id).awaitSingle()?.reserve(command.reservationId, command.quantity, command.correlationId)
-            ?: throw NotFoundException("Item ${command.id} not found")
+        val item = eventStoreRepository.loadAggregate(command.id)
+        val (_, event) = item.reserve(command.reservationId, command.quantity, command.correlationId)
 
-        inventoryRepo.save(item).awaitSingle()
-        outboxService.insertEntry(event.id, event.javaClass.simpleName, event)
-
+        eventStoreRepository.appendEvent(event)
         return command.reservationId
     }
 }

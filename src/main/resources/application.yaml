@@ -13,6 +13,9 @@ spring:
     locations: classpath:db/migration
 
 
+kurrentdb:
+  connection-string: ${KURRENTDB_URL:kurrentdb://localhost:2113?tls=false}
+
 management:
   endpoints:
     web:
@@ -22,8 +25,12 @@ management:
     distribution:
       percentiles-histogram:
         http.server.requests: true
-        outbox.publish.lag: true
+        es.subscription.lag: true
+        publish.lag: true
+        projection.lag: true
+        state_load_time: true
         inventory.optimistic.retry.duration: true
+events_applied_count: true
 
 server:
   port: 8080
@@ -31,7 +38,3 @@ server:
 springdoc:
   swagger-ui:
     path: /swagger-ui.html
-
-outbox:
-  poll-interval-ms: 500
-  batch-size: 10

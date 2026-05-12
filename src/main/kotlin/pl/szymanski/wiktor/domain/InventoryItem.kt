@@ -1,22 +1,14 @@
 package pl.szymanski.wiktor.domain
 
-import org.springframework.data.annotation.Id
-import org.springframework.data.annotation.Version
-import org.springframework.data.relational.core.mapping.Column
-import org.springframework.data.relational.core.mapping.Table
 import pl.szymanski.wiktor.exception.InsufficientStockException
 import pl.szymanski.wiktor.exception.ReservationForThatItemAlreadyExistsException
 import java.util.UUID
 
-@Table("inventory_state")
 data class InventoryItem(
-    @Id
-    @Column("item_id")
     val id: String,
     val availableQty: Int,
     val reservations: Map<String, Int> = mapOf(),
-    @Version
-    val version: Long = 0L,
+    val revision: Long = NO_STREAM,
 ) {
     fun reserve(reservationId: String, quantity: Int, correlationId: UUID): Pair<InventoryItem, InventoryReservedEvent> {
         if (quantity > availableQty) {
@@ -34,14 +26,36 @@ data class InventoryItem(
             copy(
                 availableQty = availableQty - quantity,
                 reservations = reservations + (reservationId to quantity),
-            ), InventoryReservedEvent(id, reservationId, quantity, correlationId))
+            ), InventoryReservedEvent(id, correlationId, revision, reservationId, quantity))
     }
 
     companion object {
+        const val NO_STREAM = -1L
+
         fun create(id: String, availableQty: Int, correlationId: UUID): Pair<InventoryItem, InventoryCreatedEvent> =
             Pair(
                 InventoryItem(id, availableQty),
-                InventoryCreatedEvent(id, availableQty, correlationId)
+                InventoryCreatedEvent(id, correlationId, NO_STREAM, availableQty)
             )
+
+        fun reconstruct(events: List<InventoryEvent>): InventoryItem {
+            var id = ""
+            var availableQty = 0
+            var reservations = emptyMap<String, Int>()
+
+            for (event in events) {
+                when (event) {
+                    is InventoryCreatedEvent -> {
+                        id = event.id
+                        availableQty = event.quantity
+                    }
+                    is InventoryReservedEvent -> {
+                        availableQty -= event.quantity
+                        reservations = reservations + (event.reservationId to event.quantity)
+                    }
+                }
+            }
+            return InventoryItem(id, availableQty, reservations, events.lastOrNull()?.revision ?: NO_STREAM)
+        }
     }
 }

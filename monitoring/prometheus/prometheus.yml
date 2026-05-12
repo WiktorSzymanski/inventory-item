@@ -3,7 +3,20 @@ global:
   evaluation_interval: 5s
 
 scrape_configs:
-  - job_name: inventory-to
+  - job_name: inventory-es
     metrics_path: /actuator/prometheus
     static_configs:
-      - targets: ['api-to:8080']
+      - targets: ['api-es:8080']
+
+  - job_name: postgres
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+
+  - job_name: kurrentdb
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['kurrentdb:2113']
+
+  - job_name: node-exporter
+    static_configs:
+      - targets: ['node-exporter:9100']
