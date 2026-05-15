@@ -76,6 +76,7 @@ class InventoryService(
         }
 
         meterRegistry.counter("inventory.optimistic.exhausted").increment()
+        log.warn("[RETRY] exhausted correlationId={} attempts={}", correlationId, maxAttempts)
         throw OptimisticLockExhaustedException(
             "Optimistic lock retries exhausted after $maxAttempts attempts"
         ).also { it.initCause(lastError) }

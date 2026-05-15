@@ -9,7 +9,7 @@
   "time": { "from": "now-15m", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
-  "title": "Request Latency by Endpoint",
+  "title": "Metrics to compare",
   "uid": "the-dashboard",
   "version": 1,
   "templating": { "list": [] },
@@ -399,6 +399,46 @@
       ]
     },
     {
+      "id": 11,
+      "title": "Business Exception Rate by Type",
+      "description": "Rate of each business exception reaching the GlobalExceptionHandler, broken down by exception type.",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 60, "w": 24, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": ["mean", "max", "lastNotNull"],
+          "showLegend": true
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (type) (rate(inventory_exception_total[1m]))",
+          "legendFormat": "{{type}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "id": 5,
       "title": "Database Storage",
       "type": "timeseries",
@@ -425,7 +465,7 @@
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "kurrentdb_data_size_bytes",
+          "expr": "kurrentdb_disk_io_bytes_total{activity=\"written\"}",
           "legendFormat": "KurrentDB",
           "refId": "B"
         }

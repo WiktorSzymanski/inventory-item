@@ -12,6 +12,7 @@ import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Timer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Repository
 import pl.szymanski.wiktor.domain.InventoryCreatedEvent
 import pl.szymanski.wiktor.domain.InventoryEvent
@@ -47,8 +48,10 @@ class EventStoreRepository(
         .register(meterRegistry)
 
     private val appendSuccessCounter = meterRegistry.counter("inventory.append.success")
+    private val log = LoggerFactory.getLogger(this::class.java)
 
     suspend fun loadAggregate(itemId: String): InventoryItem = withContext(Dispatchers.IO) {
+        log.debug("[LOAD] itemId={}", itemId)
         val options = ReadStreamOptions.get().forwards().fromStart()
         val totalStartNs = System.nanoTime()
         try {
@@ -72,15 +75,20 @@ class EventStoreRepository(
 
             totalLoadTimer.record(System.nanoTime() - totalStartNs, TimeUnit.NANOSECONDS)
             eventsAppliedSummary.record(events.size.toDouble())
+            log.debug("[LOAD] success itemId={} eventsReplayed={} revision={}", itemId, events.size, item.revision)
             item
         } catch (e: ExecutionException) {
             when (e.cause) {
                 is StreamNotFoundException -> {
                     totalLoadTimer.record(System.nanoTime() - totalStartNs, TimeUnit.NANOSECONDS)
                     eventsAppliedSummary.record(0.0)
+                    log.warn("[LOAD] stream not found itemId={}", itemId)
                     throw NotFoundException("Item $itemId not found")
                 }
-                else -> throw e.cause ?: e
+                else -> {
+                    log.error("[LOAD] unexpected error itemId={}", itemId, e.cause ?: e)
+                    throw e.cause ?: e
+                }
             }
         }
     }
@@ -88,8 +96,10 @@ class EventStoreRepository(
     suspend fun appendEvent(
         event: InventoryEvent,
     ): Unit = withContext(Dispatchers.IO) {
+        val eventType = event.javaClass.simpleName
+        log.debug("[APPEND] eventType={} itemId={} revision={}", eventType, event.id, event.revision)
         val eventData = EventData
-            .builderAsJson(UUID.randomUUID(), event.javaClass.simpleName, objectMapper.writeValueAsBytes(event))
+            .builderAsJson(UUID.randomUUID(), eventType, objectMapper.writeValueAsBytes(event))
             .build()
 
         val options = if (event.revision == InventoryItem.NO_STREAM) {
@@ -101,6 +111,7 @@ class EventStoreRepository(
         try {
             client.appendToStream(streamName(event.id), options, eventData).get()
             appendSuccessCounter.increment()
+            log.info("[APPEND] success eventType={} stream={}", eventType, streamName(event.id))
         } catch (e: ExecutionException) {
             throw e.cause ?: e
         }
