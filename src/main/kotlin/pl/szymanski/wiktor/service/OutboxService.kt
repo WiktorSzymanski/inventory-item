@@ -1,6 +1,8 @@
 package pl.szymanski.wiktor.service
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.MeterRegistry
 import kotlinx.coroutines.reactor.awaitSingle
 import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Sort
@@ -13,7 +15,9 @@ import java.util.UUID
 class OutboxService(
     private val repository: OutboxRepository,
     private val objectMapper: ObjectMapper,
+    meterRegistry: MeterRegistry,
 ) {
+    private val appendSuccessCounter: Counter = meterRegistry.counter("inventory.append.success")
 
     suspend fun insertEntry(aggregateId: String, eventType: String, payload: Any) {
         val payloadJson = objectMapper.writeValueAsString(payload)
@@ -23,6 +27,7 @@ class OutboxService(
             payloadJson = payloadJson
         )
         repository.save(entry).awaitSingle()
+        appendSuccessCounter.increment()
     }
 
     suspend fun pollPending(batchSize: Int): List<OutboxEntry> =

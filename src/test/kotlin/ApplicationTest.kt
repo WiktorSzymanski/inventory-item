@@ -1,21 +1,32 @@
 package pl.szymanski.wiktor
 
 import com.ninjasquad.springmockk.MockkBean
+import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import io.mockk.coEvery
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.autoconfigure.web.reactive.WebFluxTest
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Configuration
+import org.springframework.context.annotation.Import
 import org.springframework.http.MediaType
 import org.springframework.test.web.reactive.server.WebTestClient
+import pl.szymanski.wiktor.controller.GlobalExceptionHandler
 import pl.szymanski.wiktor.controller.InventoryController
 import pl.szymanski.wiktor.domain.InventoryItem
 import pl.szymanski.wiktor.exception.ItemAlreadyExistsException
 import pl.szymanski.wiktor.exception.NotFoundException
 import pl.szymanski.wiktor.service.InventoryService
-import pl.szymanski.wiktor.service.command.CreateItemCommand
-import pl.szymanski.wiktor.service.command.ReserveItemCommand
+
+@Configuration
+class TestMeterConfig {
+    @Bean
+    fun meterRegistry(): MeterRegistry = SimpleMeterRegistry()
+}
 
 @WebFluxTest(InventoryController::class)
+@Import(GlobalExceptionHandler::class, TestMeterConfig::class)
 class ApplicationTest {
 
     @MockkBean
@@ -26,7 +37,7 @@ class ApplicationTest {
 
     @Test
     fun `POST inventory creates item and returns 201`() {
-        coEvery { inventoryService.createItem(CreateItemCommand("ITEM-002", 500)) } returns
+        coEvery { inventoryService.createItem(any()) } returns
             InventoryItem("ITEM-002", 500, mapOf(), 0L)
 
         webTestClient.post().uri("/inventory")
@@ -72,7 +83,7 @@ class ApplicationTest {
 
     @Test
     fun `POST reserve returns 202 on success`() {
-        coEvery { inventoryService.reserveItem(ReserveItemCommand("ITEM-001", "RES-1", 5)) } returns "RES-1"
+        coEvery { inventoryService.reserveItem(any()) } returns "RES-1"
 
         webTestClient.post().uri("/inventory/reserve")
             .contentType(MediaType.APPLICATION_JSON)

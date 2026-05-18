@@ -16,6 +16,17 @@ services:
     volumes:
       - postgres-to-data:/var/lib/postgresql/data
 
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: postgres-exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://inventory:inventory@postgres-to:5432/inventory?sslmode=disable"
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres-to:
+        condition: service_healthy
+
   api-to:
     image: inventory-reservation:latest
     container_name: api-to
@@ -29,6 +40,24 @@ services:
     depends_on:
       postgres-to:
         condition: service_healthy
+
+  k6:
+    image: grafana/k6:latest
+    container_name: k6
+    profiles:
+      - load-test
+    volumes:
+      - ./k6:/scripts
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      BASE_URL:  "http://api-to:8080"
+#      BASE_URL:  "http://host.docker.internal:8080"
+      VUS:       "${VUS:-10}"
+      DURATION:  "${DURATION:-10m}"
+    command: run /scripts/reserve-load-test.js
+#    depends_on:
+#      - api-to
 
   prometheus:
     image: prom/prometheus:v2.52.0

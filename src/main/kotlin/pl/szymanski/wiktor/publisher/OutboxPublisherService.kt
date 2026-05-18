@@ -1,6 +1,7 @@
 package pl.szymanski.wiktor.publisher
 
 import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.Timer
 import org.slf4j.LoggerFactory
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
@@ -27,7 +28,11 @@ class OutboxPublisherService(
                 entry.aggregateId, entry.eventType, entry.payloadJson,
             )
             outboxService.markPublished(entry.id)
-            meterRegistry.timer("outbox.publish.lag")
+            Timer.builder("outbox.publish.lag")
+                .tag("eventType", entry.eventType)
+                .publishPercentileHistogram(true)
+                .maximumExpectedValue(Duration.ofMinutes(10))
+                .register(meterRegistry)
                 .record(Duration.between(entry.createdAt.toInstant(), now))
         }
         if (pending.isNotEmpty()) {

@@ -23,7 +23,10 @@ management:
       percentiles-histogram:
         http.server.requests: true
         outbox.publish.lag: true
+        state_load_time: true
         inventory.optimistic.retry.duration: true
+      maximum-expected-value:
+        outbox.publish.lag: 10m
 
 server:
   port: 8080
