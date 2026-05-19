@@ -9,6 +9,7 @@ import io.kurrent.dbclient.SubscribeToAllOptions
 import io.kurrent.dbclient.Subscription
 import io.kurrent.dbclient.SubscriptionListener
 import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.Timer
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
 import kotlinx.coroutines.runBlocking
@@ -38,6 +39,11 @@ class InventoryProjectionSubscriber(
         private val log = LoggerFactory.getLogger(InventoryProjectionSubscriber::class.java)
     }
 
+    private val projectionLagTimer: Timer = Timer.builder("projection.lag")
+        .publishPercentileHistogram(true)
+        .maximumExpectedValue(Duration.ofMinutes(10))
+        .register(meterRegistry)
+
     override fun run(args: ApplicationArguments) {
         val options = runBlocking { buildSubscribeOptions() }
         client.subscribeToAll(
@@ -55,7 +61,7 @@ class InventoryProjectionSubscriber(
                     }
                     if (isDomainEvent) {
                         val lag = Duration.between(recorded.created, Instant.now())
-                        meterRegistry.timer("projection.lag").record(lag)
+                        projectionLagTimer.record(lag)
                         log.info(
                             "[PROJECTION] table=inventory_state key={} type={} lag={}ms",
                             recorded.streamId, recorded.eventType, lag.toMillis(),

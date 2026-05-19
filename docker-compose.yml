@@ -81,39 +81,6 @@ services:
       postgres-es:
         condition: service_healthy
 
-  kurrentdb-du:
-    image: alpine:3.19
-    container_name: kurrentdb-du
-    volumes:
-      - kurrentdb-data:/kurrentdb-data:ro
-      - du-metrics:/metrics
-    command:
-      - sh
-      - -c
-      - |
-        while true; do
-          size=$$(du -sb /kurrentdb-data 2>/dev/null | cut -f1)
-          echo "# HELP kurrentdb_data_size_bytes Disk space used by KurrentDB data directory" > /metrics/kurrentdb_du.prom
-          echo "# TYPE kurrentdb_data_size_bytes gauge" >> /metrics/kurrentdb_du.prom
-          echo "kurrentdb_data_size_bytes $$size" >> /metrics/kurrentdb_du.prom
-          sleep 30
-        done
-    restart: unless-stopped
-
-  node-exporter:
-    image: prom/node-exporter:v1.8.0
-    container_name: node-exporter
-    volumes:
-      - du-metrics:/textfile-collector:ro
-    command:
-      - --collector.disable-defaults
-      - --collector.textfile
-      - --collector.textfile.directory=/textfile-collector
-    ports:
-      - "9100:9100"
-    depends_on:
-      - kurrentdb-du
-
   prometheus:
     image: prom/prometheus:v2.52.0
     container_name: prometheus
@@ -145,4 +112,3 @@ volumes:
   kurrentdb-data:
   prometheus-data:
   grafana-data:
-  du-metrics:

@@ -30,6 +30,8 @@ management:
         projection.lag: true
         state_load_time: true
         inventory.optimistic.retry.duration: true
+      maximum-expected-value:
+        projection.lag: 10m
 events_applied_count: true
 
 server:
