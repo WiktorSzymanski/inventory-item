@@ -1,5 +1,6 @@
 package pl.szymanski.wiktor.domain
 
+import com.fasterxml.jackson.annotation.JsonAutoDetect
 import org.axonframework.commandhandling.CommandHandler
 import org.axonframework.eventsourcing.EventSourcingHandler
 import org.axonframework.modelling.command.AggregateIdentifier
@@ -10,7 +11,9 @@ import pl.szymanski.wiktor.exception.ReservationForThatItemAlreadyExistsExceptio
 import pl.szymanski.wiktor.service.command.CreateItemCommand
 import pl.szymanski.wiktor.service.command.ReserveItemCommand
 
-@Aggregate
+// ES-2: Jackson cannot access private Kotlin fields by default — field visibility lets it serialize all aggregate state into the snapshot
+@JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
+@Aggregate(snapshotTriggerDefinition = "inventorySnapshotTrigger")
 class InventoryItem {
 
     @AggregateIdentifier

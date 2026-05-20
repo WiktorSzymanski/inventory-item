@@ -25,6 +25,10 @@ axon:
     events: jackson
     messages: jackson
 
+snapshot:
+  enabled: false
+  event-count: 50
+
 management:
   endpoints:
     web:

@@ -263,7 +263,7 @@
     {
       "id": 6,
       "title": "State Load Time by Phase",
-      "description": "Breakdown of aggregate state load time per phase. cache_fetch and snapshot_fetch will populate once those paths are implemented.",
+      "description": "Breakdown of aggregate state load time per phase (p50/p95/p99). snapshot=JDBC snapshot row read, events=JDBC event rows fetch, replay=in-memory @EventSourcingHandler application, total=end-to-end from first I/O to aggregate ready.",
       "type": "timeseries",
       "gridPos": { "x": 0, "y": 42, "w": 24, "h": 10 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -282,15 +282,75 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket[1m])) by (le, source))",
-          "legendFormat": "p50 {{source}}",
+          "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"snapshot\"}[1m])) by (le))",
+          "legendFormat": "p50 snapshot",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket[1m])) by (le, source))",
-          "legendFormat": "p95 {{source}}",
+          "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"snapshot\"}[1m])) by (le))",
+          "legendFormat": "p95 snapshot",
           "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"snapshot\"}[1m])) by (le))",
+          "legendFormat": "p99 snapshot",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"events\"}[1m])) by (le))",
+          "legendFormat": "p50 events",
+          "refId": "D"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"events\"}[1m])) by (le))",
+          "legendFormat": "p95 events",
+          "refId": "E"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"events\"}[1m])) by (le))",
+          "legendFormat": "p99 events",
+          "refId": "F"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"replay\"}[1m])) by (le))",
+          "legendFormat": "p50 replay",
+          "refId": "G"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"replay\"}[1m])) by (le))",
+          "legendFormat": "p95 replay",
+          "refId": "H"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"replay\"}[1m])) by (le))",
+          "legendFormat": "p99 replay",
+          "refId": "I"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"total\"}[1m])) by (le))",
+          "legendFormat": "p50 total",
+          "refId": "J"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"total\"}[1m])) by (le))",
+          "legendFormat": "p95 total",
+          "refId": "K"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"total\"}[1m])) by (le))",
+          "legendFormat": "p99 total",
+          "refId": "L"
         }
       ]
     },

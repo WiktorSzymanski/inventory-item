@@ -3,9 +3,14 @@ package pl.szymanski.wiktor.config
 import com.zaxxer.hikari.HikariDataSource
 import org.axonframework.common.jdbc.DataSourceConnectionProvider
 import org.axonframework.common.transaction.TransactionManager
+import io.micrometer.core.instrument.MeterRegistry
 import org.axonframework.config.EventProcessingConfigurer
 import org.axonframework.eventhandling.tokenstore.jdbc.JdbcTokenStore
 import org.axonframework.eventhandling.tokenstore.jdbc.TokenSchema
+import org.axonframework.eventsourcing.EventCountSnapshotTriggerDefinition
+import org.axonframework.eventsourcing.NoSnapshotTriggerDefinition
+import org.axonframework.eventsourcing.SnapshotTriggerDefinition
+import org.axonframework.eventsourcing.Snapshotter
 import org.axonframework.eventsourcing.eventstore.EventStorageEngine
 import org.axonframework.eventsourcing.eventstore.jdbc.EventSchema
 import org.axonframework.eventsourcing.eventstore.jdbc.JdbcEventStorageEngine
@@ -14,6 +19,7 @@ import org.axonframework.spring.messaging.unitofwork.SpringTransactionManager
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.jdbc.datasource.DataSourceTransactionManager
@@ -21,6 +27,7 @@ import org.springframework.transaction.PlatformTransactionManager
 import javax.sql.DataSource
 
 @Configuration
+@EnableConfigurationProperties(SnapshotProperties::class)
 class AxonConfig {
 
     // DataSourceAutoConfiguration is skipped in WebFlux+R2DBC apps, so we provide
@@ -91,14 +98,28 @@ class AxonConfig {
         axonTransactionManager: TransactionManager,
         eventSchema: EventSchema,
         @Qualifier("eventSerializer") eventSerializer: Serializer,
-    ): EventStorageEngine =
-        JdbcEventStorageEngine.builder()
+        meterRegistry: MeterRegistry,
+    ): EventStorageEngine {
+        val jdbc = JdbcEventStorageEngine.builder()
             .connectionProvider(DataSourceConnectionProvider(jdbcDataSource))
             .transactionManager(axonTransactionManager)
             .schema(eventSchema)
             .eventSerializer(eventSerializer)
             .snapshotSerializer(eventSerializer)
             .build()
+        // ES-2: wrap with timing decorator for state_load_time{phase} metrics
+        return TimedEventStorageEngine(jdbc, meterRegistry)
+    }
+
+    @Bean
+    fun inventorySnapshotTrigger(
+        snapshotter: Snapshotter,
+        snapshotProperties: SnapshotProperties,
+    ): SnapshotTriggerDefinition =
+        if (snapshotProperties.enabled)
+            EventCountSnapshotTriggerDefinition(snapshotter, snapshotProperties.eventCount)
+        else
+            NoSnapshotTriggerDefinition.INSTANCE
 
     @Autowired
     fun configureProcessors(configurer: EventProcessingConfigurer) {
