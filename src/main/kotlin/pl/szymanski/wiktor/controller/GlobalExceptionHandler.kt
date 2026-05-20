@@ -2,6 +2,7 @@ package pl.szymanski.wiktor.controller
 
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.MeterRegistry
+import org.axonframework.modelling.command.AggregateNotFoundException
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.ExceptionHandler
@@ -30,6 +31,14 @@ class GlobalExceptionHandler(private val meterRegistry: MeterRegistry) {
         return ErrorResponse(e.message ?: "Not found")
     }
 
+    @ExceptionHandler(AggregateNotFoundException::class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    fun handleAggregateNotFound(e: AggregateNotFoundException): ErrorResponse {
+        log.warn("Aggregate not found: {}", e.message)
+        exceptionCounter("AggregateNotFoundException").increment()
+        return ErrorResponse(e.message ?: "Item not found")
+    }
+
     @ExceptionHandler(ItemAlreadyExistsException::class)
     @ResponseStatus(HttpStatus.CONFLICT)
     fun handleItemAlreadyExists(e: ItemAlreadyExistsException): ErrorResponse {
@@ -55,7 +64,7 @@ class GlobalExceptionHandler(private val meterRegistry: MeterRegistry) {
     }
 
     @ExceptionHandler(OptimisticLockExhaustedException::class)
-    @ResponseStatus(HttpStatus.CONFLICT)
+    @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
     fun handleOptimisticLockExhausted(e: OptimisticLockExhaustedException): ErrorResponse {
         log.warn("Optimistic lock exhausted: {}", e.message)
         exceptionCounter("OptimisticLockExhaustedException").increment()

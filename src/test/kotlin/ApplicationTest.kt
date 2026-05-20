@@ -1,14 +1,16 @@
 package pl.szymanski.wiktor
 
 import com.ninjasquad.springmockk.MockkBean
+import io.micrometer.core.instrument.MeterRegistry
 import io.mockk.coEvery
+import io.mockk.just
+import io.mockk.runs
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.autoconfigure.web.reactive.WebFluxTest
 import org.springframework.http.MediaType
 import org.springframework.test.web.reactive.server.WebTestClient
 import pl.szymanski.wiktor.controller.InventoryController
-import pl.szymanski.wiktor.domain.InventoryItem
 import pl.szymanski.wiktor.exception.InsufficientStockException
 import pl.szymanski.wiktor.exception.ItemAlreadyExistsException
 import pl.szymanski.wiktor.exception.NotFoundException
@@ -19,6 +21,9 @@ import pl.szymanski.wiktor.service.InventoryService
 @WebFluxTest(InventoryController::class)
 class ApplicationTest {
 
+    @MockkBean(relaxed = true)
+    lateinit var meterRegistry: MeterRegistry
+
     @MockkBean
     lateinit var inventoryService: InventoryService
 
@@ -27,8 +32,7 @@ class ApplicationTest {
 
     @Test
     fun `POST inventory creates item and returns 201`() {
-        coEvery { inventoryService.createItem(any()) } returns
-            InventoryItem("ITEM-002", 500)
+        coEvery { inventoryService.createItem(any()) } just runs
 
         webTestClient.post().uri("/inventory")
             .contentType(MediaType.APPLICATION_JSON)
@@ -75,7 +79,7 @@ class ApplicationTest {
 
     @Test
     fun `POST reserve returns 202 on success`() {
-        coEvery { inventoryService.reserveItem(any()) } returns "RES-1"
+        coEvery { inventoryService.reserveItem(any()) } just runs
 
         webTestClient.post().uri("/inventory/reserve")
             .contentType(MediaType.APPLICATION_JSON)

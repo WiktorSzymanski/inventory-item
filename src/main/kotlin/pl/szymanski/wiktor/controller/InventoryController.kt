@@ -41,9 +41,9 @@ class InventoryController(
     @PostMapping
     suspend fun createItem(@RequestBody request: CreateItemRequest): ResponseEntity<CreateItemResponse> {
         log.info("POST /inventory itemId={} availableQty={}", request.id, request.availableQty)
-        val item = inventoryService.createItem(CreateItemCommand(request.id, request.availableQty, UUID.randomUUID()))
-        log.info("POST /inventory success itemId={}", item.id)
-        return ResponseEntity.status(HttpStatus.CREATED).body(CreateItemResponse(item.id, item.availableQty))
+        inventoryService.createItem(CreateItemCommand(request.id, request.availableQty, UUID.randomUUID()))
+        log.info("POST /inventory success itemId={}", request.id)
+        return ResponseEntity.status(HttpStatus.CREATED).body(CreateItemResponse(request.id, request.availableQty))
     }
 
     @GetMapping("/{itemId}")

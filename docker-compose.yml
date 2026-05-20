@@ -1,23 +1,4 @@
 services:
-  kurrentdb:
-    image: kurrentplatform/kurrentdb:latest
-    container_name: kurrentdb
-    environment:
-      EVENTSTORE_CLUSTER_SIZE: 1
-      EVENTSTORE_RUN_PROJECTIONS: All
-      EVENTSTORE_START_STANDARD_PROJECTIONS: "true"
-      EVENTSTORE_INSECURE: "true"
-      EVENTSTORE_ENABLE_ATOM_PUB_OVER_HTTP: "true"
-    ports:
-      - "2113:2113"
-    volumes:
-      - kurrentdb-data:/var/lib/kurrentdb
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:2113/health/live || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-
   postgres-es:
     image: postgres:16-alpine
     container_name: postgres-es
@@ -32,6 +13,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    command: postgres -c max_connections=200
     volumes:
       - postgres-es-data:/var/lib/postgresql/data
 
@@ -39,17 +21,15 @@ services:
     image: inventory-reservation-es:latest
     container_name: api-es
     environment:
-      DB_JDBC_URL:    "jdbc:postgresql://postgres-es:5432/inventory"
-      DB_R2DBC_URL:   "r2dbc:postgresql://postgres-es:5432/inventory"
-      DB_USER:        inventory
-      DB_PASSWORD:    inventory
-      KURRENTDB_URL:  "kurrentdb://kurrentdb:2113?tls=false"
+      DB_JDBC_URL:         "jdbc:postgresql://postgres-es:5432/inventory"
+      DB_R2DBC_URL:        "r2dbc:postgresql://postgres-es:5432/inventory"
+      DB_USER:             inventory
+      DB_PASSWORD:         inventory
+      AXON_JDBC_POOL_SIZE: "${AXON_JDBC_POOL_SIZE:-50}"
     ports:
       - "8080:8080"
     depends_on:
       postgres-es:
-        condition: service_healthy
-      kurrentdb:
         condition: service_healthy
 
   k6:
@@ -109,6 +89,5 @@ services:
 
 volumes:
   postgres-es-data:
-  kurrentdb-data:
   prometheus-data:
   grafana-data:

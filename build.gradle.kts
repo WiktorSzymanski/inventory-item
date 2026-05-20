@@ -32,7 +32,8 @@ dependencies {
     implementation("org.flywaydb:flyway-database-postgresql:10.21.0")
     implementation("org.springdoc:springdoc-openapi-starter-webflux-ui:2.8.8")
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
-    implementation("io.kurrent:kurrentdb-client:1.1.2")
+    implementation("org.springframework.boot:spring-boot-starter-jdbc")
+    implementation("org.axonframework:axon-spring-boot-starter:4.10.3")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test") {
         exclude(group = "org.junit.vintage", module = "junit-vintage-engine")
