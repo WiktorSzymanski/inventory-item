@@ -20,6 +20,9 @@ repositories {
 }
 
 dependencies {
+    implementation(platform("org.springframework.modulith:spring-modulith-bom:1.4.0"))
+    implementation("org.springframework.modulith:spring-modulith-events-api")
+    implementation("org.springframework.modulith:spring-modulith-events-jdbc")
     implementation("org.springframework.boot:spring-boot-starter-webflux")
     implementation("org.springframework.boot:spring-boot-starter-data-r2dbc")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
