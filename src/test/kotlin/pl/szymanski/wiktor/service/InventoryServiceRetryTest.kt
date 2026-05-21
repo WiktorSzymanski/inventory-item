@@ -57,7 +57,7 @@ class InventoryServiceRetryTest {
 
     @Configuration
     @EnableResilientMethods
-    @Import(InventoryService::class, RetryableInventoryCommandExecutor::class)
+    @Import(InventoryService::class)
     class RetryTestConfig {
         @Bean
         fun inventoryRepository(): InventoryRepository = mockk()
