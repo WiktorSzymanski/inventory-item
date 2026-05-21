@@ -6,10 +6,6 @@ spring:
     username: ${DB_USER:inventory}
     password: ${DB_PASSWORD:inventory}
     driver-class-name: org.postgresql.Driver
-  r2dbc:
-    url: ${DB_R2DBC_URL:r2dbc:postgresql://localhost:5432/inventory}
-    username: ${DB_USER:inventory}
-    password: ${DB_PASSWORD:inventory}
   flyway:
     url: ${DB_JDBC_URL:jdbc:postgresql://localhost:5432/inventory}
     user: ${DB_USER:inventory}

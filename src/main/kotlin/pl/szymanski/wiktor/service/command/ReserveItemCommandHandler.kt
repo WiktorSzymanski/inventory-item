@@ -3,8 +3,6 @@ package pl.szymanski.wiktor.service.command
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Timer
-import kotlinx.coroutines.reactor.awaitSingle
-import kotlinx.coroutines.reactor.awaitSingleOrNull
 import org.slf4j.LoggerFactory
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.stereotype.Service
@@ -36,16 +34,16 @@ class ReserveInventoryItemCommandHandler(
     private val appendSuccessCounter: Counter = meterRegistry.counter("inventory.append.success")
 
     @Transactional(propagation = Propagation.REQUIRED, rollbackFor = [Exception::class])
-    suspend fun handle(command: ReserveItemCommand): String {
+    fun handle(command: ReserveItemCommand): String {
         log.info("[RESERVE] itemId={} reservationId={} quantity={} correlationId={}", command.id, command.reservationId, command.quantity, command.correlationId)
         val dbStartNs = System.nanoTime()
-        val found = inventoryRepo.findById(command.id).awaitSingleOrNull()
+        val found = inventoryRepo.findById(command.id).orElse(null)
         dbFetchTimer.record(System.nanoTime() - dbStartNs, TimeUnit.NANOSECONDS)
 
         val (item, event) = found?.reserve(command.reservationId, command.quantity, command.correlationId)
             ?: throw NotFoundException("Item ${command.id} not found")
 
-        inventoryRepo.save(item).awaitSingle()
+        inventoryRepo.save(item)
         applicationEventPublisher.publishEvent(event)
         appendSuccessCounter.increment()
         log.info("[RESERVE] success itemId={} reservationId={} correlationId={}", command.id, command.reservationId, command.correlationId)

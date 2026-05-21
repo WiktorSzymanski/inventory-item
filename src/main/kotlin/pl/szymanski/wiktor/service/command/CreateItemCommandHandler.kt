@@ -2,7 +2,6 @@ package pl.szymanski.wiktor.service.command
 
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.MeterRegistry
-import kotlinx.coroutines.reactor.awaitSingle
 import org.slf4j.LoggerFactory
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.dao.DuplicateKeyException
@@ -30,11 +29,11 @@ class CreateInventoryItemCommandHandler(
     private val appendSuccessCounter: Counter = meterRegistry.counter("inventory.append.success")
 
     @Transactional(propagation = Propagation.REQUIRED, rollbackFor = [Exception::class])
-    suspend fun handle(command: CreateItemCommand): InventoryItem {
+    fun handle(command: CreateItemCommand): InventoryItem {
         log.info("[CREATE] itemId={} availableQty={} correlationId={}", command.id, command.availableQty, command.correlationId)
         val (item, event) = InventoryItem.create(command.id, command.availableQty, command.correlationId)
         try {
-            inventoryRepo.save(item).awaitSingle()
+            inventoryRepo.save(item)
         } catch (e: DuplicateKeyException) {
             log.warn("[CREATE] conflict itemId={} already exists correlationId={}", command.id, command.correlationId)
             throw ItemAlreadyExistsException("Item ${command.id} already exists")
