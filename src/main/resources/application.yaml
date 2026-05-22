@@ -12,7 +12,9 @@ spring:
     password: ${DB_PASSWORD:inventory}
     enabled: true
     locations: classpath:db/migration
-
+  modulith:
+    events:
+      polling-interval: PT30S   # interval between polling runs; tune per your latency requirement
 
 management:
   endpoints:
