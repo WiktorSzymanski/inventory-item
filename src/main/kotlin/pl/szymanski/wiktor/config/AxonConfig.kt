@@ -1,9 +1,10 @@
 package pl.szymanski.wiktor.config
 
+import com.fasterxml.jackson.module.kotlin.kotlinModule
 import com.zaxxer.hikari.HikariDataSource
+import io.micrometer.core.instrument.MeterRegistry
 import org.axonframework.common.jdbc.DataSourceConnectionProvider
 import org.axonframework.common.transaction.TransactionManager
-import io.micrometer.core.instrument.MeterRegistry
 import org.axonframework.config.EventProcessingConfigurer
 import org.axonframework.eventhandling.tokenstore.jdbc.JdbcTokenStore
 import org.axonframework.eventhandling.tokenstore.jdbc.TokenSchema
@@ -23,17 +24,23 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.jdbc.datasource.DataSourceTransactionManager
-import org.springframework.transaction.PlatformTransactionManager
 import javax.sql.DataSource
 
 @Configuration
 @EnableConfigurationProperties(SnapshotProperties::class)
 class AxonConfig {
 
-    // DataSourceAutoConfiguration is skipped in WebFlux+R2DBC apps, so we provide
-    // a dedicated JDBC DataSource for Axon's event store and transaction manager.
     @Bean
-    fun jdbcDataSource(
+    fun axonObjectMapper(): com.fasterxml.jackson.databind.ObjectMapper =
+        com.fasterxml.jackson.databind.ObjectMapper().apply {
+            registerModule(kotlinModule())
+            findAndRegisterModules()
+        }
+
+    // Dedicated pool for Axon so it never contends with the app's JDBC pool
+    // (Spring Data JDBC repos + NamedParameterJdbcTemplate share the primary DataSource).
+    @Bean(name = ["axonDataSource"])
+    fun axonDataSource(
         @Value("\${spring.datasource.url}") url: String,
         @Value("\${spring.datasource.username}") username: String,
         @Value("\${spring.datasource.password}") password: String,
@@ -49,12 +56,8 @@ class AxonConfig {
     }
 
     @Bean
-    fun jdbcPlatformTransactionManager(jdbcDataSource: DataSource): PlatformTransactionManager =
-        DataSourceTransactionManager(jdbcDataSource)
-
-    @Bean
-    fun axonTransactionManager(jdbcPlatformTransactionManager: PlatformTransactionManager): TransactionManager =
-        SpringTransactionManager(jdbcPlatformTransactionManager)
+    fun axonTransactionManager(@Qualifier("axonDataSource") axonDataSource: DataSource): TransactionManager =
+        SpringTransactionManager(DataSourceTransactionManager(axonDataSource))
 
     @Bean
     fun eventSchema(): EventSchema = EventSchema.builder()
@@ -74,10 +77,10 @@ class AxonConfig {
 
     @Bean
     fun tokenStore(
-        jdbcDataSource: DataSource,
+        @Qualifier("axonDataSource") axonDataSource: DataSource,
         serializer: Serializer,
     ): JdbcTokenStore = JdbcTokenStore.builder()
-        .connectionProvider(DataSourceConnectionProvider(jdbcDataSource))
+        .connectionProvider(DataSourceConnectionProvider(axonDataSource))
         .serializer(serializer)
         .schema(
             TokenSchema.builder()
@@ -94,20 +97,19 @@ class AxonConfig {
 
     @Bean
     fun eventStorageEngine(
-        jdbcDataSource: DataSource,
+        @Qualifier("axonDataSource") axonDataSource: DataSource,
         axonTransactionManager: TransactionManager,
         eventSchema: EventSchema,
         @Qualifier("eventSerializer") eventSerializer: Serializer,
         meterRegistry: MeterRegistry,
     ): EventStorageEngine {
         val jdbc = JdbcEventStorageEngine.builder()
-            .connectionProvider(DataSourceConnectionProvider(jdbcDataSource))
+            .connectionProvider(DataSourceConnectionProvider(axonDataSource))
             .transactionManager(axonTransactionManager)
             .schema(eventSchema)
             .eventSerializer(eventSerializer)
             .snapshotSerializer(eventSerializer)
             .build()
-        // ES-2: wrap with timing decorator for state_load_time{phase} metrics
         return TimedEventStorageEngine(jdbc, meterRegistry)
     }
 

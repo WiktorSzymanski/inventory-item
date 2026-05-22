@@ -3,6 +3,7 @@ package pl.szymanski.wiktor.controller
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.MeterRegistry
 import org.axonframework.modelling.command.AggregateNotFoundException
+import org.axonframework.modelling.command.ConcurrencyException
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.ExceptionHandler
@@ -61,6 +62,14 @@ class GlobalExceptionHandler(private val meterRegistry: MeterRegistry) {
         log.info("Duplicate reservation (idempotent): {}", e.message)
         exceptionCounter("ReservationForThatItemAlreadyExistsException").increment()
         return ErrorResponse(e.message ?: "Reservation already exists")
+    }
+
+    @ExceptionHandler(ConcurrencyException::class)
+    @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
+    fun handleConcurrencyExhausted(e: ConcurrencyException): ErrorResponse {
+        log.warn("Optimistic lock retries exhausted: {}", e.message)
+        exceptionCounter("ConcurrencyException").increment()
+        return ErrorResponse("Too many concurrent requests, please retry")
     }
 
     @ExceptionHandler(OptimisticLockExhaustedException::class)

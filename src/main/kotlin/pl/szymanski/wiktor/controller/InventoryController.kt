@@ -31,7 +31,7 @@ class InventoryController(
     private val log = LoggerFactory.getLogger(this::class.java)
 
     @GetMapping
-    suspend fun getItems(pageable: Pageable): ResponseEntity<Page<InventoryResponse>> {
+    fun getItems(pageable: Pageable): ResponseEntity<Page<InventoryResponse>> {
         log.debug("GET /inventory page={} size={}", pageable.pageNumber, pageable.pageSize)
         val page = inventoryService.getItems(pageable)
         log.debug("GET /inventory returned {} items (total={})", page.numberOfElements, page.totalElements)
@@ -39,7 +39,7 @@ class InventoryController(
     }
 
     @PostMapping
-    suspend fun createItem(@RequestBody request: CreateItemRequest): ResponseEntity<CreateItemResponse> {
+    fun createItem(@RequestBody request: CreateItemRequest): ResponseEntity<CreateItemResponse> {
         log.info("POST /inventory itemId={} availableQty={}", request.id, request.availableQty)
         inventoryService.createItem(CreateItemCommand(request.id, request.availableQty, UUID.randomUUID()))
         log.info("POST /inventory success itemId={}", request.id)
@@ -47,7 +47,7 @@ class InventoryController(
     }
 
     @GetMapping("/{itemId}")
-    suspend fun getItem(@PathVariable itemId: String): ResponseEntity<InventoryResponse> {
+    fun getItem(@PathVariable itemId: String): ResponseEntity<InventoryResponse> {
         log.debug("GET /inventory/{}", itemId)
         val item = inventoryService.getItem(itemId)
             ?: run {
@@ -59,7 +59,7 @@ class InventoryController(
     }
 
     @PostMapping("/reserve")
-    suspend fun reserve(@RequestBody request: ReserveItemRequest): ResponseEntity<Void> {
+    fun reserve(@RequestBody request: ReserveItemRequest): ResponseEntity<Void> {
         log.info("POST /inventory/reserve itemId={} reservationId={} quantity={}", request.id, request.reservationId, request.quantity)
         inventoryService.reserveItem(ReserveItemCommand(request.id, request.reservationId, request.quantity, UUID.randomUUID()))
         log.info("POST /inventory/reserve accepted itemId={} reservationId={}", request.id, request.reservationId)

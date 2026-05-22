@@ -1,19 +1,13 @@
 package pl.szymanski.wiktor.config
 
 import org.springframework.context.annotation.Configuration
-import org.springframework.data.domain.PageRequest
-import org.springframework.data.domain.Pageable
-import org.springframework.data.domain.Sort
-import org.springframework.data.web.ReactivePageableHandlerMethodArgumentResolver
-import org.springframework.web.reactive.config.WebFluxConfigurer
-import org.springframework.web.reactive.result.method.annotation.ArgumentResolverConfigurer
-import org.springframework.web.reactive.BindingContext
-import org.springframework.core.MethodParameter
-import org.springframework.web.server.ServerWebExchange
+import org.springframework.data.web.PageableHandlerMethodArgumentResolver
+import org.springframework.web.method.support.HandlerMethodArgumentResolver
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
 
 @Configuration
-class WebConfig : WebFluxConfigurer {
-    override fun configureArgumentResolvers(configurer: ArgumentResolverConfigurer) {
-        configurer.addCustomResolver(ReactivePageableHandlerMethodArgumentResolver())
+class WebConfig : WebMvcConfigurer {
+    override fun addArgumentResolvers(resolvers: MutableList<HandlerMethodArgumentResolver>) {
+        resolvers.add(PageableHandlerMethodArgumentResolver())
     }
 }

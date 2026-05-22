@@ -1,15 +1,14 @@
 package pl.szymanski.wiktor.repository
 
 import org.springframework.data.domain.Pageable
-import org.springframework.data.r2dbc.repository.R2dbcRepository
+import org.springframework.data.repository.CrudRepository
+import org.springframework.data.repository.PagingAndSortingRepository
 import org.springframework.stereotype.Repository
-import reactor.core.publisher.Flux
-import reactor.core.publisher.Mono
 
 @Repository
-interface InventoryRepository : R2dbcRepository<InventoryProjection, String> {
+interface InventoryRepository :
+    CrudRepository<InventoryProjection, String>,
+    PagingAndSortingRepository<InventoryProjection, String> {
 
-    override fun findById(id: String): Mono<InventoryProjection?>
-
-    fun findAllBy(pageable: Pageable): Flux<InventoryProjection>
+    fun findAllBy(pageable: Pageable): List<InventoryProjection>
 }
