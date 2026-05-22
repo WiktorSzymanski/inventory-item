@@ -18,13 +18,6 @@ class InventoryService(
     private val createInventoryItemCommandHandler: CreateInventoryItemCommandHandler,
     private val reserveInventoryItemCommandHandler: ReserveInventoryItemCommandHandler,
 ) {
-    @Retryable(
-        includes = [OptimisticLockingFailureException::class],
-        maxRetries = 4,
-        delay = 25,
-        multiplier = 2.0,
-        maxDelay = 500,
-    )
     fun createItem(command: CreateItemCommand): InventoryItem =
         createInventoryItemCommandHandler.handle(command)
 

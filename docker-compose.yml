@@ -28,7 +28,7 @@ services:
         condition: service_healthy
 
   api-to:
-    image: inventory-reservation:latest
+    image: inventory-reservation-to:latest
     container_name: api-to
     environment:
       DB_JDBC_URL:   "jdbc:postgresql://postgres-to:5432/inventory"

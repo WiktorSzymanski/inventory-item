@@ -19,6 +19,10 @@ data class InventoryItem(
     val version: Long = 0L,
 ) {
     fun reserve(reservationId: String, quantity: Int, correlationId: UUID): Pair<InventoryItem, InventoryReservedEvent> {
+        if (quantity <= 0) {
+            throw IllegalArgumentException("Quantity must be greater than 0")
+        }
+
         if (quantity > availableQty) {
             throw InsufficientStockException(
                 "Not enough stock of item $id (availableQty: $availableQty)" +
