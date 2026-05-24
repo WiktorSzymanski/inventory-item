@@ -48,6 +48,7 @@ services:
       - load-test
     volumes:
       - ./k6:/scripts
+      - ./reports:/reports
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -55,9 +56,9 @@ services:
 #      BASE_URL:  "http://host.docker.internal:8080"
       VUS:       "${VUS:-10}"
       DURATION:  "${DURATION:-10m}"
-    command: run /scripts/reserve-load-test.js
-#    depends_on:
-#      - api-to
+    entrypoint: ["/bin/sh", "/scripts/run.sh"]
+    depends_on:
+      - grafana-reporter
 
   prometheus:
     image: prom/prometheus:v2.52.0
@@ -79,11 +80,33 @@ services:
     environment:
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_RENDERING_SERVER_URL: "http://grafana-renderer:8081/render"
+      GF_RENDERING_CALLBACK_URL: "http://grafana:3000/"
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana-data:/var/lib/grafana
     depends_on:
       - prometheus
+
+  grafana-renderer:
+    image: grafana/grafana-image-renderer:latest
+    container_name: grafana-renderer
+    ports:
+      - "8081:8081"
+    environment:
+      ENABLE_METRICS: "true"
+
+  grafana-reporter:
+    image: izakmarais/grafana-reporter:latest
+    container_name: grafana-reporter
+    ports:
+      - "8686:8686"
+    command: -proto http:// -ip grafana:3000
+    depends_on:
+      - grafana
+      - grafana-renderer
 
 volumes:
   postgres-to-data:

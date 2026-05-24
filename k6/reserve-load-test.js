@@ -11,11 +11,11 @@ const insufficientStock = new Counter('insufficient_stock');
 const reservationDuration = new Trend('reservation_duration', true);
 
 const SEED_ITEMS = [
-    { id: 'item-1', availableQty: 10000 },
-    { id: 'item-2', availableQty: 10000 },
-    { id: 'item-3', availableQty: 10000 },
-    { id: 'item-4', availableQty: 10000 },
-    { id: 'item-5', availableQty: 10000 },
+    { id: 'item-1', availableQty: 1000000 },
+    // { id: 'item-2', availableQty: 10000 },
+    // { id: 'item-3', availableQty: 10000 },
+    // { id: 'item-4', availableQty: 10000 },
+    // { id: 'item-5', availableQty: 10000 },
 ];
 
 export function setup() {
