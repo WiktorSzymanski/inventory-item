@@ -4,7 +4,7 @@ import { Counter, Trend } from 'k6/metrics';
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
 const VUS = parseInt(__ENV.VUS || '10');
-const DURATION = __ENV.DURATION || '10m';
+const DURATION = __ENV.DURATION || '1m';
 
 const reservationsMade = new Counter('reservations_made');
 const insufficientStock = new Counter('insufficient_stock');

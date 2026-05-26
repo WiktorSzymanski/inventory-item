@@ -20,6 +20,15 @@ data class ErrorResponse(val message: String)
 @RestControllerAdvice
 class GlobalExceptionHandler(private val meterRegistry: MeterRegistry) {
     private val log = LoggerFactory.getLogger(this::class.java)
+    private val optimisticExhaustedCounter = Counter.builder("inventory.optimistic.exhausted").register(meterRegistry)
+
+    init {
+        listOf(
+            "NotFoundException", "AggregateNotFoundException", "ItemAlreadyExistsException",
+            "InsufficientStockException", "ReservationForThatItemAlreadyExistsException",
+            "ConcurrencyException", "OptimisticLockExhaustedException",
+        ).forEach { type -> exceptionCounter(type) }
+    }
 
     private fun exceptionCounter(type: String): Counter =
         Counter.builder("inventory.exception").tag("type", type).register(meterRegistry)
@@ -69,6 +78,7 @@ class GlobalExceptionHandler(private val meterRegistry: MeterRegistry) {
     fun handleConcurrencyExhausted(e: ConcurrencyException): ErrorResponse {
         log.warn("Optimistic lock retries exhausted: {}", e.message)
         exceptionCounter("ConcurrencyException").increment()
+        optimisticExhaustedCounter.increment()
         return ErrorResponse("Too many concurrent requests, please retry")
     }
 

@@ -74,6 +74,7 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --web.enable-lifecycle
+      - --web.enable-admin-api
   grafana:
     image: grafana/grafana:11.0.0
     container_name: grafana

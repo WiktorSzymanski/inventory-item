@@ -1,5 +1,7 @@
 package pl.szymanski.wiktor.service
 
+import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.MeterRegistry
 import org.axonframework.commandhandling.gateway.CommandGateway
 import org.axonframework.modelling.command.ConcurrencyException
 import org.slf4j.LoggerFactory
@@ -18,8 +20,11 @@ import pl.szymanski.wiktor.service.command.ReserveItemCommand
 class InventoryService(
     private val commandGateway: CommandGateway,
     private val inventoryRepository: InventoryRepository,
+    meterRegistry: MeterRegistry,
 ) {
     private val log = LoggerFactory.getLogger(this::class.java)
+    private val appendSuccessCounter = Counter.builder("inventory.append.success").register(meterRegistry)
+    private val optimisticRetryCounter = Counter.builder("inventory.optimistic.retry").register(meterRegistry)
 
     fun createItem(command: CreateItemCommand) {
         log.info("[CREATE] itemId={} correlationId={}", command.id, command.correlationId)
@@ -50,7 +55,13 @@ class InventoryService(
     )
     fun reserveItem(command: ReserveItemCommand) {
         log.info("[RESERVE] itemId={} reservationId={} correlationId={}", command.id, command.reservationId, command.correlationId)
-        commandGateway.sendAndWait<Any?>(command)
-        log.info("[RESERVE] success itemId={} reservationId={}", command.id, command.reservationId)
+        try {
+            commandGateway.sendAndWait<Any?>(command)
+            appendSuccessCounter.increment()
+            log.info("[RESERVE] success itemId={} reservationId={}", command.id, command.reservationId)
+        } catch (e: ConcurrencyException) {
+            optimisticRetryCounter.increment()
+            throw e
+        }
     }
 }

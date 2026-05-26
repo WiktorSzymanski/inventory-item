@@ -24,8 +24,8 @@ axon:
     messages: jackson
 
 snapshot:
-  enabled: false
-  event-count: 50
+  enabled: true
+  event-count: 10
 
 management:
   endpoints:
