@@ -17,3 +17,13 @@ data class InventoryReservedEvent(
     val correlationId: UUID,
     val createdAt: Instant = Instant.now(),
 )
+
+data class ReservedItem(val itemId: String, val quantity: Int)
+
+data class OrderReservationCreatedEvent(
+    val orderId: String,
+    val userId: String,
+    val items: List<ReservedItem>,
+    val correlationId: UUID,
+    val createdAt: Instant = Instant.now(),
+)

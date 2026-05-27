@@ -16,6 +16,7 @@ import org.springframework.resilience.annotation.EnableResilientMethods
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig
 import pl.szymanski.wiktor.repository.InventoryRepository
 import pl.szymanski.wiktor.service.command.CreateInventoryItemCommandHandler
+import pl.szymanski.wiktor.service.command.CreateOrderReservationCommandHandler
 import pl.szymanski.wiktor.service.command.ReserveInventoryItemCommandHandler
 import pl.szymanski.wiktor.service.command.ReserveItemCommand
 
@@ -67,6 +68,9 @@ class InventoryServiceRetryTest {
 
         @Bean
         fun reserveInventoryItemCommandHandler(): ReserveInventoryItemCommandHandler = mockk()
+
+        @Bean
+        fun createOrderReservationCommandHandler(): CreateOrderReservationCommandHandler = mockk()
 
         @Bean
         fun meterRegistry(): MeterRegistry = SimpleMeterRegistry()

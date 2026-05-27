@@ -8,6 +8,7 @@ import org.springframework.modulith.events.ApplicationModuleListener
 import org.springframework.stereotype.Component
 import pl.szymanski.wiktor.domain.InventoryCreatedEvent
 import pl.szymanski.wiktor.domain.InventoryReservedEvent
+import pl.szymanski.wiktor.domain.OrderReservationCreatedEvent
 import java.time.Duration
 import java.time.Instant
 
@@ -34,6 +35,16 @@ class InventoryEventListener(
         log.info(
             "[MOCK-KAFKA] topic=inventory-events key={} type={} payload={}",
             event.id, event.javaClass.simpleName, payload,
+        )
+        recordLag(event.javaClass.simpleName, event.createdAt)
+    }
+
+    @ApplicationModuleListener
+    fun on(event: OrderReservationCreatedEvent) {
+        val payload = objectMapper.writeValueAsString(event)
+        log.info(
+            "[MOCK-KAFKA] topic=order-events key={} type={} payload={}",
+            event.orderId, event.javaClass.simpleName, payload,
         )
         recordLag(event.javaClass.simpleName, event.createdAt)
     }

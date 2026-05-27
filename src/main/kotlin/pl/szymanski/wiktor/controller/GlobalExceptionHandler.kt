@@ -81,4 +81,12 @@ class GlobalExceptionHandler(private val meterRegistry: MeterRegistry) {
         exceptionCounter("OptimisticLockingFailureException").increment()
         return ErrorResponse("Too many concurrent requests, please retry")
     }
+
+    @ExceptionHandler(org.springframework.dao.PessimisticLockingFailureException::class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    fun handlePessimisticLockingFailure(e: org.springframework.dao.PessimisticLockingFailureException): ErrorResponse {
+        log.warn("Deadlock retries exhausted: {}", e.message)
+        exceptionCounter("PessimisticLockingFailureException").increment()
+        return ErrorResponse("Too many concurrent requests, please retry")
+    }
 }
