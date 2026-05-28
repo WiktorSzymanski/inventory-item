@@ -16,6 +16,7 @@ class OrderAggregate {
 
     @AggregateIdentifier
     private lateinit var orderId: String
+    private lateinit var items: List<OrderItem>
 
     constructor()
 
@@ -34,7 +35,7 @@ class OrderAggregate {
         AggregateLifecycle.apply(OrderFailedEvent(command.orderId, command.reason))
     }
 
-    @EventSourcingHandler fun on(event: OrderCreatedEvent)   { orderId = event.orderId }
+    @EventSourcingHandler fun on(event: OrderCreatedEvent)   { orderId = event.orderId; items = event.items }
     @EventSourcingHandler fun on(event: OrderCompletedEvent) {}
     @EventSourcingHandler fun on(event: OrderFailedEvent)    {}
 }

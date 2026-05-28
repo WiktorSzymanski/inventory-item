@@ -91,7 +91,7 @@ class ApplicationTest {
 
         mockMvc.post("/inventory/reserve") {
             contentType = MediaType.APPLICATION_JSON
-            content = """{"id":"ITEM-001","reservationId":"RES-1","quantity":5}"""
+            content = """{"id":"ITEM-001","quantity":5}"""
         }.andExpect { status { isAccepted() } }
     }
 
@@ -102,7 +102,7 @@ class ApplicationTest {
 
         mockMvc.post("/inventory/reserve") {
             contentType = MediaType.APPLICATION_JSON
-            content = """{"id":"MISSING","reservationId":"RES-1","quantity":1}"""
+            content = """{"id":"MISSING","quantity":1}"""
         }.andExpect {
             status { isNotFound() }
             jsonPath("$.message") { value("Item MISSING not found") }
@@ -116,7 +116,7 @@ class ApplicationTest {
 
         mockMvc.post("/inventory/reserve") {
             contentType = MediaType.APPLICATION_JSON
-            content = """{"id":"ITEM-001","reservationId":"RES-1","quantity":999}"""
+            content = """{"id":"ITEM-001","quantity":999}"""
         }.andExpect {
             status { isEqualTo(422) }
             jsonPath("$.message") { value("Not enough stock of item ITEM-001") }
@@ -130,7 +130,7 @@ class ApplicationTest {
 
         mockMvc.post("/inventory/reserve") {
             contentType = MediaType.APPLICATION_JSON
-            content = """{"id":"ITEM-001","reservationId":"RES-1","quantity":1}"""
+            content = """{"id":"ITEM-001","quantity":1}"""
         }.andExpect {
             status { isEqualTo(503) }
             jsonPath("$.message") { value("Optimistic lock exhausted for item ITEM-001") }

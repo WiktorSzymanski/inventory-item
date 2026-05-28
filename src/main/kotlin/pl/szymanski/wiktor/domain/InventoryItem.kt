@@ -7,7 +7,6 @@ import org.axonframework.modelling.command.AggregateIdentifier
 import org.axonframework.modelling.command.AggregateLifecycle
 import org.axonframework.spring.stereotype.Aggregate
 import pl.szymanski.wiktor.exception.InsufficientStockException
-import pl.szymanski.wiktor.exception.ReservationForThatItemAlreadyExistsException
 import pl.szymanski.wiktor.service.command.CreateItemCommand
 import pl.szymanski.wiktor.service.command.ReleaseReservationCommand
 import pl.szymanski.wiktor.service.command.ReserveItemCommand
@@ -21,7 +20,6 @@ class InventoryItem {
     @AggregateIdentifier
     private lateinit var id: String
     private var availableQty = 0
-    private val reservations = mutableMapOf<String, Int>()
 
     constructor()
 
@@ -34,18 +32,10 @@ class InventoryItem {
     fun handle(command: ReserveItemCommand) {
         if (command.quantity > availableQty) {
             throw InsufficientStockException(
-                "Not enough stock of item $id (availableQty: $availableQty) " +
-                        "for reservation ${command.reservationId} (requested: ${command.quantity})"
+                "Not enough stock of item $id (availableQty: $availableQty) requested: ${command.quantity}"
             )
         }
-        if (reservations.containsKey(command.reservationId)) {
-            throw ReservationForThatItemAlreadyExistsException(
-                "Reservation ${command.reservationId} already exists for item $id"
-            )
-        }
-        AggregateLifecycle.apply(
-            InventoryReservedEvent(command.id, command.correlationId, command.reservationId, command.quantity)
-        )
+        AggregateLifecycle.apply(InventoryReservedEvent(id, command.correlationId, command.quantity))
     }
 
     @EventSourcingHandler
@@ -56,20 +46,13 @@ class InventoryItem {
 
     @CommandHandler
     fun handle(command: SagaReserveItemCommand) {
-        if (reservations.containsKey(command.reservationId)) {
-            // Idempotent: saga replay after crash — reservation already exists, no state change.
-            // The saga will be stuck without a result event; a DeadlineManager would handle this in production.
-            return
-        }
         if (command.quantity > availableQty) {
             AggregateLifecycle.apply(
-                InventoryReservationFailedEvent(id, command.correlationId, command.reservationId, "Insufficient stock: available=$availableQty requested=${command.quantity}")
+                InventoryReservationFailedEvent(id, command.correlationId, "Insufficient stock: available=$availableQty requested=${command.quantity}")
             )
             return
         }
-        AggregateLifecycle.apply(
-            InventoryReservedEvent(id, command.correlationId, command.reservationId, command.quantity)
-        )
+        AggregateLifecycle.apply(InventoryReservedEvent(id, command.correlationId, command.quantity))
     }
 
     @EventSourcingHandler
@@ -77,19 +60,16 @@ class InventoryItem {
 
     @CommandHandler
     fun handle(command: ReleaseReservationCommand) {
-        val qty = reservations[command.reservationId] ?: return
-        AggregateLifecycle.apply(InventoryReservationReleasedEvent(id, command.correlationId, command.reservationId, qty))
+        AggregateLifecycle.apply(InventoryReservationReleasedEvent(id, command.correlationId, command.quantity))
     }
 
     @EventSourcingHandler
     fun on(event: InventoryReservedEvent) {
         availableQty -= event.quantity
-        reservations[event.reservationId] = event.quantity
     }
 
     @EventSourcingHandler
     fun on(event: InventoryReservationReleasedEvent) {
         availableQty += event.quantity
-        reservations.remove(event.reservationId)
     }
 }

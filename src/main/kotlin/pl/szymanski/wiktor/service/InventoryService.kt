@@ -61,8 +61,8 @@ class InventoryService(
         maxDelay = 500,
     )
     fun reserveItem(command: ReserveItemCommand) {
-        log.info("[RESERVE] itemId={} reservationId={} correlationId={}", command.id, command.reservationId, command.correlationId)
+        log.info("[RESERVE] itemId={} correlationId={}", command.id, command.correlationId)
         commandGateway.sendAndWait<Any?>(command)
-        log.info("[RESERVE] success itemId={} reservationId={}", command.id, command.reservationId)
+        log.info("[RESERVE] success itemId={}", command.id)
     }
 }

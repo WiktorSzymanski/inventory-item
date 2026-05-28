@@ -26,7 +26,7 @@ axon:
     segments: 32
   jdbc:
     pool:
-      size: 100
+      size: 150
 
 snapshot:
   enabled: true

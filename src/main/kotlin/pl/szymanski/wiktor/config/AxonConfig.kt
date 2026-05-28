@@ -24,7 +24,10 @@ import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.context.annotation.Primary
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.jdbc.datasource.DataSourceTransactionManager
+import org.springframework.transaction.PlatformTransactionManager
 import javax.sql.DataSource
 
 @Configuration
@@ -59,6 +62,23 @@ class AxonConfig {
     @Bean
     fun axonTransactionManager(@Qualifier("axonDataSource") axonDataSource: DataSource): TransactionManager =
         SpringTransactionManager(DataSourceTransactionManager(axonDataSource))
+
+    // Explicit primary transaction manager — Spring Boot's auto-config backs off when any
+    // PlatformTransactionManager bean is present, so we must register this ourselves.
+    @Bean("transactionManager")
+    @Primary
+    fun transactionManager(dataSource: DataSource): PlatformTransactionManager =
+        DataSourceTransactionManager(dataSource)
+
+    // Spring PlatformTransactionManager backed by axonDataSource — used by projection updaters
+    // so their @Transactional writes draw from the Axon pool instead of the primary Spring pool.
+    @Bean("axonSpringTransactionManager")
+    fun axonSpringTransactionManager(@Qualifier("axonDataSource") axonDataSource: DataSource): PlatformTransactionManager =
+        DataSourceTransactionManager(axonDataSource)
+
+    @Bean("axonJdbcTemplate")
+    fun axonJdbcTemplate(@Qualifier("axonDataSource") axonDataSource: DataSource): NamedParameterJdbcTemplate =
+        NamedParameterJdbcTemplate(axonDataSource)
 
     @Bean
     fun eventSchema(): EventSchema = EventSchema.builder()

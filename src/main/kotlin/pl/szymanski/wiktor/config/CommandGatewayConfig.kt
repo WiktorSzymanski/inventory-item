@@ -28,10 +28,7 @@ class CommandGatewayConfig {
             .retryScheduler(retryScheduler)
             .build()
 
-    // Saga processor threads submit reservation commands here instead of blocking inline.
-    // Capped at 32 so total Axon-pool demand (32 TEP + 32 here + 3 other TEPs + 4 retry + 15 HTTP ≈ 86)
-    // stays within the pool ceiling of 100.
     @Bean
     @Qualifier("sagaCommandExecutor")
-    fun sagaCommandExecutor(): Executor = Executors.newFixedThreadPool(32)
+    fun sagaCommandExecutor(): Executor = Executors.newFixedThreadPool(64)
 }

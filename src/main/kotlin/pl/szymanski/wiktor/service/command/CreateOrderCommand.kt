@@ -22,7 +22,7 @@ data class FailOrderCommand(
 
 data class ReleaseReservationCommand(
     @TargetAggregateIdentifier val id: String,
-    val reservationId: String,
+    val quantity: Int,
     val correlationId: UUID = UUID.randomUUID(),
 )
 
@@ -34,7 +34,6 @@ data class CreateOrderReservationCommand(
 
 data class SagaReserveItemCommand(
     @TargetAggregateIdentifier val id: String,
-    val reservationId: String,
     val quantity: Int,
     val correlationId: UUID = UUID.randomUUID(),
 )

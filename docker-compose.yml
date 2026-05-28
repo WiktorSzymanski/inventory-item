@@ -13,7 +13,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-    command: postgres -c max_connections=200
+    command: postgres -c max_connections=300
     volumes:
       - postgres-es-data:/var/lib/postgresql/data
 
@@ -25,7 +25,7 @@ services:
       DB_R2DBC_URL:        "r2dbc:postgresql://postgres-es:5432/inventory"
       DB_USER:             inventory
       DB_PASSWORD:         inventory
-      AXON_JDBC_POOL_SIZE: "${AXON_JDBC_POOL_SIZE:-50}"
+      AXON_JDBC_POOL_SIZE: "${AXON_JDBC_POOL_SIZE:-150}"
     ports:
       - "8080:8080"
     depends_on:

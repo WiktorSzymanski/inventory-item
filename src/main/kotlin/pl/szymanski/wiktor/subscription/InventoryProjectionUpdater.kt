@@ -8,11 +8,13 @@ import org.axonframework.eventhandling.EventHandler
 import org.axonframework.eventhandling.SequenceNumber
 import org.axonframework.eventhandling.Timestamp
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Transactional
 import pl.szymanski.wiktor.domain.InventoryCreatedEvent
 import pl.szymanski.wiktor.domain.InventoryReservationFailedEvent
+import pl.szymanski.wiktor.domain.InventoryReservationReleasedEvent
 import pl.szymanski.wiktor.domain.InventoryReservedEvent
 import java.time.Duration
 import java.time.Instant
@@ -20,7 +22,7 @@ import java.time.Instant
 @Component
 @ProcessingGroup("inventory-projection")
 class InventoryProjectionUpdater(
-    private val jdbcTemplate: NamedParameterJdbcTemplate,
+    @Qualifier("axonJdbcTemplate") private val jdbcTemplate: NamedParameterJdbcTemplate,
     private val meterRegistry: MeterRegistry,
 ) {
     companion object {
@@ -42,12 +44,12 @@ class InventoryProjectionUpdater(
         Counter.builder("inventory.exception").tag("type", "InsufficientStockException").register(meterRegistry)
 
     @EventHandler
-    @Transactional
+    @Transactional("axonSpringTransactionManager")
     fun on(event: InventoryCreatedEvent, @SequenceNumber seqNo: Long, @Timestamp timestamp: Instant) {
         jdbcTemplate.update(
             """
-            INSERT INTO inventory_state (item_id, available_qty, reservations, last_event_revision)
-            VALUES (:itemId, :qty, '{}', :revision)
+            INSERT INTO inventory_state (item_id, available_qty, last_event_revision)
+            VALUES (:itemId, :qty, :revision)
             ON CONFLICT (item_id) DO UPDATE
                 SET available_qty       = EXCLUDED.available_qty,
                     last_event_revision = EXCLUDED.last_event_revision
@@ -65,20 +67,17 @@ class InventoryProjectionUpdater(
     }
 
     @EventHandler
-    @Transactional
+    @Transactional("axonSpringTransactionManager")
     fun on(event: InventoryReservedEvent, @SequenceNumber seqNo: Long, @Timestamp timestamp: Instant) {
-        val reservationJson = """{"${event.reservationId}":${event.quantity}}"""
         jdbcTemplate.update(
             """
             UPDATE inventory_state
             SET available_qty       = available_qty - :qty,
-                reservations        = reservations || :reservationJson::jsonb,
                 last_event_revision = :revision
             WHERE item_id = :itemId AND last_event_revision < :revision
             """.trimIndent(),
             mapOf(
                 "qty" to event.quantity,
-                "reservationJson" to reservationJson,
                 "revision" to seqNo,
                 "itemId" to event.id,
             )
@@ -94,12 +93,37 @@ class InventoryProjectionUpdater(
     }
 
     @EventHandler
+    @Transactional("axonSpringTransactionManager")
+    fun on(event: InventoryReservationReleasedEvent, @SequenceNumber seqNo: Long, @Timestamp timestamp: Instant) {
+        jdbcTemplate.update(
+            """
+            UPDATE inventory_state
+            SET available_qty       = available_qty + :qty,
+                last_event_revision = :revision
+            WHERE item_id = :itemId AND last_event_revision < :revision
+            """.trimIndent(),
+            mapOf(
+                "qty" to event.quantity,
+                "revision" to seqNo,
+                "itemId" to event.id,
+            )
+        )
+        val lag = Duration.between(timestamp, Instant.now())
+        projectionLagTimer.record(lag)
+        log.info(
+            "[PROJECTION] table=inventory_state key={} type=InventoryReservationReleasedEvent lag={}ms",
+            event.id, lag.toMillis(),
+        )
+        meterRegistry.counter("es.events.processed", "eventType", "InventoryReservationReleasedEvent").increment()
+    }
+
+    @EventHandler
     fun on(event: InventoryReservationFailedEvent, @Timestamp timestamp: Instant) {
         val lag = Duration.between(timestamp, Instant.now())
         projectionLagTimer.record(lag)
         log.info(
-            "[PROJECTION] reservation failed itemId={} reservationId={} reason={} lag={}ms",
-            event.id, event.reservationId, event.reason, lag.toMillis(),
+            "[PROJECTION] reservation failed itemId={} reason={} lag={}ms",
+            event.id, event.reason, lag.toMillis(),
         )
         meterRegistry.counter("es.events.processed", "eventType", "InventoryReservationFailedEvent").increment()
         insufficientStockCounter.increment()

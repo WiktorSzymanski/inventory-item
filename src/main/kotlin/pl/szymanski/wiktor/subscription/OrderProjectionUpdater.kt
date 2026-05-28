@@ -6,6 +6,7 @@ import org.axonframework.config.ProcessingGroup
 import org.axonframework.eventhandling.EventHandler
 import org.axonframework.eventhandling.Timestamp
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Transactional
@@ -18,7 +19,7 @@ import java.time.Instant
 @Component
 @ProcessingGroup("order-projection")
 class OrderProjectionUpdater(
-    private val jdbcTemplate: NamedParameterJdbcTemplate,
+    @Qualifier("axonJdbcTemplate") private val jdbcTemplate: NamedParameterJdbcTemplate,
     private val meterRegistry: MeterRegistry,
 ) {
     companion object {
@@ -31,17 +32,18 @@ class OrderProjectionUpdater(
         .register(meterRegistry)
 
     @EventHandler
-    @Transactional
+    @Transactional("axonSpringTransactionManager")
     fun on(event: OrderCreatedEvent, @Timestamp timestamp: Instant) {
+        val itemsJson = event.items.joinToString(",", "{", "}") { "\"${it.itemId}\":${it.quantity}" }
         jdbcTemplate.update(
-            "INSERT INTO orders (order_id, user_id, status) VALUES (:orderId, :userId, 'PENDING') ON CONFLICT DO NOTHING",
-            mapOf("orderId" to event.orderId, "userId" to event.userId)
+            "INSERT INTO orders (order_id, user_id, status, items) VALUES (:orderId, :userId, 'PENDING', :items::jsonb) ON CONFLICT DO NOTHING",
+            mapOf("orderId" to event.orderId, "userId" to event.userId, "items" to itemsJson)
         )
         recordLag(timestamp, "OrderCreatedEvent")
     }
 
     @EventHandler
-    @Transactional
+    @Transactional("axonSpringTransactionManager")
     fun on(event: OrderCompletedEvent, @Timestamp timestamp: Instant) {
         jdbcTemplate.update(
             "UPDATE orders SET status = 'COMPLETED' WHERE order_id = :orderId",
@@ -51,7 +53,7 @@ class OrderProjectionUpdater(
     }
 
     @EventHandler
-    @Transactional
+    @Transactional("axonSpringTransactionManager")
     fun on(event: OrderFailedEvent, @Timestamp timestamp: Instant) {
         jdbcTemplate.update(
             "UPDATE orders SET status = 'FAILED' WHERE order_id = :orderId",

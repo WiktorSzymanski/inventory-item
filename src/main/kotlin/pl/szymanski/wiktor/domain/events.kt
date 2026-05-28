@@ -16,14 +16,12 @@ data class InventoryCreatedEvent(
 data class InventoryReservedEvent(
     override val id: String,
     override val correlationId: UUID,
-    val reservationId: String,
     val quantity: Int,
 ) : InventoryEvent(id, correlationId)
 
 data class InventoryReservationReleasedEvent(
     override val id: String,
     override val correlationId: UUID,
-    val reservationId: String,
     val quantity: Int,
 ) : InventoryEvent(id, correlationId)
 
@@ -32,7 +30,6 @@ data class OrderItem(val itemId: String, val quantity: Int)
 data class InventoryReservationFailedEvent(
     override val id: String,
     override val correlationId: UUID,
-    val reservationId: String,
     val reason: String,
 ) : InventoryEvent(id, correlationId)
 

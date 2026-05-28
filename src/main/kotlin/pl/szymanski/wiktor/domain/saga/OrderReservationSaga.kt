@@ -44,7 +44,7 @@ class OrderReservationSaga {
     private lateinit var items: List<OrderItem>
     private lateinit var correlationId: UUID
     private var currentIndex: Int = 0
-    private val reservedItemIds = mutableListOf<String>()
+    private val reservedItems = mutableListOf<OrderItem>()
 
     @StartSaga
     @SagaEventHandler(associationProperty = "orderId")
@@ -52,14 +52,14 @@ class OrderReservationSaga {
         orderId = event.orderId
         items = event.items
         correlationId = event.correlationId
-        SagaLifecycle.associateWith("reservationId", event.orderId)
+        SagaLifecycle.associateWith("correlationId", correlationId.toString())
         log.info("[SAGA] start orderId={} items={}", orderId, items.size)
         sendNextReservation()
     }
 
-    @SagaEventHandler(associationProperty = "reservationId")
+    @SagaEventHandler(associationProperty = "correlationId")
     fun on(event: InventoryReservedEvent) {
-        reservedItemIds.add(event.id)
+        reservedItems.add(items[currentIndex])
         currentIndex++
         log.debug("[SAGA] reserved itemId={} ({}/{}) orderId={}", event.id, currentIndex, items.size, orderId)
         if (currentIndex < items.size) {
@@ -73,17 +73,17 @@ class OrderReservationSaga {
         }
     }
 
-    @SagaEventHandler(associationProperty = "reservationId")
+    @SagaEventHandler(associationProperty = "correlationId")
     fun on(event: InventoryReservationFailedEvent) {
         log.warn("[SAGA] reservation failed itemId={} orderId={} reason={}", event.id, orderId, event.reason)
-        val toRelease = reservedItemIds.toList()
+        val toRelease = reservedItems.toList()
         val failReason = event.reason
         val orderIdCopy = orderId
         commandExecutor.execute {
-            toRelease.forEach { itemId ->
+            toRelease.forEach { item ->
                 runCatching {
-                    commandGateway.send<Any?>(ReleaseReservationCommand(itemId, orderIdCopy))
-                }.onFailure { ex -> log.error("[SAGA] compensation failed itemId={} orderId={}", itemId, orderIdCopy, ex) }
+                    commandGateway.send<Any?>(ReleaseReservationCommand(item.itemId, item.quantity))
+                }.onFailure { ex -> log.error("[SAGA] compensation failed itemId={} orderId={}", item.itemId, orderIdCopy, ex) }
             }
             commandGateway.send<Any?>(FailOrderCommand(orderIdCopy, failReason))
         }
@@ -94,7 +94,7 @@ class OrderReservationSaga {
         val item = items[currentIndex]
         log.debug("[SAGA] reserving itemId={} ({}/{}) orderId={}", item.itemId, currentIndex + 1, items.size, orderId)
         commandExecutor.execute {
-            commandGateway.send<Any?>(SagaReserveItemCommand(item.itemId, orderId, item.quantity, correlationId))
+            commandGateway.send<Any?>(SagaReserveItemCommand(item.itemId, item.quantity, correlationId))
         }
     }
 }

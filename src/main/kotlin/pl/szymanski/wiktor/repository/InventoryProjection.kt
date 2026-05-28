@@ -8,6 +8,5 @@ import org.springframework.data.relational.core.mapping.Table
 data class InventoryProjection(
     @Id @Column("item_id") val id: String,
     val availableQty: Int,
-    val reservations: Map<String, Int> = mapOf(),
     val lastEventRevision: Long = -1L,
 )

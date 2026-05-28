@@ -20,15 +20,14 @@ import pl.szymanski.wiktor.service.command.ReserveItemCommand
 import java.util.UUID
 
 data class CreateItemRequest(val id: String, val availableQty: Int)
-data class ReserveItemRequest(val id: String, val reservationId: String, val quantity: Int)
+data class ReserveItemRequest(val id: String, val quantity: Int)
 data class OrderItemRequest(val itemId: String, val quantity: Int)
 data class CreateOrderRequest(val userId: String, val items: List<OrderItemRequest>)
 
 data class InventoryResponse(val itemId: String, val availableQty: Int, val version: Long)
-data class ReserveResponse(val itemId: String, val reservationId: String, val quantity: Int)
 data class CreateItemResponse(val itemId: String, val availableQty: Int)
 data class CreateOrderResponse(val orderId: String)
-data class OrderStatusResponse(val orderId: String, val userId: String, val status: String)
+data class OrderStatusResponse(val orderId: String, val userId: String, val status: String, val items: Map<String, Int>)
 
 @RestController
 @RequestMapping("/inventory")
@@ -83,14 +82,14 @@ class InventoryController(
     fun getOrder(@PathVariable orderId: String): ResponseEntity<OrderStatusResponse> {
         val order = orderRepository.findById(orderId).orElse(null)
             ?: return ResponseEntity.notFound().build()
-        return ResponseEntity.ok(OrderStatusResponse(order.orderId, order.userId, order.status))
+        return ResponseEntity.ok(OrderStatusResponse(order.orderId, order.userId, order.status, order.items))
     }
 
     @PostMapping("/reserve")
     fun reserve(@RequestBody request: ReserveItemRequest): ResponseEntity<Void> {
-        log.info("POST /inventory/reserve itemId={} reservationId={} quantity={}", request.id, request.reservationId, request.quantity)
-        inventoryService.reserveItem(ReserveItemCommand(request.id, request.reservationId, request.quantity, UUID.randomUUID()))
-        log.info("POST /inventory/reserve accepted itemId={} reservationId={}", request.id, request.reservationId)
+        log.info("POST /inventory/reserve itemId={} quantity={}", request.id, request.quantity)
+        inventoryService.reserveItem(ReserveItemCommand(request.id, request.quantity, UUID.randomUUID()))
+        log.info("POST /inventory/reserve accepted itemId={}", request.id)
         return ResponseEntity.accepted().build()
     }
 }
