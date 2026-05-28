@@ -857,6 +857,96 @@
       ]
     },
     {
+      "id": 12,
+      "title": "Saga Outcome — Completed vs Failed & Success Rate",
+      "description": "Rate of completed sagas (all items reserved → OrderCompletedEvent) vs failed sagas (insufficient stock → OrderFailedEvent), plus the rolling success rate on the right axis.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 68,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "completed/s" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "failed/s" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "success rate" },
+            "properties": [
+              { "id": "unit", "value": "percentunit" },
+              { "id": "min", "value": 0 },
+              { "id": "max", "value": 1 },
+              { "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } },
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "custom.fillOpacity", "value": 0 },
+              { "id": "custom.lineWidth", "value": 2 }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": ["mean", "min", "lastNotNull"],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(es_events_processed_total{eventType=\"OrderCompletedEvent\"}[1m])",
+          "legendFormat": "completed/s",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(es_events_processed_total{eventType=\"OrderFailedEvent\"}[1m])",
+          "legendFormat": "failed/s",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(es_events_processed_total{eventType=\"OrderCompletedEvent\"}[1m]) / (rate(es_events_processed_total{eventType=\"OrderCompletedEvent\"}[1m]) + rate(es_events_processed_total{eventType=\"OrderFailedEvent\"}[1m]))",
+          "legendFormat": "success rate",
+          "refId": "C"
+        }
+      ]
+    },
+    {
       "id": 5,
       "title": "Database Storage",
       "type": "timeseries",

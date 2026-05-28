@@ -5,7 +5,7 @@ import { Counter, Trend } from 'k6/metrics';
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
 const MAX_RPS = parseInt(__ENV.MAX_RPS || '300');
 const RAMP_DURATION = __ENV.RAMP_DURATION || '10m';
-const ITEMS_PER_ORDER = parseInt(__ENV.ITEMS_PER_ORDER || '3');
+const ITEMS_PER_ORDER = parseInt(__ENV.ITEMS_PER_ORDER || '6');
 
 const ordersMade = new Counter('orders_made');
 const insufficientStock = new Counter('insufficient_stock');
@@ -17,6 +17,11 @@ const SEED_ITEMS = [
     { id: 'item-3', availableQty: 1000000 },
     { id: 'item-4', availableQty: 1000000 },
     { id: 'item-5', availableQty: 1000000 },
+    { id: 'item-6', availableQty: 1000000 },
+    { id: 'item-7', availableQty: 1000000 },
+    { id: 'item-8', availableQty: 1000000 },
+    { id: 'item-9', availableQty: 1000000 },
+    { id: 'item-10', availableQty: 1000000 },
 ];
 
 export function setup() {
@@ -41,12 +46,12 @@ export const options = {
     scenarios: {
         order: {
             executor: 'ramping-arrival-rate',
-            startRate: 1,
+            startRate: 100,
             timeUnit: '1s',
-            preAllocatedVUs: MAX_RPS * 2,
-            maxVUs: MAX_RPS * 10,
+            preAllocatedVUs: 800,
+            maxVUs: 2000,
             stages: [
-                { target: MAX_RPS, duration: RAMP_DURATION },
+                { target: 300, duration: '10m' },
             ],
         },
     },
