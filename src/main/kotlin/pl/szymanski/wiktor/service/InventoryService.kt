@@ -1,7 +1,5 @@
 package pl.szymanski.wiktor.service
 
-import io.micrometer.core.instrument.Counter
-import io.micrometer.core.instrument.MeterRegistry
 import org.axonframework.commandhandling.gateway.CommandGateway
 import org.axonframework.modelling.command.ConcurrencyException
 import org.slf4j.LoggerFactory
@@ -14,17 +12,16 @@ import pl.szymanski.wiktor.exception.ItemAlreadyExistsException
 import pl.szymanski.wiktor.repository.InventoryProjection
 import pl.szymanski.wiktor.repository.InventoryRepository
 import pl.szymanski.wiktor.service.command.CreateItemCommand
+import pl.szymanski.wiktor.service.command.CreateOrderCommand
+import pl.szymanski.wiktor.service.command.CreateOrderReservationCommand
 import pl.szymanski.wiktor.service.command.ReserveItemCommand
 
 @Service
 class InventoryService(
     private val commandGateway: CommandGateway,
     private val inventoryRepository: InventoryRepository,
-    meterRegistry: MeterRegistry,
 ) {
     private val log = LoggerFactory.getLogger(this::class.java)
-    private val appendSuccessCounter = Counter.builder("inventory.append.success").register(meterRegistry)
-    private val optimisticRetryCounter = Counter.builder("inventory.optimistic.retry").register(meterRegistry)
 
     fun createItem(command: CreateItemCommand) {
         log.info("[CREATE] itemId={} correlationId={}", command.id, command.correlationId)
@@ -46,6 +43,16 @@ class InventoryService(
         return PageImpl(items, pageable, total)
     }
 
+    fun createOrderReservation(command: CreateOrderReservationCommand): String {
+        val orderId = java.util.UUID.randomUUID().toString()
+        log.info("[ORDER] orderId={} userId={} itemCount={}", orderId, command.userId, command.items.size)
+        commandGateway.sendAndWait<Any?>(
+            CreateOrderCommand(orderId, command.userId, command.items, command.correlationId)
+        )
+        log.info("[ORDER] accepted orderId={}", orderId)
+        return orderId
+    }
+
     @Retryable(
         includes = [ConcurrencyException::class],
         maxRetries = 4,
@@ -55,13 +62,7 @@ class InventoryService(
     )
     fun reserveItem(command: ReserveItemCommand) {
         log.info("[RESERVE] itemId={} reservationId={} correlationId={}", command.id, command.reservationId, command.correlationId)
-        try {
-            commandGateway.sendAndWait<Any?>(command)
-            appendSuccessCounter.increment()
-            log.info("[RESERVE] success itemId={} reservationId={}", command.id, command.reservationId)
-        } catch (e: ConcurrencyException) {
-            optimisticRetryCounter.increment()
-            throw e
-        }
+        commandGateway.sendAndWait<Any?>(command)
+        log.info("[RESERVE] success itemId={} reservationId={}", command.id, command.reservationId)
     }
 }

@@ -21,19 +21,21 @@ import pl.szymanski.wiktor.exception.ItemAlreadyExistsException
 import pl.szymanski.wiktor.exception.NotFoundException
 import pl.szymanski.wiktor.exception.OptimisticLockExhaustedException
 import pl.szymanski.wiktor.repository.InventoryProjection
+import pl.szymanski.wiktor.repository.OrderRepository
 import pl.szymanski.wiktor.service.InventoryService
 
 @ExtendWith(MockKExtension::class)
 class ApplicationTest {
 
     private val inventoryService: InventoryService = mockk()
+    private val orderRepository: OrderRepository = mockk()
     private val meterRegistry: MeterRegistry = mockk(relaxed = true)
     private lateinit var mockMvc: MockMvc
 
     @BeforeEach
     fun setUp() {
         mockMvc = MockMvcBuilders
-            .standaloneSetup(InventoryController(inventoryService))
+            .standaloneSetup(InventoryController(inventoryService, orderRepository))
             .setControllerAdvice(GlobalExceptionHandler(meterRegistry))
             .build()
     }

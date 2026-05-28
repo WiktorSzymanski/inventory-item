@@ -11,22 +11,30 @@ import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
+import pl.szymanski.wiktor.domain.OrderItem
+import pl.szymanski.wiktor.repository.OrderRepository
 import pl.szymanski.wiktor.service.InventoryService
 import pl.szymanski.wiktor.service.command.CreateItemCommand
+import pl.szymanski.wiktor.service.command.CreateOrderReservationCommand
 import pl.szymanski.wiktor.service.command.ReserveItemCommand
 import java.util.UUID
 
 data class CreateItemRequest(val id: String, val availableQty: Int)
 data class ReserveItemRequest(val id: String, val reservationId: String, val quantity: Int)
+data class OrderItemRequest(val itemId: String, val quantity: Int)
+data class CreateOrderRequest(val userId: String, val items: List<OrderItemRequest>)
 
 data class InventoryResponse(val itemId: String, val availableQty: Int, val version: Long)
 data class ReserveResponse(val itemId: String, val reservationId: String, val quantity: Int)
 data class CreateItemResponse(val itemId: String, val availableQty: Int)
+data class CreateOrderResponse(val orderId: String)
+data class OrderStatusResponse(val orderId: String, val userId: String, val status: String)
 
 @RestController
 @RequestMapping("/inventory")
 class InventoryController(
     private val inventoryService: InventoryService,
+    private val orderRepository: OrderRepository,
 ) {
     private val log = LoggerFactory.getLogger(this::class.java)
 
@@ -56,6 +64,26 @@ class InventoryController(
             }
         log.debug("GET /inventory/{} found availableQty={}", itemId, item.availableQty)
         return ResponseEntity.ok(InventoryResponse(item.id, item.availableQty, item.lastEventRevision))
+    }
+
+    @PostMapping("/orders")
+    fun createOrder(@RequestBody request: CreateOrderRequest): ResponseEntity<CreateOrderResponse> {
+        log.info("POST /inventory/orders userId={} itemCount={}", request.userId, request.items.size)
+        val orderId = inventoryService.createOrderReservation(
+            CreateOrderReservationCommand(
+                userId = request.userId,
+                items = request.items.map { OrderItem(it.itemId, it.quantity) },
+            )
+        )
+        log.info("POST /inventory/orders accepted orderId={}", orderId)
+        return ResponseEntity.accepted().body(CreateOrderResponse(orderId))
+    }
+
+    @GetMapping("/orders/{orderId}")
+    fun getOrder(@PathVariable orderId: String): ResponseEntity<OrderStatusResponse> {
+        val order = orderRepository.findById(orderId).orElse(null)
+            ?: return ResponseEntity.notFound().build()
+        return ResponseEntity.ok(OrderStatusResponse(order.orderId, order.userId, order.status))
     }
 
     @PostMapping("/reserve")

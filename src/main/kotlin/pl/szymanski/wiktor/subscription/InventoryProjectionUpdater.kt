@@ -1,5 +1,6 @@
 package pl.szymanski.wiktor.subscription
 
+import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Timer
 import org.axonframework.config.ProcessingGroup
@@ -11,6 +12,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Transactional
 import pl.szymanski.wiktor.domain.InventoryCreatedEvent
+import pl.szymanski.wiktor.domain.InventoryReservationFailedEvent
 import pl.szymanski.wiktor.domain.InventoryReservedEvent
 import java.time.Duration
 import java.time.Instant
@@ -29,6 +31,15 @@ class InventoryProjectionUpdater(
         .publishPercentileHistogram(true)
         .maximumExpectedValue(Duration.ofMinutes(10))
         .register(meterRegistry)
+
+    // Counts every successful reservation regardless of call path (direct reserve or saga).
+    private val appendSuccessCounter: Counter =
+        Counter.builder("inventory.append.success").register(meterRegistry)
+
+    // Counts saga-path insufficient-stock failures as business exceptions, consistent with
+    // the GlobalExceptionHandler's inventory_exception_total{type} metric.
+    private val insufficientStockCounter: Counter =
+        Counter.builder("inventory.exception").tag("type", "InsufficientStockException").register(meterRegistry)
 
     @EventHandler
     @Transactional
@@ -79,5 +90,18 @@ class InventoryProjectionUpdater(
             event.id, lag.toMillis(),
         )
         meterRegistry.counter("es.events.processed", "eventType", "InventoryReservedEvent").increment()
+        appendSuccessCounter.increment()
+    }
+
+    @EventHandler
+    fun on(event: InventoryReservationFailedEvent, @Timestamp timestamp: Instant) {
+        val lag = Duration.between(timestamp, Instant.now())
+        projectionLagTimer.record(lag)
+        log.info(
+            "[PROJECTION] reservation failed itemId={} reservationId={} reason={} lag={}ms",
+            event.id, event.reservationId, event.reason, lag.toMillis(),
+        )
+        meterRegistry.counter("es.events.processed", "eventType", "InventoryReservationFailedEvent").increment()
+        insufficientStockCounter.increment()
     }
 }

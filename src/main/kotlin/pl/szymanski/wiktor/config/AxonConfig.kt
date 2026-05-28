@@ -5,7 +5,6 @@ import com.zaxxer.hikari.HikariDataSource
 import io.micrometer.core.instrument.MeterRegistry
 import org.axonframework.common.jdbc.DataSourceConnectionProvider
 import org.axonframework.common.transaction.TransactionManager
-import org.axonframework.config.EventProcessingConfigurer
 import org.axonframework.eventhandling.tokenstore.jdbc.JdbcTokenStore
 import org.axonframework.eventhandling.tokenstore.jdbc.TokenSchema
 import org.axonframework.eventsourcing.EventCountSnapshotTriggerDefinition
@@ -15,9 +14,11 @@ import org.axonframework.eventsourcing.Snapshotter
 import org.axonframework.eventsourcing.eventstore.EventStorageEngine
 import org.axonframework.eventsourcing.eventstore.jdbc.EventSchema
 import org.axonframework.eventsourcing.eventstore.jdbc.JdbcEventStorageEngine
+import org.axonframework.modelling.saga.repository.jdbc.JdbcSagaStore
+import org.axonframework.modelling.saga.repository.jdbc.PostgresSagaSqlSchema
+import org.axonframework.modelling.saga.repository.jdbc.SagaSchema
 import org.axonframework.serialization.Serializer
 import org.axonframework.spring.messaging.unitofwork.SpringTransactionManager
-import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.context.properties.EnableConfigurationProperties
@@ -27,7 +28,7 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager
 import javax.sql.DataSource
 
 @Configuration
-@EnableConfigurationProperties(SnapshotProperties::class)
+@EnableConfigurationProperties(SnapshotProperties::class, CacheProperties::class)
 class AxonConfig {
 
     @Bean
@@ -123,10 +124,23 @@ class AxonConfig {
         else
             NoSnapshotTriggerDefinition.INSTANCE
 
-    @Autowired
-    fun configureProcessors(configurer: EventProcessingConfigurer) {
-        configurer
-            .registerTrackingEventProcessor("inventory-projection")
-            .registerTrackingEventProcessor("mock-kafka-publisher")
-    }
+    @Bean
+    fun sagaStore(
+        @Qualifier("axonDataSource") axonDataSource: DataSource,
+        serializer: Serializer,
+    ): JdbcSagaStore = JdbcSagaStore.builder()
+        .connectionProvider(DataSourceConnectionProvider(axonDataSource))
+        .serializer(serializer)
+        .sqlSchema(PostgresSagaSqlSchema(SagaSchema.builder()
+            .sagaEntryTable("saga_entry")
+            .associationValueEntryTable("association_value_entry")
+            .sagaIdColumn("saga_id")
+            .revisionColumn("revision")
+            .serializedSagaColumn("serialized_saga")
+            .sagaTypeColumn("saga_type")
+            .associationKeyColumn("association_key")
+            .associationValueColumn("association_value")
+            .build()))
+        .build()
+
 }

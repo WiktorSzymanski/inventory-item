@@ -22,10 +22,18 @@ axon:
     general: jackson
     events: jackson
     messages: jackson
+  saga:
+    segments: 32
+  jdbc:
+    pool:
+      size: 100
 
 snapshot:
   enabled: true
-  event-count: 10
+  event-count: 30
+
+cache:
+  enabled: true
 
 management:
   endpoints:
