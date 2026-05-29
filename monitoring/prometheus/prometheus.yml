@@ -12,7 +12,6 @@ scrape_configs:
     static_configs:
       - targets: ['postgres-exporter:9187']
 
-  - job_name: kurrentdb
-    metrics_path: /metrics
+  - job_name: cadvisor
     static_configs:
-      - targets: ['kurrentdb:2113']
+      - targets: ['cadvisor:8080']
