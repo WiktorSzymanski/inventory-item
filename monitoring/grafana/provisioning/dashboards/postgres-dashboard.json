@@ -315,7 +315,7 @@
     {
       "id": 11,
       "title": "PostgreSQL Container — CPU Usage",
-      "description": "CPU usage of the postgres-to container as a fraction of one core. Spikes indicate query-heavy moments.",
+      "description": "CPU usage of the postgres-es container as a fraction of one core. Spikes indicate query-heavy moments.",
       "type": "timeseries",
       "gridPos": { "x": 0, "y": 40, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -335,7 +335,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(container_cpu_usage_seconds_total{name=\"postgres-to\"}[1m])",
+          "expr": "rate(container_cpu_usage_seconds_total{name=\"postgres-es\"}[1m])",
           "legendFormat": "cpu usage",
           "refId": "A"
         }
@@ -344,25 +344,34 @@
     {
       "id": 12,
       "title": "PostgreSQL Container — Memory Usage",
-      "description": "RAM consumed by the postgres-to container (RSS) vs its configured memory limit.",
+      "description": "RAM consumed by the postgres-es container (RSS) vs working set.",
       "type": "timeseries",
       "gridPos": { "x": 12, "y": 40, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
+          "unit": "bytes",
+          "min": 0,
           "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
         },
+        "overrides": []
       },
       "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"], "showLegend": true },
         "tooltip": { "mode": "multi", "sort": "desc" }
       },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "container_memory_rss{name=\"postgres-es\"}",
+          "legendFormat": "RSS",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "container_memory_working_set_bytes{name=\"postgres-es\"}",
+          "legendFormat": "working set",
           "refId": "B"
         }
       ]
@@ -375,7 +384,7 @@
           "unit": "ops",
           "color": { "mode": "palette-classic" },
           "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never", "spanNulls": false }
-        },
+        }
       },
       "options": {
         "tooltip": { "mode": "multi", "sort": "desc" }

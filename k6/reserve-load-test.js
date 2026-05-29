@@ -5,7 +5,7 @@ import { Counter, Trend } from 'k6/metrics';
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
 const MAX_RPS = parseInt(__ENV.MAX_RPS || '300');
 const RAMP_DURATION = __ENV.RAMP_DURATION || '10m';
-const ITEMS_PER_ORDER = parseInt(__ENV.ITEMS_PER_ORDER || '6');
+const ITEMS_PER_ORDER = parseInt(__ENV.ITEMS_PER_ORDER || '1');
 
 const ordersMade = new Counter('orders_made');
 const insufficientStock = new Counter('insufficient_stock');
@@ -13,15 +13,15 @@ const orderDuration = new Trend('order_duration', true);
 
 const SEED_ITEMS = [
     { id: 'item-1', availableQty: 1000000 },
-    { id: 'item-2', availableQty: 1000000 },
-    { id: 'item-3', availableQty: 1000000 },
-    { id: 'item-4', availableQty: 1000000 },
-    { id: 'item-5', availableQty: 1000000 },
-    { id: 'item-6', availableQty: 1000000 },
-    { id: 'item-7', availableQty: 1000000 },
-    { id: 'item-8', availableQty: 1000000 },
-    { id: 'item-9', availableQty: 1000000 },
-    { id: 'item-10', availableQty: 1000000 },
+    // { id: 'item-2', availableQty: 1000000 },
+    // { id: 'item-3', availableQty: 1000000 },
+    // { id: 'item-4', availableQty: 1000000 },
+    // { id: 'item-5', availableQty: 1000000 },
+    // { id: 'item-6', availableQty: 1000000 },
+    // { id: 'item-7', availableQty: 1000000 },
+    // { id: 'item-8', availableQty: 1000000 },
+    // { id: 'item-9', availableQty: 1000000 },
+    // { id: 'item-10', availableQty: 1000000 },
 ];
 
 export function setup() {
