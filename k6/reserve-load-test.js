@@ -12,7 +12,7 @@ const insufficientStock = new Counter('insufficient_stock');
 const orderDuration = new Trend('order_duration', true);
 
 const SEED_ITEMS = [
-    { id: 'item-1', availableQty: 1000000 },
+    { id: 'item-1', availableQty: 1000000, additionalBytesSize: 1048576},
     // { id: 'item-2', availableQty: 1000000 },
     // { id: 'item-3', availableQty: 1000000 },
     // { id: 'item-4', availableQty: 1000000 },

@@ -11,6 +11,7 @@ data class InventoryCreatedEvent(
     override val id: String,
     override val correlationId: UUID,
     val quantity: Int,
+    val additionalBytes: String = "",
 ) : InventoryEvent(id, correlationId)
 
 data class InventoryReservedEvent(

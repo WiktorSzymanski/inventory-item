@@ -20,12 +20,16 @@ class InventoryItem {
     @AggregateIdentifier
     private lateinit var id: String
     private var availableQty = 0
+    private var additionalBytes: String = ""
 
     constructor()
 
     @CommandHandler
     constructor(command: CreateItemCommand) {
-        AggregateLifecycle.apply(InventoryCreatedEvent(command.id, command.correlationId, command.availableQty))
+        val additionalBytes = if (command.additionalBytesSize > 0) "x".repeat(command.additionalBytesSize) else ""
+        AggregateLifecycle.apply(
+            InventoryCreatedEvent(command.id, command.correlationId, command.availableQty, additionalBytes)
+        )
     }
 
     @CommandHandler
@@ -42,6 +46,7 @@ class InventoryItem {
     fun on(event: InventoryCreatedEvent) {
         id = event.id
         availableQty = event.quantity
+        additionalBytes = event.additionalBytes
     }
 
     @CommandHandler

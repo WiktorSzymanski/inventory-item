@@ -46,7 +46,7 @@ class ApplicationTest {
 
         mockMvc.post("/inventory") {
             contentType = MediaType.APPLICATION_JSON
-            content = """{"id":"ITEM-002","availableQty":500}"""
+            content = """{"id":"ITEM-002","availableQty":500,"additionalBytesSize":1024}"""
         }.andExpect { status { isCreated() } }
     }
 
@@ -57,7 +57,7 @@ class ApplicationTest {
 
         mockMvc.post("/inventory") {
             contentType = MediaType.APPLICATION_JSON
-            content = """{"id":"ITEM-001","availableQty":100}"""
+            content = """{"id":"ITEM-001","availableQty":100,"additionalBytesSize":0}"""
         }.andExpect {
             status { isEqualTo(409) }
             jsonPath("$.message") { value("Item ITEM-001 already exists") }
