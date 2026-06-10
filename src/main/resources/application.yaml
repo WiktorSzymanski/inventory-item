@@ -1,17 +1,20 @@
 spring:
   application:
     name: inventory-reservation
-  r2dbc:
-    url: ${DB_R2DBC_URL:r2dbc:postgresql://localhost:5432/inventory}
+  datasource:
+    url: ${DB_JDBC_URL:jdbc:postgresql://localhost:5432/inventory}
     username: ${DB_USER:inventory}
     password: ${DB_PASSWORD:inventory}
+    driver-class-name: org.postgresql.Driver
   flyway:
     url: ${DB_JDBC_URL:jdbc:postgresql://localhost:5432/inventory}
     user: ${DB_USER:inventory}
     password: ${DB_PASSWORD:inventory}
     enabled: true
     locations: classpath:db/migration
-
+  modulith:
+    events:
+      polling-interval: PT30S   # interval between polling runs; tune per your latency requirement
 
 management:
   endpoints:
@@ -23,7 +26,10 @@ management:
       percentiles-histogram:
         http.server.requests: true
         outbox.publish.lag: true
+        state_load_time: true
         inventory.optimistic.retry.duration: true
+      maximum-expected-value:
+        outbox.publish.lag: 10m
 
 server:
   port: 8080
@@ -32,6 +38,3 @@ springdoc:
   swagger-ui:
     path: /swagger-ui.html
 
-outbox:
-  poll-interval-ms: 500
-  batch-size: 10
