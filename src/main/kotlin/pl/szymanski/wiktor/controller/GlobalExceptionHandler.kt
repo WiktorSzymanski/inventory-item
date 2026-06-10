@@ -3,6 +3,7 @@ package pl.szymanski.wiktor.controller
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.MeterRegistry
 import org.slf4j.LoggerFactory
+import org.springframework.dao.OptimisticLockingFailureException
 import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.ResponseStatus
@@ -26,6 +27,7 @@ class GlobalExceptionHandler(private val meterRegistry: MeterRegistry) {
             "InsufficientStockException",
             "ReservationForThatItemAlreadyExistsException",
             "OptimisticLockExhaustedException",
+            "OptimisticLockingFailureException",
         ).forEach { exceptionCounter(it) }
     }
 
@@ -70,5 +72,21 @@ class GlobalExceptionHandler(private val meterRegistry: MeterRegistry) {
         log.warn("Optimistic lock exhausted: {}", e.message)
         exceptionCounter("OptimisticLockExhaustedException").increment()
         return ErrorResponse(e.message ?: "Too many concurrent requests, please retry")
+    }
+
+    @ExceptionHandler(OptimisticLockingFailureException::class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    fun handleOptimisticLockingFailure(e: OptimisticLockingFailureException): ErrorResponse {
+        log.warn("Optimistic lock retries exhausted: {}", e.message)
+        exceptionCounter("OptimisticLockingFailureException").increment()
+        return ErrorResponse("Too many concurrent requests, please retry")
+    }
+
+    @ExceptionHandler(org.springframework.dao.PessimisticLockingFailureException::class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    fun handlePessimisticLockingFailure(e: org.springframework.dao.PessimisticLockingFailureException): ErrorResponse {
+        log.warn("Deadlock retries exhausted: {}", e.message)
+        exceptionCounter("PessimisticLockingFailureException").increment()
+        return ErrorResponse("Too many concurrent requests, please retry")
     }
 }

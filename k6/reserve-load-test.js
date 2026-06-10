@@ -5,17 +5,18 @@ import { Counter, Trend } from 'k6/metrics';
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
 const VUS = parseInt(__ENV.VUS || '10');
 const DURATION = __ENV.DURATION || '10m';
+const ITEMS_PER_ORDER = parseInt(__ENV.ITEMS_PER_ORDER || '1');
 
-const reservationsMade = new Counter('reservations_made');
+const ordersMade = new Counter('orders_made');
 const insufficientStock = new Counter('insufficient_stock');
-const reservationDuration = new Trend('reservation_duration', true);
+const orderDuration = new Trend('order_duration', true);
 
 const SEED_ITEMS = [
-    { id: 'item-1', availableQty: 10000 },
-    { id: 'item-2', availableQty: 10000 },
-    { id: 'item-3', availableQty: 10000 },
-    { id: 'item-4', availableQty: 10000 },
-    { id: 'item-5', availableQty: 10000 },
+    { id: 'item-1', availableQty: 1000000 },
+    // { id: 'item-2', availableQty: 1000000 },
+    // { id: 'item-3', availableQty: 1000000 },
+    // { id: 'item-4', availableQty: 1000000 },
+    // { id: 'item-5', availableQty: 1000000 },
 ];
 
 export function setup() {
@@ -38,7 +39,7 @@ export function setup() {
 
 export const options = {
     scenarios: {
-        reserve: {
+        order: {
             executor: 'constant-vus',
             vus: VUS,
             duration: DURATION,
@@ -55,44 +56,48 @@ export default function () {
         return;
     }
 
-    const items = listRes.json('content');
+    const allItems = listRes.json('content');
 
-    if (!items || items.length === 0) {
+    if (!allItems || allItems.length === 0) {
         console.warn('No items in inventory — sleeping 1s');
         sleep(1);
         return;
     }
 
-    const item = items[Math.floor(Math.random() * items.length)];
-    const quantity = Math.floor(Math.random() * 10) + 1;
-    const reservationId = `res-${__VU}-${__ITER}`;
+    // Pick ITEMS_PER_ORDER distinct items at random
+    const shuffled = allItems.slice().sort(() => Math.random() - 0.5);
+    const picked = shuffled.slice(0, Math.min(ITEMS_PER_ORDER, shuffled.length));
+    const orderItems = picked.map(item => ({
+        itemId: item.itemId,
+        quantity: Math.floor(Math.random() * 10) + 1,
+    }));
 
-    const reserveRes = http.post(
-        `${BASE_URL}/inventory/reserve`,
-        JSON.stringify({ id: item.itemId, reservationId, quantity }),
+    const orderRes = http.post(
+        `${BASE_URL}/inventory/orders`,
+        JSON.stringify({ userId: `user-${__VU}`, items: orderItems }),
         { headers: { 'Content-Type': 'application/json' } },
     );
 
-    reservationDuration.add(reserveRes.timings.duration);
+    orderDuration.add(orderRes.timings.duration);
 
-    if (reserveRes.status === 202) {
-        check(reserveRes, { 'reservation ok': () => true });
-        reservationsMade.add(1);
+    if (orderRes.status === 202) {
+        check(orderRes, { 'order ok': () => true });
+        ordersMade.add(1);
         return;
     }
 
-    if (reserveRes.status === 422) {
-        check(reserveRes, { 'reservation ok': () => false });
+    if (orderRes.status === 422) {
+        check(orderRes, { 'order ok': () => false });
         insufficientStock.add(1);
         return;
     }
 
-    if (reserveRes.status === 409) {
-        check(reserveRes, { 'reservation ok': () => false });
-        console.warn(`VU ${__VU} iter ${__ITER}: conflict for reservationId ${reservationId}`);
+    if (orderRes.status === 409) {
+        check(orderRes, { 'order ok': () => false });
+        console.warn(`VU ${__VU} iter ${__ITER}: optimistic lock conflict`);
         return;
     }
 
-    check(reserveRes, { 'reservation ok': () => false });
-    console.error(`VU ${__VU} iter ${__ITER}: unexpected status ${reserveRes.status}`);
+    check(orderRes, { 'order ok': () => false });
+    console.error(`VU ${__VU} iter ${__ITER}: unexpected status ${orderRes.status} body=${orderRes.body}`);
 }

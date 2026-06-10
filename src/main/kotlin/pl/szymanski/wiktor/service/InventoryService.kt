@@ -1,85 +1,53 @@
 package pl.szymanski.wiktor.service
 
-import io.micrometer.core.instrument.MeterRegistry
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.toList
-import kotlinx.coroutines.reactor.awaitSingle
-import org.slf4j.LoggerFactory
 import org.springframework.dao.OptimisticLockingFailureException
+import org.springframework.dao.PessimisticLockingFailureException
 import org.springframework.data.domain.Page
-import org.springframework.data.domain.PageImpl
 import org.springframework.data.domain.Pageable
+import org.springframework.resilience.annotation.Retryable
 import org.springframework.stereotype.Service
 import pl.szymanski.wiktor.domain.InventoryItem
-import pl.szymanski.wiktor.exception.OptimisticLockExhaustedException
 import pl.szymanski.wiktor.repository.InventoryRepository
 import pl.szymanski.wiktor.service.command.CreateInventoryItemCommandHandler
 import pl.szymanski.wiktor.service.command.CreateItemCommand
+import pl.szymanski.wiktor.service.command.CreateOrderReservationCommand
+import pl.szymanski.wiktor.service.command.CreateOrderReservationCommandHandler
 import pl.szymanski.wiktor.service.command.ReserveInventoryItemCommandHandler
 import pl.szymanski.wiktor.service.command.ReserveItemCommand
-import kotlin.math.min
-import kotlin.random.Random
-import kotlin.time.Duration.Companion.milliseconds
 
 @Service
 class InventoryService(
-	private val inventoryRepository: InventoryRepository,
-	private val createInventoryItemCommandHandler: CreateInventoryItemCommandHandler,
-	private val reserveInventoryItemCommandHandler: ReserveInventoryItemCommandHandler,
-	private val meterRegistry: MeterRegistry,
+    private val inventoryRepository: InventoryRepository,
+    private val createInventoryItemCommandHandler: CreateInventoryItemCommandHandler,
+    private val reserveInventoryItemCommandHandler: ReserveInventoryItemCommandHandler,
+    private val createOrderReservationCommandHandler: CreateOrderReservationCommandHandler,
 ) {
-    private val log = LoggerFactory.getLogger(this::class.java)
+    fun createItem(command: CreateItemCommand): InventoryItem =
+        createInventoryItemCommandHandler.handle(command)
 
-	suspend fun createItem(command: CreateItemCommand): InventoryItem =
-        withOptimisticRetry(command.correlationId.toString()) { createInventoryItemCommandHandler.handle(command) }
+    fun getItem(itemId: String): InventoryItem? =
+        inventoryRepository.findById(itemId).orElse(null)
 
-	suspend fun getItem(itemId: String): InventoryItem? =
-		inventoryRepository.findById(itemId).awaitSingle()
+    fun getItems(pageable: Pageable): Page<InventoryItem> =
+        inventoryRepository.findAll(pageable)
 
-	suspend fun getItems(pageable: Pageable): Page<InventoryItem> {
-		val items = inventoryRepository.findAllBy(pageable).collectList().awaitSingle()
-		val total = inventoryRepository.count().awaitSingle()
-		return PageImpl(items, pageable, total)
-	}
+    @Retryable(
+        includes = [OptimisticLockingFailureException::class],
+        maxRetries = 4,
+        delay = 25,
+        multiplier = 2.0,
+        maxDelay = 500,
+    )
+    fun reserveItem(command: ReserveItemCommand): String =
+        reserveInventoryItemCommandHandler.handle(command)
 
-	suspend fun reserveItem(command: ReserveItemCommand) =
-        withOptimisticRetry(command.correlationId.toString()) { reserveInventoryItemCommandHandler.handle(command) }
-
-    suspend fun <T> withOptimisticRetry(
-        correlationId: String,
-        maxAttempts: Int = 5,
-        initialBackoffMs: Long = 25,
-        maxBackoffMs: Long = 500,
-        operation: suspend () -> T,
-    ): T {
-        var attempt = 0
-        var backoffMs = initialBackoffMs
-        var lastError: OptimisticLockingFailureException? = null
-
-        while (attempt < maxAttempts) {
-            try {
-                return operation()
-            } catch (e: OptimisticLockingFailureException) {
-                log.info(
-                    "[RETRY] attempt={} failed for correlationId={}",
-                    attempt, correlationId
-                )
-                meterRegistry.counter("inventory.optimistic.retry").increment()
-
-                lastError = e
-                attempt++
-
-                if (attempt >= maxAttempts) break
-
-                val jitterMs = Random.nextLong(0, backoffMs / 2 + 1)
-                delay((backoffMs + jitterMs).milliseconds)
-                backoffMs = min(backoffMs * 2, maxBackoffMs)
-            }
-        }
-
-        meterRegistry.counter("inventory.optimistic.exhausted").increment()
-        throw OptimisticLockExhaustedException(
-            "Optimistic lock retries exhausted after $maxAttempts attempts"
-        ).also { it.initCause(lastError) }
-    }
+    @Retryable(
+        includes = [OptimisticLockingFailureException::class, PessimisticLockingFailureException::class],
+        maxRetries = 4,
+        delay = 25,
+        multiplier = 2.0,
+        maxDelay = 500,
+    )
+    fun createOrderReservation(command: CreateOrderReservationCommand): String =
+        createOrderReservationCommandHandler.handle(command)
 }

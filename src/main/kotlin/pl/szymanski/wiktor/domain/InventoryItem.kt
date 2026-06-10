@@ -5,8 +5,13 @@ import org.springframework.data.annotation.Version
 import org.springframework.data.relational.core.mapping.Column
 import org.springframework.data.relational.core.mapping.Table
 import pl.szymanski.wiktor.exception.InsufficientStockException
-import pl.szymanski.wiktor.exception.ReservationForThatItemAlreadyExistsException
 import java.util.UUID
+
+data class ReserveResult(
+    val updatedItem: InventoryItem,
+    val reservation: Reservation,
+    val event: InventoryReservedEvent,
+)
 
 @Table("inventory_state")
 data class InventoryItem(
@@ -14,11 +19,18 @@ data class InventoryItem(
     @Column("item_id")
     val id: String,
     val availableQty: Int,
-    val reservations: Map<String, Int> = mapOf(),
     @Version
     val version: Long = 0L,
 ) {
-    fun reserve(reservationId: String, quantity: Int, correlationId: UUID): Pair<InventoryItem, InventoryReservedEvent> {
+    fun reserve(
+        reservationId: String,
+        quantity: Int,
+        correlationId: UUID,
+    ): ReserveResult {
+        if (quantity <= 0) {
+            throw IllegalArgumentException("Quantity must be greater than 0")
+        }
+
         if (quantity > availableQty) {
             throw InsufficientStockException(
                 "Not enough stock of item $id (availableQty: $availableQty)" +
@@ -26,15 +38,11 @@ data class InventoryItem(
             )
         }
 
-        if (reservations.containsKey(reservationId)) {
-            throw ReservationForThatItemAlreadyExistsException("Reservation $reservationId already exists for item $id")
-        }
-
-        return Pair(
-            copy(
-                availableQty = availableQty - quantity,
-                reservations = reservations + (reservationId to quantity),
-            ), InventoryReservedEvent(id, reservationId, quantity, correlationId))
+        return ReserveResult(
+            updatedItem = copy(availableQty = availableQty - quantity),
+            reservation = Reservation(itemId = id, reservationId = reservationId, quantity = quantity),
+            event = InventoryReservedEvent(id, reservationId, quantity, correlationId),
+        )
     }
 
     companion object {
