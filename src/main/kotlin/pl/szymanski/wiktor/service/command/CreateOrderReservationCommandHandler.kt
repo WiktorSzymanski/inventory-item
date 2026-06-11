@@ -67,6 +67,7 @@ class CreateOrderReservationCommandHandler(
         inventoryRepo.saveAll(results.map { it.updatedItem })
         reservationRepo.saveAll(results.map { it.reservation })
 
+        results.forEach { applicationEventPublisher.publishEvent(it.event) }
         applicationEventPublisher.publishEvent(
             OrderReservationCreatedEvent(
                 orderId = orderId,

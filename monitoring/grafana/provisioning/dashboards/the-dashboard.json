@@ -256,7 +256,7 @@
     },
     {
       "id": 10,
-      "title": "POST /inventory/reserve — Response Counts by Status",
+      "title": "POST /inventory/orders — Response Counts by Status",
       "type": "timeseries",
       "gridPos": { "x": 0, "y": 44, "w": 24, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -287,7 +287,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(http_server_requests_seconds_count{method=\"POST\",uri=\"/inventory/reserve\"}[1m])) by (status)",
+          "expr": "sum(rate(http_server_requests_seconds_count{method=\"POST\",uri=\"/inventory/orders\"}[1m])) by (status)",
           "legendFormat": "HTTP {{status}}",
           "refId": "A"
         }

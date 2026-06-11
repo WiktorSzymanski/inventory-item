@@ -12,7 +12,6 @@ import pl.szymanski.wiktor.exception.InsufficientStockException
 import pl.szymanski.wiktor.exception.ItemAlreadyExistsException
 import pl.szymanski.wiktor.exception.NotFoundException
 import pl.szymanski.wiktor.exception.OptimisticLockExhaustedException
-import pl.szymanski.wiktor.exception.ReservationForThatItemAlreadyExistsException
 
 data class ErrorResponse(val message: String)
 
@@ -25,7 +24,6 @@ class GlobalExceptionHandler(private val meterRegistry: MeterRegistry) {
             "NotFoundException",
             "ItemAlreadyExistsException",
             "InsufficientStockException",
-            "ReservationForThatItemAlreadyExistsException",
             "OptimisticLockExhaustedException",
             "OptimisticLockingFailureException",
         ).forEach { exceptionCounter(it) }
@@ -56,14 +54,6 @@ class GlobalExceptionHandler(private val meterRegistry: MeterRegistry) {
         log.warn("Insufficient stock: {}", e.message)
         exceptionCounter("InsufficientStockException").increment()
         return ErrorResponse(e.message ?: "Insufficient stock")
-    }
-
-    @ExceptionHandler(ReservationForThatItemAlreadyExistsException::class)
-    @ResponseStatus(HttpStatus.OK)
-    fun handleDuplicateReservation(e: ReservationForThatItemAlreadyExistsException): ErrorResponse {
-        log.info("Duplicate reservation (idempotent): {}", e.message)
-        exceptionCounter("ReservationForThatItemAlreadyExistsException").increment()
-        return ErrorResponse(e.message ?: "Reservation already exists")
     }
 
     @ExceptionHandler(OptimisticLockExhaustedException::class)

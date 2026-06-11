@@ -67,23 +67,24 @@ class ApplicationTest {
     }
 
     @Test
-    fun `POST reserve returns 202 on success`() {
-        every { inventoryService.reserveItem(any()) } returns "RES-1"
+    fun `POST orders returns 202 on success`() {
+        every { inventoryService.createOrderReservation(any()) } returns "ORDER-1"
 
-        mockMvc.perform(post("/inventory/reserve")
+        mockMvc.perform(post("/inventory/orders")
             .contentType(MediaType.APPLICATION_JSON)
-            .content("""{"id":"ITEM-001","reservationId":"RES-1","quantity":5}"""))
+            .content("""{"userId":"USER-1","items":[{"itemId":"ITEM-001","quantity":5}]}"""))
             .andExpect(status().isAccepted)
+            .andExpect(jsonPath("$.orderId").value("ORDER-1"))
     }
 
     @Test
-    fun `POST reserve returns 404 when item not found`() {
-        every { inventoryService.reserveItem(any()) } throws
+    fun `POST orders returns 404 when item not found`() {
+        every { inventoryService.createOrderReservation(any()) } throws
             NotFoundException("Item MISSING not found")
 
-        mockMvc.perform(post("/inventory/reserve")
+        mockMvc.perform(post("/inventory/orders")
             .contentType(MediaType.APPLICATION_JSON)
-            .content("""{"id":"MISSING","reservationId":"RES-1","quantity":1}"""))
+            .content("""{"userId":"USER-1","items":[{"itemId":"MISSING","quantity":1}]}"""))
             .andExpect(status().isNotFound)
     }
 }

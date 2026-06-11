@@ -12,14 +12,11 @@ import pl.szymanski.wiktor.service.command.CreateInventoryItemCommandHandler
 import pl.szymanski.wiktor.service.command.CreateItemCommand
 import pl.szymanski.wiktor.service.command.CreateOrderReservationCommand
 import pl.szymanski.wiktor.service.command.CreateOrderReservationCommandHandler
-import pl.szymanski.wiktor.service.command.ReserveInventoryItemCommandHandler
-import pl.szymanski.wiktor.service.command.ReserveItemCommand
 
 @Service
 class InventoryService(
     private val inventoryRepository: InventoryRepository,
     private val createInventoryItemCommandHandler: CreateInventoryItemCommandHandler,
-    private val reserveInventoryItemCommandHandler: ReserveInventoryItemCommandHandler,
     private val createOrderReservationCommandHandler: CreateOrderReservationCommandHandler,
 ) {
     fun createItem(command: CreateItemCommand): InventoryItem =
@@ -30,16 +27,6 @@ class InventoryService(
 
     fun getItems(pageable: Pageable): Page<InventoryItem> =
         inventoryRepository.findAll(pageable)
-
-    @Retryable(
-        includes = [OptimisticLockingFailureException::class],
-        maxRetries = 4,
-        delay = 25,
-        multiplier = 2.0,
-        maxDelay = 500,
-    )
-    fun reserveItem(command: ReserveItemCommand): String =
-        reserveInventoryItemCommandHandler.handle(command)
 
     @Retryable(
         includes = [OptimisticLockingFailureException::class, PessimisticLockingFailureException::class],
