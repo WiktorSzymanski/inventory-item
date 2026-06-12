@@ -26,7 +26,9 @@ class CreateInventoryItemCommandHandler(
     meterRegistry: MeterRegistry,
 ) {
     private val log = LoggerFactory.getLogger(this::class.java)
-    private val appendSuccessCounter: Counter = meterRegistry.counter("inventory.append.success")
+    // Name must not end in "created": the Prometheus client strips that suffix
+    // (reserved for OpenMetrics created-timestamp series), mangling the metric.
+    private val itemCreatedCounter: Counter = meterRegistry.counter("inventory.item.create.success")
 
     @Transactional(propagation = Propagation.REQUIRED, rollbackFor = [Exception::class])
     fun handle(command: CreateItemCommand): InventoryItem {
@@ -39,7 +41,7 @@ class CreateInventoryItemCommandHandler(
             throw ItemAlreadyExistsException("Item ${command.id} already exists")
         }
         applicationEventPublisher.publishEvent(event)
-        appendSuccessCounter.increment()
+        itemCreatedCounter.increment()
         log.info("[CREATE] success itemId={} correlationId={}", item.id, command.correlationId)
         return item
     }

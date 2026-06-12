@@ -39,6 +39,10 @@ class CreateOrderReservationCommandHandler(
     private val dbFetchTimer: Timer = Timer.builder("state_load_time")
         .tag("source", "db_fetch")
         .register(meterRegistry)
+    private val dbWriteTimer: Timer = Timer.builder("state_persist_time")
+        .tag("source", "db_write")
+        .register(meterRegistry)
+    private val outboxWriteTimer: Timer = meterRegistry.timer("outbox.write.time")
     private val appendSuccessCounter: Counter = meterRegistry.counter("inventory.append.success")
 
     @Transactional(propagation = Propagation.REQUIRED, rollbackFor = [Exception::class])
@@ -55,10 +59,15 @@ class CreateOrderReservationCommandHandler(
             item.reserve(orderId, orderItem.quantity, command.correlationId)
         }
 
+        val dbWriteStartNs = System.nanoTime()
         inventoryRepo.saveAll(results.map { it.updatedItem })
         reservationRepo.saveAll(results.map { it.reservation })
         orderRepo.updateStatus(orderId, OrderStatus.CONFIRMED, null)
+        dbWriteTimer.record(System.nanoTime() - dbWriteStartNs, TimeUnit.NANOSECONDS)
 
+        // publishEvent inserts into event_publication synchronously inside this transaction,
+        // so this timer captures the outbox write overhead of the TO pattern.
+        val outboxStartNs = System.nanoTime()
         results.forEach { applicationEventPublisher.publishEvent(it.event) }
         applicationEventPublisher.publishEvent(
             OrderReservationCreatedEvent(
@@ -68,6 +77,7 @@ class CreateOrderReservationCommandHandler(
                 correlationId = command.correlationId,
             )
         )
+        outboxWriteTimer.record(System.nanoTime() - outboxStartNs, TimeUnit.NANOSECONDS)
 
         appendSuccessCounter.increment()
         log.info("[ORDER] confirmed orderId={} correlationId={}", orderId, command.correlationId)
