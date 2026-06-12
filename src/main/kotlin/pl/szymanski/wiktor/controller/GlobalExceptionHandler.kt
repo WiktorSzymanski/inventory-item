@@ -11,12 +11,15 @@ import org.springframework.web.bind.annotation.RestControllerAdvice
 import pl.szymanski.wiktor.exception.InsufficientStockException
 import pl.szymanski.wiktor.exception.ItemAlreadyExistsException
 import pl.szymanski.wiktor.exception.NotFoundException
+import java.util.concurrent.ConcurrentHashMap
 
 data class ErrorResponse(val message: String)
 
 @RestControllerAdvice
 class GlobalExceptionHandler(private val meterRegistry: MeterRegistry) {
     private val log = LoggerFactory.getLogger(this::class.java)
+
+    private val exceptionCounters = ConcurrentHashMap<String, Counter>()
 
     init {
         listOf(
@@ -28,34 +31,33 @@ class GlobalExceptionHandler(private val meterRegistry: MeterRegistry) {
     }
 
     private fun exceptionCounter(type: String): Counter =
-        Counter.builder("inventory.exception").tag("type", type).register(meterRegistry)
+        exceptionCounters.computeIfAbsent(type) {
+            Counter.builder("inventory.exception").tag("type", it).register(meterRegistry)
+        }
 
-    private fun respond(e: Exception, logPrefix: String, fallbackMessage: String): ErrorResponse {
+    private fun respond(e: Exception, logPrefix: String, message: String): ErrorResponse {
         log.warn("{}: {}", logPrefix, e.message)
         exceptionCounter(e.javaClass.simpleName).increment()
-        return ErrorResponse(e.message ?: fallbackMessage)
+        return ErrorResponse(message)
     }
 
     @ExceptionHandler(NotFoundException::class)
     @ResponseStatus(HttpStatus.NOT_FOUND)
     fun handleNotFound(e: NotFoundException): ErrorResponse =
-        respond(e, "Not found", "Not found")
+        respond(e, "Not found", e.message ?: "Not found")
 
     @ExceptionHandler(ItemAlreadyExistsException::class)
     @ResponseStatus(HttpStatus.CONFLICT)
     fun handleItemAlreadyExists(e: ItemAlreadyExistsException): ErrorResponse =
-        respond(e, "Item already exists", "Item already exists")
+        respond(e, "Item already exists", e.message ?: "Item already exists")
 
     @ExceptionHandler(InsufficientStockException::class)
     @ResponseStatus(HttpStatus.UNPROCESSABLE_ENTITY)
     fun handleInsufficientStock(e: InsufficientStockException): ErrorResponse =
-        respond(e, "Insufficient stock", "Insufficient stock")
+        respond(e, "Insufficient stock", e.message ?: "Insufficient stock")
 
     @ExceptionHandler(TaskRejectedException::class)
     @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
-    fun handleTaskRejected(e: TaskRejectedException): ErrorResponse {
-        log.warn("Order worker queue full: {}", e.message)
-        exceptionCounter("TaskRejectedException").increment()
-        return ErrorResponse("Order processing queue is full, please retry later")
-    }
+    fun handleTaskRejected(e: TaskRejectedException): ErrorResponse =
+        respond(e, "Order worker queue full", "Order processing queue is full, please retry later")
 }

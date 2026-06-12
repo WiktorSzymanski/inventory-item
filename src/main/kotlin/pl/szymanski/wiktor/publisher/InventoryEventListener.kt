@@ -11,6 +11,7 @@ import pl.szymanski.wiktor.domain.InventoryReservedEvent
 import pl.szymanski.wiktor.domain.OrderReservationCreatedEvent
 import java.time.Duration
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 
 @Component
 class InventoryEventListener(
@@ -18,6 +19,8 @@ class InventoryEventListener(
     private val meterRegistry: MeterRegistry,
 ) {
     private val log = LoggerFactory.getLogger(this::class.java)
+
+    private val lagTimers = ConcurrentHashMap<String, Timer>()
 
     @ApplicationModuleListener
     fun on(event: InventoryCreatedEvent) = publish("inventory-events", event.id, event, event.createdAt)
@@ -38,11 +41,12 @@ class InventoryEventListener(
     }
 
     private fun recordLag(eventType: String, createdAt: Instant) {
-        Timer.builder("outbox.publish.lag")
-            .tag("eventType", eventType)
-            .publishPercentileHistogram(true)
-            .maximumExpectedValue(Duration.ofMinutes(10))
-            .register(meterRegistry)
-            .record(Duration.between(createdAt, Instant.now()))
+        lagTimers.computeIfAbsent(eventType) {
+            Timer.builder("outbox.publish.lag")
+                .tag("eventType", it)
+                .publishPercentileHistogram(true)
+                .maximumExpectedValue(Duration.ofMinutes(10))
+                .register(meterRegistry)
+        }.record(Duration.between(createdAt, Instant.now()))
     }
 }

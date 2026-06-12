@@ -45,15 +45,11 @@ class CreateOrderReservationCommandHandler(
     fun handle(orderId: String, command: CreateOrderReservationCommand) {
         log.info("[ORDER] processing orderId={} userId={} itemCount={} correlationId={}", orderId, command.userId, command.items.size, command.correlationId)
 
-        // Sort by itemId so all concurrent transactions acquire row locks in the same order,
-        // preventing circular-wait deadlocks.
-        val sortedItems = command.items.sortedBy { it.itemId }
-
         val dbStartNs = System.nanoTime()
-        val foundItems = inventoryRepo.findAllById(sortedItems.map { it.itemId }).associateBy { it.id }
+        val foundItems = inventoryRepo.findAllById(command.items.map { it.itemId }).associateBy { it.id }
         dbFetchTimer.record(System.nanoTime() - dbStartNs, TimeUnit.NANOSECONDS)
 
-        val results = sortedItems.map { orderItem ->
+        val results = command.items.map { orderItem ->
             val item = foundItems[orderItem.itemId]
                 ?: throw NotFoundException("Item ${orderItem.itemId} not found")
             item.reserve(orderId, orderItem.quantity, command.correlationId)
@@ -61,7 +57,7 @@ class CreateOrderReservationCommandHandler(
 
         inventoryRepo.saveAll(results.map { it.updatedItem })
         reservationRepo.saveAll(results.map { it.reservation })
-        orderRepo.updateStatus(orderId, OrderStatus.CONFIRMED.name, null)
+        orderRepo.updateStatus(orderId, OrderStatus.CONFIRMED, null)
 
         results.forEach { applicationEventPublisher.publishEvent(it.event) }
         applicationEventPublisher.publishEvent(

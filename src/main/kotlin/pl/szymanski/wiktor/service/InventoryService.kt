@@ -38,8 +38,7 @@ class InventoryService(
 ) {
     private val log = LoggerFactory.getLogger(this::class.java)
 
-    private val processingTimer: Timer = Timer.builder("order.processing.time")
-        .register(meterRegistry)
+    private val processingTimer: Timer = meterRegistry.timer("order.processing.time")
 
     fun createItem(command: CreateItemCommand): InventoryItem =
         createInventoryItemCommandHandler.handle(command)
@@ -59,24 +58,26 @@ class InventoryService(
         // Committed before the task is submitted, so the worker always sees the row.
         orderRepository.save(Order(orderId = orderId, userId = command.userId))
         try {
-            orderWorkerExecutor.execute {
-                val sample = Timer.start()
-                try {
-                    self.getObject().processOrder(orderId, command)
-                } catch (e: Exception) {
-                    log.warn("[ORDER] rejected orderId={} reason={} correlationId={}", orderId, e.message, command.correlationId)
-                    meterRegistry.counter("inventory.exception", "type", e.javaClass.simpleName).increment()
-                    orderRepository.updateStatus(orderId, OrderStatus.REJECTED.name, e.message)
-                } finally {
-                    sample.stop(processingTimer)
-                }
-            }
+            orderWorkerExecutor.execute { runOrderTask(orderId, command) }
         } catch (e: TaskRejectedException) {
             log.warn("[ORDER] worker queue full, rejecting orderId={} correlationId={}", orderId, command.correlationId)
-            orderRepository.updateStatus(orderId, OrderStatus.REJECTED.name, "worker queue full")
+            orderRepository.updateStatus(orderId, OrderStatus.REJECTED, "worker queue full")
             throw e
         }
         return orderId
+    }
+
+    private fun runOrderTask(orderId: String, command: CreateOrderReservationCommand) {
+        val sample = Timer.start()
+        try {
+            self.getObject().processOrder(orderId, command)
+        } catch (e: Exception) {
+            log.warn("[ORDER] rejected orderId={} reason={} correlationId={}", orderId, e.message, command.correlationId)
+            meterRegistry.counter("inventory.exception", "type", e.javaClass.simpleName).increment()
+            orderRepository.updateStatus(orderId, OrderStatus.REJECTED, e.message)
+        } finally {
+            sample.stop(processingTimer)
+        }
     }
 
     @Retryable(

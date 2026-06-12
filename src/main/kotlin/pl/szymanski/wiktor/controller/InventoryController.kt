@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
+import pl.szymanski.wiktor.domain.OrderStatus
 import pl.szymanski.wiktor.service.InventoryService
 import pl.szymanski.wiktor.service.command.CreateItemCommand
 import pl.szymanski.wiktor.service.command.CreateOrderReservationCommand
@@ -24,7 +25,7 @@ data class CreateOrderRequest(val userId: String, val items: List<OrderItemReque
 data class InventoryResponse(val itemId: String, val availableQty: Int, val version: Long)
 data class CreateItemResponse(val itemId: String, val availableQty: Int)
 data class CreateOrderResponse(val orderId: String)
-data class OrderStatusResponse(val orderId: String, val status: String, val failureReason: String?)
+data class OrderStatusResponse(val orderId: String, val status: OrderStatus, val failureReason: String?)
 
 @RestController
 @RequestMapping("/inventory")
@@ -82,6 +83,6 @@ class InventoryController(
                 log.info("GET /inventory/orders/{} not found", orderId)
                 return ResponseEntity.notFound().build()
             }
-        return ResponseEntity.ok(OrderStatusResponse(order.orderId, order.status.name, order.failureReason))
+        return ResponseEntity.ok(OrderStatusResponse(order.orderId, order.status, order.failureReason))
     }
 }
