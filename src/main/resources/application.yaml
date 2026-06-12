@@ -6,6 +6,8 @@ spring:
     username: ${DB_USER:inventory}
     password: ${DB_PASSWORD:inventory}
     driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: ${DB_MAX_CONNECTIONS:50}  # max open DB connections in the pool
   flyway:
     url: ${DB_JDBC_URL:jdbc:postgresql://localhost:5432/inventory}
     user: ${DB_USER:inventory}
@@ -15,6 +17,11 @@ spring:
   modulith:
     events:
       polling-interval: PT30S   # interval between polling runs; tune per your latency requirement
+
+app:
+  order-worker:
+    threads: ${ORDER_WORKER_THREADS:200}                   # worker pool processing accepted orders
+    queue-capacity: ${ORDER_WORKER_QUEUE_CAPACITY:1000}  # pending tasks beyond busy workers; full queue -> 503
 
 management:
   endpoints:
@@ -27,12 +34,16 @@ management:
         http.server.requests: true
         outbox.publish.lag: true
         state_load_time: true
-        inventory.optimistic.retry.duration: true
+        order.processing.time: true
       maximum-expected-value:
         outbox.publish.lag: 10m
 
 server:
   port: 8080
+  tomcat:
+    threads:
+      max: ${HTTP_THREADS:200}        # threads answering HTTP requests
+      min-spare: ${HTTP_THREADS:16}
 
 springdoc:
   swagger-ui:

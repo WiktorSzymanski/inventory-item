@@ -24,6 +24,7 @@ data class CreateOrderRequest(val userId: String, val items: List<OrderItemReque
 data class InventoryResponse(val itemId: String, val availableQty: Int, val version: Long)
 data class CreateItemResponse(val itemId: String, val availableQty: Int)
 data class CreateOrderResponse(val orderId: String)
+data class OrderStatusResponse(val orderId: String, val status: String, val failureReason: String?)
 
 @RestController
 @RequestMapping("/inventory")
@@ -63,7 +64,7 @@ class InventoryController(
     @PostMapping("/orders")
     fun createOrder(@RequestBody request: CreateOrderRequest): ResponseEntity<CreateOrderResponse> {
         log.info("POST /inventory/orders userId={} itemCount={}", request.userId, request.items.size)
-        val orderId = inventoryService.createOrderReservation(
+        val orderId = inventoryService.acceptOrder(
             CreateOrderReservationCommand(
                 userId = request.userId,
                 items = request.items.map { OrderItem(it.itemId, it.quantity) },
@@ -71,5 +72,16 @@ class InventoryController(
         )
         log.info("POST /inventory/orders accepted orderId={}", orderId)
         return ResponseEntity.accepted().body(CreateOrderResponse(orderId))
+    }
+
+    @GetMapping("/orders/{orderId}")
+    fun getOrder(@PathVariable orderId: String): ResponseEntity<OrderStatusResponse> {
+        log.debug("GET /inventory/orders/{}", orderId)
+        val order = inventoryService.getOrder(orderId)
+            ?: run {
+                log.info("GET /inventory/orders/{} not found", orderId)
+                return ResponseEntity.notFound().build()
+            }
+        return ResponseEntity.ok(OrderStatusResponse(order.orderId, order.status.name, order.failureReason))
     }
 }

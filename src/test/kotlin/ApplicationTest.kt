@@ -10,11 +10,13 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
+import org.springframework.core.task.TaskRejectedException
 import pl.szymanski.wiktor.controller.GlobalExceptionHandler
 import pl.szymanski.wiktor.controller.InventoryController
 import pl.szymanski.wiktor.domain.InventoryItem
+import pl.szymanski.wiktor.domain.Order
+import pl.szymanski.wiktor.domain.OrderStatus
 import pl.szymanski.wiktor.exception.ItemAlreadyExistsException
-import pl.szymanski.wiktor.exception.NotFoundException
 import pl.szymanski.wiktor.service.InventoryService
 
 class ApplicationTest {
@@ -68,7 +70,7 @@ class ApplicationTest {
 
     @Test
     fun `POST orders returns 202 on success`() {
-        every { inventoryService.createOrderReservation(any()) } returns "ORDER-1"
+        every { inventoryService.acceptOrder(any()) } returns "ORDER-1"
 
         mockMvc.perform(post("/inventory/orders")
             .contentType(MediaType.APPLICATION_JSON)
@@ -78,13 +80,33 @@ class ApplicationTest {
     }
 
     @Test
-    fun `POST orders returns 404 when item not found`() {
-        every { inventoryService.createOrderReservation(any()) } throws
-            NotFoundException("Item MISSING not found")
+    fun `POST orders returns 503 when worker queue is full`() {
+        every { inventoryService.acceptOrder(any()) } throws
+            TaskRejectedException("queue full")
 
         mockMvc.perform(post("/inventory/orders")
             .contentType(MediaType.APPLICATION_JSON)
-            .content("""{"userId":"USER-1","items":[{"itemId":"MISSING","quantity":1}]}"""))
+            .content("""{"userId":"USER-1","items":[{"itemId":"ITEM-001","quantity":5}]}"""))
+            .andExpect(status().isServiceUnavailable)
+    }
+
+    @Test
+    fun `GET order returns 200 with status`() {
+        every { inventoryService.getOrder("ORDER-1") } returns
+            Order("ORDER-1", "USER-1", OrderStatus.REJECTED, "Item MISSING not found")
+
+        mockMvc.perform(get("/inventory/orders/ORDER-1"))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.orderId").value("ORDER-1"))
+            .andExpect(jsonPath("$.status").value("REJECTED"))
+            .andExpect(jsonPath("$.failureReason").value("Item MISSING not found"))
+    }
+
+    @Test
+    fun `GET order returns 404 when unknown`() {
+        every { inventoryService.getOrder("MISSING") } returns null
+
+        mockMvc.perform(get("/inventory/orders/MISSING"))
             .andExpect(status().isNotFound)
     }
 }

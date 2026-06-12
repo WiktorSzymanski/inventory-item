@@ -20,33 +20,21 @@ class InventoryEventListener(
     private val log = LoggerFactory.getLogger(this::class.java)
 
     @ApplicationModuleListener
-    fun on(event: InventoryCreatedEvent) {
-        val payload = objectMapper.writeValueAsString(event)
-        log.info(
-            "[MOCK-KAFKA] topic=inventory-events key={} type={} payload={}",
-            event.id, event.javaClass.simpleName, payload,
-        )
-        recordLag(event.javaClass.simpleName, event.createdAt)
-    }
+    fun on(event: InventoryCreatedEvent) = publish("inventory-events", event.id, event, event.createdAt)
 
     @ApplicationModuleListener
-    fun on(event: InventoryReservedEvent) {
-        val payload = objectMapper.writeValueAsString(event)
-        log.info(
-            "[MOCK-KAFKA] topic=inventory-events key={} type={} payload={}",
-            event.id, event.javaClass.simpleName, payload,
-        )
-        recordLag(event.javaClass.simpleName, event.createdAt)
-    }
+    fun on(event: InventoryReservedEvent) = publish("inventory-events", event.id, event, event.createdAt)
 
     @ApplicationModuleListener
-    fun on(event: OrderReservationCreatedEvent) {
+    fun on(event: OrderReservationCreatedEvent) = publish("order-events", event.orderId, event, event.createdAt)
+
+    private fun publish(topic: String, key: String, event: Any, createdAt: Instant) {
         val payload = objectMapper.writeValueAsString(event)
         log.info(
-            "[MOCK-KAFKA] topic=order-events key={} type={} payload={}",
-            event.orderId, event.javaClass.simpleName, payload,
+            "[MOCK-KAFKA] topic={} key={} type={} payload={}",
+            topic, key, event.javaClass.simpleName, payload,
         )
-        recordLag(event.javaClass.simpleName, event.createdAt)
+        recordLag(event.javaClass.simpleName, createdAt)
     }
 
     private fun recordLag(eventType: String, createdAt: Instant) {

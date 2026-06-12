@@ -8,8 +8,8 @@ import org.springframework.context.ApplicationEventPublisher
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
-import pl.szymanski.wiktor.domain.Order
 import pl.szymanski.wiktor.domain.OrderReservationCreatedEvent
+import pl.szymanski.wiktor.domain.OrderStatus
 import pl.szymanski.wiktor.domain.ReservedItem
 import pl.szymanski.wiktor.exception.NotFoundException
 import pl.szymanski.wiktor.repository.InventoryRepository
@@ -42,9 +42,8 @@ class CreateOrderReservationCommandHandler(
     private val appendSuccessCounter: Counter = meterRegistry.counter("inventory.append.success")
 
     @Transactional(propagation = Propagation.REQUIRED, rollbackFor = [Exception::class])
-    fun handle(command: CreateOrderReservationCommand): String {
-        val orderId = UUID.randomUUID().toString()
-        log.info("[ORDER] orderId={} userId={} itemCount={} correlationId={}", orderId, command.userId, command.items.size, command.correlationId)
+    fun handle(orderId: String, command: CreateOrderReservationCommand) {
+        log.info("[ORDER] processing orderId={} userId={} itemCount={} correlationId={}", orderId, command.userId, command.items.size, command.correlationId)
 
         // Sort by itemId so all concurrent transactions acquire row locks in the same order,
         // preventing circular-wait deadlocks.
@@ -54,18 +53,15 @@ class CreateOrderReservationCommandHandler(
         val foundItems = inventoryRepo.findAllById(sortedItems.map { it.itemId }).associateBy { it.id }
         dbFetchTimer.record(System.nanoTime() - dbStartNs, TimeUnit.NANOSECONDS)
 
-        sortedItems.forEach { orderItem ->
-            if (!foundItems.containsKey(orderItem.itemId))
-                throw NotFoundException("Item ${orderItem.itemId} not found")
-        }
-
         val results = sortedItems.map { orderItem ->
-            foundItems[orderItem.itemId]!!.reserve(orderId, orderItem.quantity, command.correlationId)
+            val item = foundItems[orderItem.itemId]
+                ?: throw NotFoundException("Item ${orderItem.itemId} not found")
+            item.reserve(orderId, orderItem.quantity, command.correlationId)
         }
 
-        orderRepo.save(Order(orderId = orderId, userId = command.userId))
         inventoryRepo.saveAll(results.map { it.updatedItem })
         reservationRepo.saveAll(results.map { it.reservation })
+        orderRepo.updateStatus(orderId, OrderStatus.CONFIRMED.name, null)
 
         results.forEach { applicationEventPublisher.publishEvent(it.event) }
         applicationEventPublisher.publishEvent(
@@ -78,7 +74,6 @@ class CreateOrderReservationCommandHandler(
         )
 
         appendSuccessCounter.increment()
-        log.info("[ORDER] success orderId={} correlationId={}", orderId, command.correlationId)
-        return orderId
+        log.info("[ORDER] confirmed orderId={} correlationId={}", orderId, command.correlationId)
     }
 }

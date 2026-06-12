@@ -3,7 +3,7 @@ package pl.szymanski.wiktor.controller
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.MeterRegistry
 import org.slf4j.LoggerFactory
-import org.springframework.dao.OptimisticLockingFailureException
+import org.springframework.core.task.TaskRejectedException
 import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.ResponseStatus
@@ -11,7 +11,6 @@ import org.springframework.web.bind.annotation.RestControllerAdvice
 import pl.szymanski.wiktor.exception.InsufficientStockException
 import pl.szymanski.wiktor.exception.ItemAlreadyExistsException
 import pl.szymanski.wiktor.exception.NotFoundException
-import pl.szymanski.wiktor.exception.OptimisticLockExhaustedException
 
 data class ErrorResponse(val message: String)
 
@@ -24,59 +23,39 @@ class GlobalExceptionHandler(private val meterRegistry: MeterRegistry) {
             "NotFoundException",
             "ItemAlreadyExistsException",
             "InsufficientStockException",
-            "OptimisticLockExhaustedException",
-            "OptimisticLockingFailureException",
+            "TaskRejectedException",
         ).forEach { exceptionCounter(it) }
     }
 
     private fun exceptionCounter(type: String): Counter =
         Counter.builder("inventory.exception").tag("type", type).register(meterRegistry)
 
+    private fun respond(e: Exception, logPrefix: String, fallbackMessage: String): ErrorResponse {
+        log.warn("{}: {}", logPrefix, e.message)
+        exceptionCounter(e.javaClass.simpleName).increment()
+        return ErrorResponse(e.message ?: fallbackMessage)
+    }
+
     @ExceptionHandler(NotFoundException::class)
     @ResponseStatus(HttpStatus.NOT_FOUND)
-    fun handleNotFound(e: NotFoundException): ErrorResponse {
-        log.warn("Not found: {}", e.message)
-        exceptionCounter("NotFoundException").increment()
-        return ErrorResponse(e.message ?: "Not found")
-    }
+    fun handleNotFound(e: NotFoundException): ErrorResponse =
+        respond(e, "Not found", "Not found")
 
     @ExceptionHandler(ItemAlreadyExistsException::class)
     @ResponseStatus(HttpStatus.CONFLICT)
-    fun handleItemAlreadyExists(e: ItemAlreadyExistsException): ErrorResponse {
-        log.warn("Item already exists: {}", e.message)
-        exceptionCounter("ItemAlreadyExistsException").increment()
-        return ErrorResponse(e.message ?: "Item already exists")
-    }
+    fun handleItemAlreadyExists(e: ItemAlreadyExistsException): ErrorResponse =
+        respond(e, "Item already exists", "Item already exists")
 
     @ExceptionHandler(InsufficientStockException::class)
     @ResponseStatus(HttpStatus.UNPROCESSABLE_ENTITY)
-    fun handleInsufficientStock(e: InsufficientStockException): ErrorResponse {
-        log.warn("Insufficient stock: {}", e.message)
-        exceptionCounter("InsufficientStockException").increment()
-        return ErrorResponse(e.message ?: "Insufficient stock")
-    }
+    fun handleInsufficientStock(e: InsufficientStockException): ErrorResponse =
+        respond(e, "Insufficient stock", "Insufficient stock")
 
-    @ExceptionHandler(OptimisticLockExhaustedException::class)
-    @ResponseStatus(HttpStatus.CONFLICT)
-    fun handleOptimisticLockExhausted(e: OptimisticLockExhaustedException): ErrorResponse {
-        log.warn("Optimistic lock exhausted: {}", e.message)
-        exceptionCounter("OptimisticLockExhaustedException").increment()
-        return ErrorResponse(e.message ?: "Too many concurrent requests, please retry")
-    }
-
-    @ExceptionHandler(OptimisticLockingFailureException::class)
-    @ResponseStatus(HttpStatus.CONFLICT)
-    fun handleOptimisticLockingFailure(e: OptimisticLockingFailureException): ErrorResponse {
-        log.warn("Optimistic lock retries exhausted: {}", e.message)
-        exceptionCounter("OptimisticLockingFailureException").increment()
-        return ErrorResponse("Too many concurrent requests, please retry")
-    }
-
-    @ExceptionHandler(org.springframework.dao.PessimisticLockingFailureException::class)
-    @ResponseStatus(HttpStatus.CONFLICT)
-    fun handlePessimisticLockingFailure(e: org.springframework.dao.PessimisticLockingFailureException): ErrorResponse {
-        log.warn("Deadlock retries exhausted: {}", e.message)
-        exceptionCounter("PessimisticLockingFailureException").increment()
-        return ErrorResponse("Too many concurrent requests, please retry")
+    @ExceptionHandler(TaskRejectedException::class)
+    @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
+    fun handleTaskRejected(e: TaskRejectedException): ErrorResponse {
+        log.warn("Order worker queue full: {}", e.message)
+        exceptionCounter("TaskRejectedException").increment()
+        return ErrorResponse("Order processing queue is full, please retry later")
     }
 }
