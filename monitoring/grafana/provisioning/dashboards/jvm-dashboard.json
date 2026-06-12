@@ -1,0 +1,651 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "links": [],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["jvm", "thesis"],
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "JVM & Runtime Resources",
+  "uid": "jvm-dashboard",
+  "version": 1,
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Process vs System CPU",
+      "description": "JVM process CPU usage vs whole-system CPU usage as seen by the JVM.",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "process_cpu_usage{job=~\"inventory-.*\"}",
+          "legendFormat": "process",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "system_cpu_usage{job=~\"inventory-.*\"}",
+          "legendFormat": "system",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "System Load (1m) vs CPU Cores",
+      "description": "Load average above the core count means runnable threads are queueing for CPU.",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "cpu cores" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } },
+              { "id": "custom.lineStyle", "value": { "dash": [10, 10], "fill": "dash" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "system_load_average_1m{job=~\"inventory-.*\"}",
+          "legendFormat": "load 1m",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "system_cpu_count{job=~\"inventory-.*\"}",
+          "legendFormat": "cpu cores",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Heap Memory by Pool",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "jvm_memory_used_bytes{job=~\"inventory-.*\",area=\"heap\"}",
+          "legendFormat": "{{id}} used",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(jvm_memory_committed_bytes{job=~\"inventory-.*\",area=\"heap\"})",
+          "legendFormat": "heap committed (total)",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Non-Heap Memory by Pool",
+      "description": "Metaspace, code cache and compressed class space — native JVM memory beyond the heap.",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "jvm_memory_used_bytes{job=~\"inventory-.*\",area=\"nonheap\"}",
+          "legendFormat": "{{id}} used",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "GC Pause Time",
+      "description": "Average pause per GC (rate of sum / rate of count) plus the max pause in the scrape window, by action/cause.",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 16, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(jvm_gc_pause_seconds_sum{job=~\"inventory-.*\"}[1m]) / rate(jvm_gc_pause_seconds_count{job=~\"inventory-.*\"}[1m])",
+          "legendFormat": "avg {{action}} ({{cause}})",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "jvm_gc_pause_seconds_max{job=~\"inventory-.*\"}",
+          "legendFormat": "max {{action}} ({{cause}})",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "GC Pressure — Allocation / Promotion / Overhead",
+      "description": "Allocation and promotion rates (left axis, bytes/s) and GC overhead as fraction of CPU time (right axis).",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 16, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "GC overhead" },
+            "properties": [
+              { "id": "unit", "value": "percentunit" },
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(jvm_gc_memory_allocated_bytes_total{job=~\"inventory-.*\"}[1m])",
+          "legendFormat": "allocation rate",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(jvm_gc_memory_promoted_bytes_total{job=~\"inventory-.*\"}[1m])",
+          "legendFormat": "promotion rate",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "jvm_gc_overhead{job=~\"inventory-.*\"}",
+          "legendFormat": "GC overhead",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Live Data After GC",
+      "description": "Long-lived data size vs old generation capacity — steady growth suggests a leak or insufficient heap.",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 16, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "jvm_gc_live_data_size_bytes{job=~\"inventory-.*\"}",
+          "legendFormat": "live data (old gen)",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "jvm_gc_max_data_size_bytes{job=~\"inventory-.*\"}",
+          "legendFormat": "old gen max",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "JVM Threads",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "jvm_threads_live_threads{job=~\"inventory-.*\"}",
+          "legendFormat": "live",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "jvm_threads_daemon_threads{job=~\"inventory-.*\"}",
+          "legendFormat": "daemon",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "jvm_threads_peak_threads{job=~\"inventory-.*\"}",
+          "legendFormat": "peak",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Threads by State",
+      "description": "Spikes in blocked/waiting threads indicate lock contention or threads stalled on I/O.",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "blocked" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "jvm_threads_states_threads{job=~\"inventory-.*\"}",
+          "legendFormat": "{{state}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "In-Flight HTTP Requests",
+      "description": "Requests currently being processed (long-task timer active count). Compare against Tomcat max threads to gauge saturation.",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 32, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(http_server_requests_active_seconds_gcount{job=~\"inventory-.*\"})",
+          "legendFormat": "in-flight requests",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Executor Pools — Threads & Queue",
+      "description": "All monitored executors (worker pools, schedulers). Queue growth with a maxed-out pool means the executor is the bottleneck.",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 32, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "executor_active_threads{job=~\"inventory-.*\"}",
+          "legendFormat": "{{name}} active",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "executor_pool_size_threads{job=~\"inventory-.*\"}",
+          "legendFormat": "{{name}} pool size",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "executor_queued_tasks{job=~\"inventory-.*\"}",
+          "legendFormat": "{{name}} queued",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "HikariCP — Acquire & Usage Time",
+      "description": "Average and max time to obtain a connection from the pool and how long connections are held. Rising acquire time means the pool is too small for the load.",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 40, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hikaricp_connections_acquire_seconds_sum{job=~\"inventory-.*\"}[1m]) / rate(hikaricp_connections_acquire_seconds_count{job=~\"inventory-.*\"}[1m])",
+          "legendFormat": "acquire avg",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hikaricp_connections_acquire_seconds_max{job=~\"inventory-.*\"}",
+          "legendFormat": "acquire max",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hikaricp_connections_usage_seconds_sum{job=~\"inventory-.*\"}[1m]) / rate(hikaricp_connections_usage_seconds_count{job=~\"inventory-.*\"}[1m])",
+          "legendFormat": "usage avg",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hikaricp_connections_usage_seconds_max{job=~\"inventory-.*\"}",
+          "legendFormat": "usage max",
+          "refId": "D"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "HikariCP — Pool Pressure",
+      "description": "Threads waiting for a connection and connection acquisition timeouts.",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 40, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "timeouts/s" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hikaricp_connections_pending{job=~\"inventory-.*\"}",
+          "legendFormat": "pending threads",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hikaricp_connections_timeout_total{job=~\"inventory-.*\"}[1m])",
+          "legendFormat": "timeouts/s",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Log Events by Level",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 48, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "error" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "warn" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (level) (rate(logback_events_total{job=~\"inventory-.*\"}[1m]))",
+          "legendFormat": "{{level}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "Spring Data Repository Invocations (top 10)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 48, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "topk(10, sum by (repository, method) (rate(spring_data_repository_invocations_seconds_count{job=~\"inventory-.*\"}[1m])))",
+          "legendFormat": "{{repository}}.{{method}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "title": "Container CPU (cAdvisor)",
+      "description": "CPU cores consumed by the application and database containers (1.0 = one full core).",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 56, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (name) (rate(container_cpu_usage_seconds_total{name=~\"api-to|postgres-to\"}[1m]))",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "title": "Container Memory Working Set (cAdvisor)",
+      "description": "Real memory footprint per container (JVM heap + native + page cache in active use).",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 56, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "container_memory_working_set_bytes{name=~\"api-to|postgres-to\"}",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "title": "Container Network I/O (cAdvisor)",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 56, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (name) (rate(container_network_receive_bytes_total{name=~\"api-to|postgres-to\"}[1m]))",
+          "legendFormat": "{{name}} rx",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (name) (rate(container_network_transmit_bytes_total{name=~\"api-to|postgres-to\"}[1m]))",
+          "legendFormat": "{{name}} tx",
+          "refId": "B"
+        }
+      ]
+    }
+  ]
+}

@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 GRAFANA_URL = "http://localhost:3000"
 GRAFANA_USER = "admin"
 GRAFANA_PASSWORD = "admin"
-DASHBOARD_UID = "the-dashboard"
+DEFAULT_DASHBOARD_UID = "the-dashboard"
 
 # Approximate step: aim for ~300 data points across the test window.
 TARGET_POINTS = 300
@@ -273,6 +273,10 @@ def main() -> None:
     )
     parser.add_argument("--output", required=True, help="Output path for snapshot JSON")
     parser.add_argument(
+        "--uid", default=DEFAULT_DASHBOARD_UID,
+        help=f"Dashboard UID to snapshot (default: {DEFAULT_DASHBOARD_UID})",
+    )
+    parser.add_argument(
         "--name", default=None, help="Snapshot name (defaults to run-<timestamp>)"
     )
     args = parser.parse_args()
@@ -298,8 +302,8 @@ def main() -> None:
         "%Y-%m-%dT%H:%M:%S.000Z"
     )
 
-    print(f"Fetching dashboard '{DASHBOARD_UID}' from {GRAFANA_URL} ...")
-    dashboard_resp = grafana_get(f"/api/dashboards/uid/{DASHBOARD_UID}")
+    print(f"Fetching dashboard '{args.uid}' from {GRAFANA_URL} ...")
+    dashboard_resp = grafana_get(f"/api/dashboards/uid/{args.uid}")
     dashboard = dashboard_resp["dashboard"]
 
     # Pin the time range to the exact test window so the snapshot always
