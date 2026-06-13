@@ -16,7 +16,8 @@ spring:
     locations: classpath:db/migration
   modulith:
     events:
-      polling-interval: PT30S   # interval between polling runs; tune per your latency requirement
+      republication-interval: PT30S  # how often the backup poller runs
+      republication-min-age: PT1M    # minimum age before a PUBLISHED event is considered orphaned
 
 app:
   order-worker:
