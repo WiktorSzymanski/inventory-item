@@ -7,6 +7,7 @@ spring:
     password: ${DB_PASSWORD:inventory}
     driver-class-name: org.postgresql.Driver
     hikari:
+      # The pg-notify LISTEN session uses its own dedicated connection, not one from this pool.
       maximum-pool-size: ${DB_MAX_CONNECTIONS:50}  # max open DB connections in the pool
   flyway:
     url: ${DB_JDBC_URL:jdbc:postgresql://localhost:5432/inventory}
@@ -16,9 +17,12 @@ spring:
     locations: classpath:db/migration
   modulith:
     events:
-      polling-interval: PT30S   # interval between polling runs; tune per your latency requirement
+      republication-interval: PT1M   # backup poller; NOTIFY/LISTEN is the primary delivery path
+      republication-min-age: PT1M    # minimum age before an incomplete publication is swept
 
 app:
+  event-delivery:
+    threads: ${EVENT_DELIVERY_THREADS:8}                 # workers delivering NOTIFY-pushed publications
   order-worker:
     threads: ${ORDER_WORKER_THREADS:200}                   # worker pool processing accepted orders
     queue-capacity: ${ORDER_WORKER_QUEUE_CAPACITY:1000}  # pending tasks beyond busy workers; full queue -> 503
