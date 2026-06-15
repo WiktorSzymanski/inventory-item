@@ -32,9 +32,6 @@ snapshot:
   enabled: true
   event-count: 30
 
-cache:
-  enabled: true
-
 management:
   endpoints:
     web:

@@ -31,7 +31,7 @@ import org.springframework.transaction.PlatformTransactionManager
 import javax.sql.DataSource
 
 @Configuration
-@EnableConfigurationProperties(SnapshotProperties::class, CacheProperties::class)
+@EnableConfigurationProperties(SnapshotProperties::class)
 class AxonConfig {
 
     @Bean

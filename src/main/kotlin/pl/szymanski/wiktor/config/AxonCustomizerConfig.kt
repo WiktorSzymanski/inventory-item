@@ -1,6 +1,5 @@
 package pl.szymanski.wiktor.config
 
-import org.axonframework.common.caching.NoCache
 import org.axonframework.config.AggregateConfigurer
 import org.axonframework.config.Configurer
 import org.axonframework.config.EventProcessingConfigurer
@@ -13,7 +12,7 @@ import org.springframework.context.annotation.Configuration
 import pl.szymanski.wiktor.domain.InventoryItem
 
 @Configuration
-@EnableConfigurationProperties(CacheProperties::class, SagaProcessorProperties::class)
+@EnableConfigurationProperties(SagaProcessorProperties::class)
 class AxonCustomizerConfig {
 
     @Autowired
@@ -43,16 +42,13 @@ class AxonCustomizerConfig {
     }
 
     @Autowired
-    fun configureInventoryItemCache(
+    fun configureInventoryItem(
         configurer: Configurer,
-        cacheProperties: CacheProperties,
         @Qualifier("inventorySnapshotTrigger") snapshotTrigger: SnapshotTriggerDefinition,
     ) {
-        val cache: org.axonframework.common.caching.Cache =
-            if (cacheProperties.enabled) StrongCache() else NoCache.INSTANCE
+        // No cache configured → Axon uses an uncached EventSourcingRepository for InventoryItem.
         configurer.configureAggregate(
             AggregateConfigurer.defaultConfiguration(InventoryItem::class.java)
-                .configureCache { cache }
                 .configureSnapshotTrigger { snapshotTrigger }
         )
     }
