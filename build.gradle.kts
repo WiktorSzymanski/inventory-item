@@ -31,6 +31,7 @@ dependencies {
     implementation("org.flywaydb:flyway-database-postgresql")
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:3.0.0")
     implementation("tools.jackson.module:jackson-module-kotlin:3.0.4")
+    implementation("com.github.ben-manes.caffeine:caffeine")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test") {
         exclude(group = "org.junit.vintage", module = "junit-vintage-engine")
