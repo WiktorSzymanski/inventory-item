@@ -28,10 +28,6 @@ axon:
     pool:
       size: 150
 
-snapshot:
-  enabled: true
-  event-count: 30
-
 management:
   endpoints:
     web:

@@ -1,15 +1,10 @@
 package pl.szymanski.wiktor.config
 
-import org.axonframework.config.AggregateConfigurer
-import org.axonframework.config.Configurer
 import org.axonframework.config.EventProcessingConfigurer
 import org.axonframework.eventhandling.TrackingEventProcessorConfiguration
-import org.axonframework.eventsourcing.SnapshotTriggerDefinition
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Configuration
-import pl.szymanski.wiktor.domain.InventoryItem
 
 @Configuration
 @EnableConfigurationProperties(SagaProcessorProperties::class)
@@ -39,17 +34,5 @@ class AxonCustomizerConfig {
                 .andInitialTrackingToken { source -> source.createTailToken() }
                 .andBatchSize(100)
         }
-    }
-
-    @Autowired
-    fun configureInventoryItem(
-        configurer: Configurer,
-        @Qualifier("inventorySnapshotTrigger") snapshotTrigger: SnapshotTriggerDefinition,
-    ) {
-        // No cache configured → Axon uses an uncached EventSourcingRepository for InventoryItem.
-        configurer.configureAggregate(
-            AggregateConfigurer.defaultConfiguration(InventoryItem::class.java)
-                .configureSnapshotTrigger { snapshotTrigger }
-        )
     }
 }
