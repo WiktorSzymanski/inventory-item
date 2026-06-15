@@ -46,7 +46,7 @@ class OrderProjectionUpdater(
     @Transactional("axonSpringTransactionManager")
     fun on(event: OrderCompletedEvent, @Timestamp timestamp: Instant) {
         jdbcTemplate.update(
-            "UPDATE orders SET status = 'COMPLETED' WHERE order_id = :orderId",
+            "UPDATE orders SET status = 'CONFIRMED' WHERE order_id = :orderId",
             mapOf("orderId" to event.orderId)
         )
         recordLag(timestamp, "OrderCompletedEvent")
@@ -56,8 +56,8 @@ class OrderProjectionUpdater(
     @Transactional("axonSpringTransactionManager")
     fun on(event: OrderFailedEvent, @Timestamp timestamp: Instant) {
         jdbcTemplate.update(
-            "UPDATE orders SET status = 'FAILED' WHERE order_id = :orderId",
-            mapOf("orderId" to event.orderId)
+            "UPDATE orders SET status = 'REJECTED', failure_reason = :reason WHERE order_id = :orderId",
+            mapOf("orderId" to event.orderId, "reason" to event.reason)
         )
         recordLag(timestamp, "OrderFailedEvent")
     }

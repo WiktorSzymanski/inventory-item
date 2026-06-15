@@ -6,10 +6,8 @@ import org.axonframework.eventsourcing.EventSourcingHandler
 import org.axonframework.modelling.command.AggregateIdentifier
 import org.axonframework.modelling.command.AggregateLifecycle
 import org.axonframework.spring.stereotype.Aggregate
-import pl.szymanski.wiktor.exception.InsufficientStockException
 import pl.szymanski.wiktor.service.command.CreateItemCommand
 import pl.szymanski.wiktor.service.command.ReleaseReservationCommand
-import pl.szymanski.wiktor.service.command.ReserveItemCommand
 import pl.szymanski.wiktor.service.command.SagaReserveItemCommand
 
 // ES-2: Jackson cannot access private Kotlin fields by default — field visibility lets it serialize all aggregate state into the snapshot
@@ -30,16 +28,6 @@ class InventoryItem {
         AggregateLifecycle.apply(
             InventoryCreatedEvent(command.id, command.correlationId, command.availableQty, additionalBytes)
         )
-    }
-
-    @CommandHandler
-    fun handle(command: ReserveItemCommand) {
-        if (command.quantity > availableQty) {
-            throw InsufficientStockException(
-                "Not enough stock of item $id (availableQty: $availableQty) requested: ${command.quantity}"
-            )
-        }
-        AggregateLifecycle.apply(InventoryReservedEvent(id, command.correlationId, command.quantity))
     }
 
     @EventSourcingHandler

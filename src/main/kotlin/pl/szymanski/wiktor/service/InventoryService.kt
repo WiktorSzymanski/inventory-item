@@ -6,7 +6,6 @@ import org.slf4j.LoggerFactory
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.PageImpl
 import org.springframework.data.domain.Pageable
-import org.springframework.resilience.annotation.Retryable
 import org.springframework.stereotype.Service
 import pl.szymanski.wiktor.exception.ItemAlreadyExistsException
 import pl.szymanski.wiktor.repository.InventoryProjection
@@ -14,7 +13,6 @@ import pl.szymanski.wiktor.repository.InventoryRepository
 import pl.szymanski.wiktor.service.command.CreateItemCommand
 import pl.szymanski.wiktor.service.command.CreateOrderCommand
 import pl.szymanski.wiktor.service.command.CreateOrderReservationCommand
-import pl.szymanski.wiktor.service.command.ReserveItemCommand
 
 @Service
 class InventoryService(
@@ -51,18 +49,5 @@ class InventoryService(
         )
         log.info("[ORDER] accepted orderId={}", orderId)
         return orderId
-    }
-
-    @Retryable(
-        includes = [ConcurrencyException::class],
-        maxRetries = 4,
-        delay = 25,
-        multiplier = 2.0,
-        maxDelay = 500,
-    )
-    fun reserveItem(command: ReserveItemCommand) {
-        log.info("[RESERVE] itemId={} correlationId={}", command.id, command.correlationId)
-        commandGateway.sendAndWait<Any?>(command)
-        log.info("[RESERVE] success itemId={}", command.id)
     }
 }

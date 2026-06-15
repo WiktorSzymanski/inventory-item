@@ -16,13 +16,12 @@ import org.springframework.test.web.servlet.post
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
 import pl.szymanski.wiktor.controller.GlobalExceptionHandler
 import pl.szymanski.wiktor.controller.InventoryController
-import pl.szymanski.wiktor.exception.InsufficientStockException
 import pl.szymanski.wiktor.exception.ItemAlreadyExistsException
-import pl.szymanski.wiktor.exception.NotFoundException
-import pl.szymanski.wiktor.exception.OptimisticLockExhaustedException
 import pl.szymanski.wiktor.repository.InventoryProjection
+import pl.szymanski.wiktor.repository.OrderProjection
 import pl.szymanski.wiktor.repository.OrderRepository
 import pl.szymanski.wiktor.service.InventoryService
+import java.util.Optional
 
 @ExtendWith(MockKExtension::class)
 class ApplicationTest {
@@ -86,54 +85,24 @@ class ApplicationTest {
     }
 
     @Test
-    fun `POST reserve returns 202 on success`() {
-        every { inventoryService.reserveItem(any()) } just runs
+    fun `GET order returns 200 with status and failureReason`() {
+        every { orderRepository.findById("ORDER-1") } returns
+            Optional.of(OrderProjection("ORDER-1", "user-1", "REJECTED", mapOf("ITEM-001" to 5), "Insufficient stock"))
 
-        mockMvc.post("/inventory/reserve") {
-            contentType = MediaType.APPLICATION_JSON
-            content = """{"id":"ITEM-001","quantity":5}"""
-        }.andExpect { status { isAccepted() } }
+        mockMvc.get("/inventory/orders/ORDER-1")
+            .andExpect {
+                status { isOk() }
+                jsonPath("$.orderId") { value("ORDER-1") }
+                jsonPath("$.status") { value("REJECTED") }
+                jsonPath("$.failureReason") { value("Insufficient stock") }
+            }
     }
 
     @Test
-    fun `POST reserve returns 404 with message when item not found`() {
-        every { inventoryService.reserveItem(any()) } throws
-            NotFoundException("Item MISSING not found")
+    fun `GET order returns 404 when not found`() {
+        every { orderRepository.findById("MISSING") } returns Optional.empty()
 
-        mockMvc.post("/inventory/reserve") {
-            contentType = MediaType.APPLICATION_JSON
-            content = """{"id":"MISSING","quantity":1}"""
-        }.andExpect {
-            status { isNotFound() }
-            jsonPath("$.message") { value("Item MISSING not found") }
-        }
-    }
-
-    @Test
-    fun `POST reserve returns 422 with message when stock is insufficient`() {
-        every { inventoryService.reserveItem(any()) } throws
-            InsufficientStockException("Not enough stock of item ITEM-001")
-
-        mockMvc.post("/inventory/reserve") {
-            contentType = MediaType.APPLICATION_JSON
-            content = """{"id":"ITEM-001","quantity":999}"""
-        }.andExpect {
-            status { isEqualTo(422) }
-            jsonPath("$.message") { value("Not enough stock of item ITEM-001") }
-        }
-    }
-
-    @Test
-    fun `POST reserve returns 503 when optimistic lock is exhausted`() {
-        every { inventoryService.reserveItem(any()) } throws
-            OptimisticLockExhaustedException("Optimistic lock exhausted for item ITEM-001")
-
-        mockMvc.post("/inventory/reserve") {
-            contentType = MediaType.APPLICATION_JSON
-            content = """{"id":"ITEM-001","quantity":1}"""
-        }.andExpect {
-            status { isEqualTo(503) }
-            jsonPath("$.message") { value("Optimistic lock exhausted for item ITEM-001") }
-        }
+        mockMvc.get("/inventory/orders/MISSING")
+            .andExpect { status { isNotFound() } }
     }
 }

@@ -12,6 +12,7 @@ data class OrderProjection(
     val userId: String,
     val status: String = "PENDING",
     val items: Map<String, Int> = mapOf(),
+    @Column("failure_reason") val failureReason: String? = null,
 )
 
 @Repository

@@ -16,10 +16,8 @@ import pl.szymanski.wiktor.repository.OrderRepository
 import pl.szymanski.wiktor.service.InventoryService
 import pl.szymanski.wiktor.service.command.CreateItemCommand
 import pl.szymanski.wiktor.service.command.CreateOrderReservationCommand
-import pl.szymanski.wiktor.service.command.ReserveItemCommand
 import java.util.UUID
 
-data class ReserveItemRequest(val id: String, val quantity: Int)
 data class OrderItemRequest(val itemId: String, val quantity: Int)
 data class CreateOrderRequest(val userId: String, val items: List<OrderItemRequest>)
 data class CreateItemRequest(val id: String, val availableQty: Int, val additionalBytesSize: Int = 0)
@@ -27,7 +25,7 @@ data class CreateItemRequest(val id: String, val availableQty: Int, val addition
 data class InventoryResponse(val itemId: String, val availableQty: Int, val version: Long)
 data class CreateItemResponse(val itemId: String, val availableQty: Int)
 data class CreateOrderResponse(val orderId: String)
-data class OrderStatusResponse(val orderId: String, val userId: String, val status: String, val items: Map<String, Int>)
+data class OrderStatusResponse(val orderId: String, val status: String, val failureReason: String?)
 
 @RestController
 @RequestMapping("/inventory")
@@ -84,14 +82,6 @@ class InventoryController(
     fun getOrder(@PathVariable orderId: String): ResponseEntity<OrderStatusResponse> {
         val order = orderRepository.findById(orderId).orElse(null)
             ?: return ResponseEntity.notFound().build()
-        return ResponseEntity.ok(OrderStatusResponse(order.orderId, order.userId, order.status, order.items))
-    }
-
-    @PostMapping("/reserve")
-    fun reserve(@RequestBody request: ReserveItemRequest): ResponseEntity<Void> {
-        log.info("POST /inventory/reserve itemId={} quantity={}", request.id, request.quantity)
-        inventoryService.reserveItem(ReserveItemCommand(request.id, request.quantity, UUID.randomUUID()))
-        log.info("POST /inventory/reserve accepted itemId={}", request.id)
-        return ResponseEntity.accepted().build()
+        return ResponseEntity.ok(OrderStatusResponse(order.orderId, order.status, order.failureReason))
     }
 }
