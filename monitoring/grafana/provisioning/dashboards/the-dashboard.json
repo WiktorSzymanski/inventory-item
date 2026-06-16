@@ -614,12 +614,88 @@
       ]
     },
     {
+      "id": 13,
+      "title": "State Persist Time",
+      "description": "Synchronous JDBC INSERT time for appended event rows (p50/p95/p99), recorded as state_persist_time{source=db_write}. Write-path mirror of \"State Load Time by Phase\"; comparable to the TO branch's identically-named metric.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 52,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum(rate(state_persist_time_seconds_bucket{source=\"db_write\"}[1m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum(rate(state_persist_time_seconds_bucket{source=\"db_write\"}[1m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum(rate(state_persist_time_seconds_bucket{source=\"db_write\"}[1m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
       "id": 10,
       "title": "POST /inventory/reserve \u2014 Response Counts by Status",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 52,
+        "y": 60,
         "w": 24,
         "h": 8
       },
@@ -679,7 +755,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 52,
+        "y": 60,
         "w": 24,
         "h": 8
       },
@@ -803,7 +879,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 60,
+        "y": 68,
         "w": 24,
         "h": 8
       },
@@ -858,12 +934,12 @@
     },
     {
       "id": 12,
-      "title": "Saga Outcome — Completed vs Failed & Success Rate",
-      "description": "Rate of completed sagas (all items reserved → OrderCompletedEvent) vs failed sagas (insufficient stock → OrderFailedEvent), plus the rolling success rate on the right axis.",
+      "title": "Saga Outcome \u2014 Completed vs Failed & Success Rate",
+      "description": "Rate of completed sagas (all items reserved \u2192 OrderCompletedEvent) vs failed sagas (insufficient stock \u2192 OrderFailedEvent), plus the rolling success rate on the right axis.",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 68,
+        "y": 76,
         "w": 24,
         "h": 8
       },
@@ -888,27 +964,72 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "completed/s" },
+            "matcher": {
+              "id": "byName",
+              "options": "completed/s"
+            },
             "properties": [
-              { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "failed/s" },
+            "matcher": {
+              "id": "byName",
+              "options": "failed/s"
+            },
             "properties": [
-              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "success rate" },
+            "matcher": {
+              "id": "byName",
+              "options": "success rate"
+            },
             "properties": [
-              { "id": "unit", "value": "percentunit" },
-              { "id": "min", "value": 0 },
-              { "id": "max", "value": 1 },
-              { "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } },
-              { "id": "custom.axisPlacement", "value": "right" },
-              { "id": "custom.fillOpacity", "value": 0 },
-              { "id": "custom.lineWidth", "value": 2 }
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 1
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
             ]
           }
         ]
@@ -917,7 +1038,11 @@
         "legend": {
           "displayMode": "table",
           "placement": "bottom",
-          "calcs": ["mean", "min", "lastNotNull"],
+          "calcs": [
+            "mean",
+            "min",
+            "lastNotNull"
+          ],
           "showLegend": true
         },
         "tooltip": {
@@ -927,19 +1052,28 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "rate(es_events_processed_total{eventType=\"OrderCompletedEvent\"}[1m])",
           "legendFormat": "completed/s",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "rate(es_events_processed_total{eventType=\"OrderFailedEvent\"}[1m])",
           "legendFormat": "failed/s",
           "refId": "B"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "rate(es_events_processed_total{eventType=\"OrderCompletedEvent\"}[1m]) / (rate(es_events_processed_total{eventType=\"OrderCompletedEvent\"}[1m]) + rate(es_events_processed_total{eventType=\"OrderFailedEvent\"}[1m]))",
           "legendFormat": "success rate",
           "refId": "C"

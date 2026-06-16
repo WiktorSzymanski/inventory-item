@@ -3,6 +3,7 @@ package pl.szymanski.wiktor.config
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Timer
 import org.axonframework.eventhandling.DomainEventMessage
+import org.axonframework.eventhandling.EventMessage
 import org.axonframework.eventhandling.TrackingToken
 import org.axonframework.eventsourcing.eventstore.DomainEventStream
 import org.axonframework.eventsourcing.eventstore.EventStorageEngine
@@ -23,6 +24,10 @@ class TimedEventStorageEngine(
     private val replayTimer   = Timer.builder("state_load_time").tag("phase", "replay").register(meterRegistry)
     private val totalTimer    = Timer.builder("state_load_time").tag("phase", "total").register(meterRegistry)
 
+    // ES write path: times the synchronous JDBC INSERT of appended event rows.
+    // Mirrors the TO branch's state_persist_time{source=db_write} for TO-vs-ES write-cost comparison.
+    private val appendTimer = Timer.builder("state_persist_time").tag("source", "db_write").register(meterRegistry)
+
     // Tracks the start of the full load session across readSnapshot → readEvents → stream exhaustion.
     // JDBC aggregate loading is synchronous on a single IO thread, so ThreadLocal is safe here.
     private val loadSession = ThreadLocal<Timer.Sample>()
@@ -35,6 +40,10 @@ class TimedEventStorageEngine(
     override fun createHeadToken(): TrackingToken? = delegate.createHeadToken()
     override fun createTailToken(): TrackingToken? = delegate.createTailToken()
     override fun createTokenAt(dateTime: Instant): TrackingToken? = delegate.createTokenAt(dateTime)
+
+    override fun appendEvents(events: MutableList<out EventMessage<*>>) {
+        appendTimer.recordCallable { delegate.appendEvents(events) }
+    }
 
     override fun readSnapshot(aggregateIdentifier: String) = run {
         if (loadSession.get() == null) loadSession.set(Timer.start(meterRegistry))
