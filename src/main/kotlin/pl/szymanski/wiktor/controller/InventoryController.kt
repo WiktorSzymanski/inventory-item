@@ -18,7 +18,7 @@ import pl.szymanski.wiktor.service.command.CreateOrderReservationCommand
 import pl.szymanski.wiktor.service.command.OrderItem
 import java.util.UUID
 
-data class CreateItemRequest(val id: String, val availableQty: Int)
+data class CreateItemRequest(val id: String, val availableQty: Int, val additionalBytesSize: Int = 0)
 data class OrderItemRequest(val itemId: String, val quantity: Int)
 data class CreateOrderRequest(val userId: String, val items: List<OrderItemRequest>)
 
@@ -44,8 +44,8 @@ class InventoryController(
 
     @PostMapping
     fun createItem(@RequestBody request: CreateItemRequest): ResponseEntity<CreateItemResponse> {
-        log.info("POST /inventory itemId={} availableQty={}", request.id, request.availableQty)
-        val item = inventoryService.createItem(CreateItemCommand(request.id, request.availableQty, UUID.randomUUID()))
+        log.info("POST /inventory itemId={} availableQty={} additionalBytesSize={}", request.id, request.availableQty, request.additionalBytesSize)
+        val item = inventoryService.createItem(CreateItemCommand(request.id, request.availableQty, UUID.randomUUID(), request.additionalBytesSize))
         log.info("POST /inventory success itemId={}", item.id)
         return ResponseEntity.status(HttpStatus.CREATED).body(CreateItemResponse(item.id, item.availableQty))
     }
