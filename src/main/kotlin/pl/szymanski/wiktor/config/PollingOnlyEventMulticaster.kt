@@ -17,8 +17,8 @@ import java.util.function.Supplier
 
 /**
  * Stores event publications in the DB atomically with the business transaction but never invokes
- * AFTER_COMMIT listeners synchronously. All delivery is handled exclusively by the polling scheduler
- * via [resubmitIncompletePublicationsOlderThan].
+ * AFTER_COMMIT listeners synchronously. All delivery is handled exclusively by OutboxPollingPublisher,
+ * which claims incomplete rows with FOR UPDATE SKIP LOCKED and publishes each exactly once.
  *
  * Storage goes through [EventPublicationRepository.create] directly, bypassing
  * [DefaultEventPublicationRegistry.store]. That higher-level method adds every publication to an

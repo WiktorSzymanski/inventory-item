@@ -6,13 +6,9 @@ import org.springframework.beans.factory.support.BeanDefinitionRegistryPostProce
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.env.Environment
-import org.springframework.modulith.events.IncompleteEventPublications
 import org.springframework.modulith.events.core.EventPublicationRegistry
 import org.springframework.modulith.events.core.EventPublicationRepository
 import org.springframework.scheduling.annotation.EnableScheduling
-import org.springframework.scheduling.annotation.Scheduled
-import org.springframework.stereotype.Component
-import java.time.Duration
 
 @Configuration
 @EnableScheduling
@@ -47,19 +43,9 @@ class PollingEventPublicationConfig {
                 )
                 multicaster.setBeanFactory(beanFactory)
 
-                // registerSingleton adds the instance to manualSingletonNames, so type-based
-                // injection of IncompleteEventPublications still resolves to this bean.
+                // registerSingleton adds the instance to manualSingletonNames so type-based
+                // injection still resolves to this bean.
                 beanFactory.registerSingleton("applicationEventMulticaster", multicaster)
             }
         }
-}
-
-@Component
-class EventPublicationPoller(
-    private val incompleteEventPublications: IncompleteEventPublications,
-) {
-    @Scheduled(fixedDelayString = "\${spring.modulith.events.polling-interval:PT10S}")
-    fun pollAndPublish() {
-        incompleteEventPublications.resubmitIncompletePublicationsOlderThan(Duration.ZERO)
-    }
 }

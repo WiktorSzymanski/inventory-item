@@ -22,6 +22,10 @@ class InventoryEventListener(
 
     private val lagTimers = ConcurrentHashMap<String, Timer>()
 
+    // The @ApplicationModuleListener methods exist so PollingOnlyEventMulticaster registers a
+    // listener and persists each event into event_publication. They are NOT invoked after commit
+    // (the multicaster skips AFTER_COMMIT listeners); OutboxPollingPublisher drives delivery
+    // synchronously, once per event, by deserializing the row and calling dispatch().
     @ApplicationModuleListener
     fun on(event: InventoryCreatedEvent) = publish("inventory-events", event.id, event, event.createdAt)
 
@@ -30,6 +34,16 @@ class InventoryEventListener(
 
     @ApplicationModuleListener
     fun on(event: OrderReservationCreatedEvent) = publish("order-events", event.orderId, event, event.createdAt)
+
+    /** Routes a deserialized outbox event to its publish logic. Called synchronously by the poller. */
+    fun dispatch(event: Any) {
+        when (event) {
+            is InventoryCreatedEvent -> on(event)
+            is InventoryReservedEvent -> on(event)
+            is OrderReservationCreatedEvent -> on(event)
+            else -> log.warn("[MOCK-KAFKA] unknown event type={}, skipping", event.javaClass.name)
+        }
+    }
 
     private fun publish(topic: String, key: String, event: Any, createdAt: Instant) {
         val payload = objectMapper.writeValueAsString(event)

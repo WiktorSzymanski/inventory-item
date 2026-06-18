@@ -19,6 +19,8 @@ spring:
       polling-interval: PT30S   # interval between polling runs; tune per your latency requirement
 
 app:
+  outbox:
+    poll-batch-size: ${OUTBOX_POLL_BATCH_SIZE:500}  # rows claimed per FOR UPDATE SKIP LOCKED batch
   order-worker:
     threads: ${ORDER_WORKER_THREADS:200}                   # worker pool processing accepted orders
     queue-capacity: ${ORDER_WORKER_QUEUE_CAPACITY:1000}  # pending tasks beyond busy workers; full queue -> 503
