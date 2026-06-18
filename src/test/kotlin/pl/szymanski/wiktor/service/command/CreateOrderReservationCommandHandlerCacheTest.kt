@@ -18,6 +18,7 @@ import pl.szymanski.wiktor.domain.InventoryItem
 import pl.szymanski.wiktor.repository.InventoryRepository
 import pl.szymanski.wiktor.repository.OrderRepository
 import pl.szymanski.wiktor.repository.ReservationRepository
+import java.time.Clock
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
@@ -36,7 +37,7 @@ class CreateOrderReservationCommandHandlerCacheTest {
     fun setUp() {
         cache = Caffeine.newBuilder().build()
         handler = CreateOrderReservationCommandHandler(
-            inventoryRepo, reservationRepo, orderRepo, eventPublisher, cache, SimpleMeterRegistry(),
+            inventoryRepo, reservationRepo, orderRepo, eventPublisher, cache, Clock.systemUTC(), SimpleMeterRegistry(),
         )
     }
 

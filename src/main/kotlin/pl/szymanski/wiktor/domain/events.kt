@@ -3,11 +3,13 @@ package pl.szymanski.wiktor.domain
 import java.time.Instant
 import java.util.UUID
 
+// createdAt has no default on purpose: it must be stamped explicitly at the event's
+// production point with the shared Clock, mirroring Axon's @Timestamp (set at apply()).
 data class InventoryCreatedEvent(
     val id: String,
     val quantity: Int,
     val correlationId: UUID,
-    val createdAt: Instant = Instant.now(),
+    val createdAt: Instant,
 )
 
 data class InventoryReservedEvent(
@@ -15,7 +17,7 @@ data class InventoryReservedEvent(
     val reservationId: String,
     val quantity: Int,
     val correlationId: UUID,
-    val createdAt: Instant = Instant.now(),
+    val createdAt: Instant,
 )
 
 data class ReservedItem(val itemId: String, val quantity: Int)
@@ -25,5 +27,5 @@ data class OrderReservationCreatedEvent(
     val userId: String,
     val items: List<ReservedItem>,
     val correlationId: UUID,
-    val createdAt: Instant = Instant.now(),
+    val createdAt: Instant,
 )
