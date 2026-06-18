@@ -48,10 +48,18 @@ data class InventoryItem(
     }
 
     companion object {
-        fun create(id: String, availableQty: Int, correlationId: UUID, clock: Clock): Pair<InventoryItem, InventoryCreatedEvent> =
-            Pair(
+        fun create(
+            id: String,
+            availableQty: Int,
+            correlationId: UUID,
+            clock: Clock,
+            additionalBytesSize: Int = 0,
+        ): Pair<InventoryItem, InventoryCreatedEvent> {
+            val additionalBytes = if (additionalBytesSize > 0) "x".repeat(additionalBytesSize) else ""
+            return Pair(
                 InventoryItem(id, availableQty),
-                InventoryCreatedEvent(id, availableQty, correlationId, clock.instant())
+                InventoryCreatedEvent(id, availableQty, correlationId, clock.instant(), additionalBytes)
             )
+        }
     }
 }

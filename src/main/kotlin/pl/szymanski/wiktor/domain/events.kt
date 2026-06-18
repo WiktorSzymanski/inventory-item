@@ -10,6 +10,9 @@ data class InventoryCreatedEvent(
     val quantity: Int,
     val correlationId: UUID,
     val createdAt: Instant,
+    // Filler to inflate the serialized event payload for benchmarking; mirrors the ES branch's
+    // additionalBytes so TO and ES can be load-tested at equal payload sizes.
+    val additionalBytes: String = "",
 )
 
 data class InventoryReservedEvent(
