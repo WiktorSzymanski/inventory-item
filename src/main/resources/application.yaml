@@ -32,7 +32,7 @@ management:
     distribution:
       percentiles-histogram:
         http.server.requests: true
-        outbox.publish.lag: true
+        publish.lag: true
         outbox.write.time: true
         state_load_time: true
         state_persist_time: true
@@ -40,7 +40,7 @@ management:
         order.queue.wait: true
         order.e2e.time: true
       maximum-expected-value:
-        outbox.publish.lag: 10m
+        publish.lag: 10m
 
 server:
   port: 8080

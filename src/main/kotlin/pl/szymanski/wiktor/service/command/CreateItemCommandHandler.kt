@@ -11,6 +11,7 @@ import org.springframework.transaction.annotation.Transactional
 import pl.szymanski.wiktor.domain.InventoryItem
 import pl.szymanski.wiktor.exception.ItemAlreadyExistsException
 import pl.szymanski.wiktor.repository.InventoryRepository
+import java.time.Clock
 import java.util.UUID
 
 data class CreateItemCommand(
@@ -23,6 +24,7 @@ data class CreateItemCommand(
 class CreateInventoryItemCommandHandler(
     private val inventoryRepo: InventoryRepository,
     private val applicationEventPublisher: ApplicationEventPublisher,
+    private val clock: Clock,
     meterRegistry: MeterRegistry,
 ) {
     private val log = LoggerFactory.getLogger(this::class.java)
@@ -33,7 +35,7 @@ class CreateInventoryItemCommandHandler(
     @Transactional(propagation = Propagation.REQUIRED, rollbackFor = [Exception::class])
     fun handle(command: CreateItemCommand): InventoryItem {
         log.info("[CREATE] itemId={} availableQty={} correlationId={}", command.id, command.availableQty, command.correlationId)
-        val (item, event) = InventoryItem.create(command.id, command.availableQty, command.correlationId)
+        val (item, event) = InventoryItem.create(command.id, command.availableQty, command.correlationId, clock)
         try {
             inventoryRepo.save(item)
         } catch (e: DuplicateKeyException) {

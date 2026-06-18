@@ -42,7 +42,7 @@ class InventoryEventListener(
 
     private fun recordLag(eventType: String, createdAt: Instant) {
         lagTimers.computeIfAbsent(eventType) {
-            Timer.builder("outbox.publish.lag")
+            Timer.builder("publish.lag")
                 .tag("eventType", it)
                 .publishPercentileHistogram(true)
                 .maximumExpectedValue(Duration.ofMinutes(10))

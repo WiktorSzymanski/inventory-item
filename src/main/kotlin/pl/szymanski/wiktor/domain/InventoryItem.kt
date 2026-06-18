@@ -5,6 +5,7 @@ import org.springframework.data.annotation.Version
 import org.springframework.data.relational.core.mapping.Column
 import org.springframework.data.relational.core.mapping.Table
 import pl.szymanski.wiktor.exception.InsufficientStockException
+import java.time.Clock
 import java.util.UUID
 
 data class ReserveResult(
@@ -26,6 +27,7 @@ data class InventoryItem(
         reservationId: String,
         quantity: Int,
         correlationId: UUID,
+        clock: Clock,
     ): ReserveResult {
         if (quantity <= 0) {
             throw IllegalArgumentException("Quantity must be greater than 0")
@@ -41,15 +43,15 @@ data class InventoryItem(
         return ReserveResult(
             updatedItem = copy(availableQty = availableQty - quantity),
             reservation = Reservation(itemId = id, reservationId = reservationId, quantity = quantity),
-            event = InventoryReservedEvent(id, reservationId, quantity, correlationId),
+            event = InventoryReservedEvent(id, reservationId, quantity, correlationId, clock.instant()),
         )
     }
 
     companion object {
-        fun create(id: String, availableQty: Int, correlationId: UUID): Pair<InventoryItem, InventoryCreatedEvent> =
+        fun create(id: String, availableQty: Int, correlationId: UUID, clock: Clock): Pair<InventoryItem, InventoryCreatedEvent> =
             Pair(
                 InventoryItem(id, availableQty),
-                InventoryCreatedEvent(id, availableQty, correlationId)
+                InventoryCreatedEvent(id, availableQty, correlationId, clock.instant())
             )
     }
 }

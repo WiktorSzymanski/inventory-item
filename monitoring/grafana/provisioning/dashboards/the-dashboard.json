@@ -356,7 +356,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum(rate(outbox_publish_lag_seconds_bucket[1m])) by (le, eventType))",
+          "expr": "histogram_quantile(0.50, sum(rate(publish_lag_seconds_bucket[1m])) by (le, eventType))",
           "legendFormat": "p50 {{eventType}}",
           "refId": "A"
         },
@@ -365,7 +365,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(outbox_publish_lag_seconds_bucket[1m])) by (le, eventType))",
+          "expr": "histogram_quantile(0.95, sum(rate(publish_lag_seconds_bucket[1m])) by (le, eventType))",
           "legendFormat": "p95 {{eventType}}",
           "refId": "B"
         },
@@ -374,7 +374,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum(rate(outbox_publish_lag_seconds_bucket[1m])) by (le, eventType))",
+          "expr": "histogram_quantile(0.99, sum(rate(publish_lag_seconds_bucket[1m])) by (le, eventType))",
           "legendFormat": "p99 {{eventType}}",
           "refId": "C"
         }
@@ -1084,7 +1084,7 @@
     },
     {
       "id": 17,
-      "title": "State Persist & Outbox Write Time \u2014 p50 / p95",
+      "title": "State Persist Time \u2014 p50 / p95 / p99",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
@@ -1135,7 +1135,7 @@
             "uid": "prometheus"
           },
           "expr": "histogram_quantile(0.50, sum(rate(state_persist_time_seconds_bucket[1m])) by (le))",
-          "legendFormat": "db_write p50",
+          "legendFormat": "p50",
           "refId": "A"
         },
         {
@@ -1144,7 +1144,7 @@
             "uid": "prometheus"
           },
           "expr": "histogram_quantile(0.95, sum(rate(state_persist_time_seconds_bucket[1m])) by (le))",
-          "legendFormat": "db_write p95",
+          "legendFormat": "p95",
           "refId": "B"
         },
         {
@@ -1152,18 +1152,9 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum(rate(outbox_write_time_seconds_bucket[1m])) by (le))",
-          "legendFormat": "outbox write p50",
+          "expr": "histogram_quantile(0.99, sum(rate(state_persist_time_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p99",
           "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.95, sum(rate(outbox_write_time_seconds_bucket[1m])) by (le))",
-          "legendFormat": "outbox write p95",
-          "refId": "D"
         }
       ]
     },
@@ -1374,6 +1365,73 @@
           "expr": "tomcat_threads_config_max_threads{job=\"inventory-to\"}",
           "legendFormat": "config max",
           "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "title": "Outbox Write Time — p50 / p95",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 100,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum(rate(outbox_write_time_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum(rate(outbox_write_time_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
         }
       ]
     }
