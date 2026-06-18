@@ -15,6 +15,7 @@ import pl.szymanski.wiktor.exception.NotFoundException
 import pl.szymanski.wiktor.repository.InventoryRepository
 import pl.szymanski.wiktor.repository.OrderRepository
 import pl.szymanski.wiktor.repository.ReservationRepository
+import java.time.Clock
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -32,6 +33,7 @@ class CreateOrderReservationCommandHandler(
     private val reservationRepo: ReservationRepository,
     private val orderRepo: OrderRepository,
     private val applicationEventPublisher: ApplicationEventPublisher,
+    private val clock: Clock,
     meterRegistry: MeterRegistry,
 ) {
     private val log = LoggerFactory.getLogger(this::class.java)
@@ -56,8 +58,18 @@ class CreateOrderReservationCommandHandler(
         val results = command.items.map { orderItem ->
             val item = foundItems[orderItem.itemId]
                 ?: throw NotFoundException("Item ${orderItem.itemId} not found")
-            item.reserve(orderId, orderItem.quantity, command.correlationId)
+            item.reserve(orderId, orderItem.quantity, command.correlationId, clock)
         }
+
+        // Stamp the order event at its production point, alongside the per-item events and before
+        // the DB writes, so createdAt reflects event creation (mirrors Axon's apply()-time @Timestamp).
+        val orderEvent = OrderReservationCreatedEvent(
+            orderId = orderId,
+            userId = command.userId,
+            items = command.items.map { ReservedItem(it.itemId, it.quantity) },
+            correlationId = command.correlationId,
+            createdAt = clock.instant(),
+        )
 
         val dbWriteStartNs = System.nanoTime()
         inventoryRepo.saveAll(results.map { it.updatedItem })
@@ -69,14 +81,7 @@ class CreateOrderReservationCommandHandler(
         // so this timer captures the outbox write overhead of the TO pattern.
         val outboxStartNs = System.nanoTime()
         results.forEach { applicationEventPublisher.publishEvent(it.event) }
-        applicationEventPublisher.publishEvent(
-            OrderReservationCreatedEvent(
-                orderId = orderId,
-                userId = command.userId,
-                items = command.items.map { ReservedItem(it.itemId, it.quantity) },
-                correlationId = command.correlationId,
-            )
-        )
+        applicationEventPublisher.publishEvent(orderEvent)
         outboxWriteTimer.record(System.nanoTime() - outboxStartNs, TimeUnit.NANOSECONDS)
 
         appendSuccessCounter.increment()
