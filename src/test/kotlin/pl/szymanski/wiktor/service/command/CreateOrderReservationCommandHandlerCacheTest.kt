@@ -2,6 +2,7 @@ package pl.szymanski.wiktor.service.command
 
 import com.github.benmanes.caffeine.cache.Cache
 import com.github.benmanes.caffeine.cache.Caffeine
+import com.github.benmanes.caffeine.cache.Ticker
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import io.mockk.every
 import io.mockk.mockk
@@ -17,6 +18,8 @@ import pl.szymanski.wiktor.domain.InventoryItem
 import pl.szymanski.wiktor.repository.InventoryRepository
 import pl.szymanski.wiktor.repository.OrderRepository
 import pl.szymanski.wiktor.repository.ReservationRepository
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 class CreateOrderReservationCommandHandlerCacheTest {
 
@@ -76,5 +79,26 @@ class CreateOrderReservationCommandHandlerCacheTest {
         handler.handle("ORDER-1", command)
 
         assertEquals(7L, cache.getIfPresent("ITEM-001")?.version)
+    }
+
+    @Test
+    fun `expires an entry that was not used within the idle TTL window`() {
+        // Drive Caffeine's clock manually so the test is deterministic and does not wait.
+        val nanos = AtomicLong(0)
+        val ttlCache = Caffeine.newBuilder()
+            .expireAfterAccess(5, TimeUnit.MINUTES)
+            .ticker(Ticker { nanos.get() })
+            .build<String, InventoryItem>()
+
+        ttlCache.put("ITEM-001", InventoryItem("ITEM-001", availableQty = 10, version = 1))
+
+        // Just inside the window: a read keeps it alive and resets the access timer.
+        nanos.addAndGet(TimeUnit.MINUTES.toNanos(4))
+        assertEquals(1L, ttlCache.getIfPresent("ITEM-001")?.version)
+
+        // 5 minutes + 1ns of idleness after that read: the entry must be evicted.
+        nanos.addAndGet(TimeUnit.MINUTES.toNanos(5) + 1)
+        ttlCache.cleanUp()
+        assertNull(ttlCache.getIfPresent("ITEM-001"))
     }
 }
