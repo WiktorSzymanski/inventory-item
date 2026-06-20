@@ -9,7 +9,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor
 @ConfigurationProperties("app.order-worker")
 data class OrderWorkerProperties(
     val threads: Int = 8,
-    val queueCapacity: Int = 1000,
+    val queueCapacity: Int = Int.MAX_VALUE,
 )
 
 @Configuration
@@ -17,8 +17,10 @@ data class OrderWorkerProperties(
 class OrderWorkerConfig {
 
     /**
-     * Default AbortPolicy is kept on purpose: a full queue makes execute() throw
-     * TaskRejectedException, which surfaces as HTTP 503 on order acceptance.
+     * Unbounded queue (Int.MAX_VALUE -> unbounded LinkedBlockingQueue): the worker pool never
+     * rejects, mirroring the ES branches' unbounded async executors. Excess load is absorbed in
+     * memory (degrade) rather than shed with HTTP 503, so admission is bounded only by the Tomcat
+     * HTTP thread pool that accepts orders.
      */
     @Bean
     fun orderWorkerExecutor(properties: OrderWorkerProperties): ThreadPoolTaskExecutor =
