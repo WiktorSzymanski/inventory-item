@@ -25,7 +25,7 @@ app:
     threads: ${EVENT_DELIVERY_THREADS:8}                 # workers delivering NOTIFY-pushed publications
   order-worker:
     threads: ${ORDER_WORKER_THREADS:200}                   # worker pool processing accepted orders
-    queue-capacity: ${ORDER_WORKER_QUEUE_CAPACITY:1000}  # pending tasks beyond busy workers; full queue -> 503
+    queue-capacity: ${ORDER_WORKER_QUEUE_CAPACITY:2147483647}  # unbounded by default (Int.MAX_VALUE); absorb load like ES, no queue-full shedding
 
 management:
   endpoints:
