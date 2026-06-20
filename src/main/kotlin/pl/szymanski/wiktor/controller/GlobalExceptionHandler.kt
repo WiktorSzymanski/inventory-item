@@ -3,7 +3,6 @@ package pl.szymanski.wiktor.controller
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.MeterRegistry
 import org.slf4j.LoggerFactory
-import org.springframework.core.task.TaskRejectedException
 import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.ResponseStatus
@@ -26,7 +25,6 @@ class GlobalExceptionHandler(private val meterRegistry: MeterRegistry) {
             "NotFoundException",
             "ItemAlreadyExistsException",
             "InsufficientStockException",
-            "TaskRejectedException",
         ).forEach { exceptionCounter(it) }
     }
 
@@ -55,9 +53,4 @@ class GlobalExceptionHandler(private val meterRegistry: MeterRegistry) {
     @ResponseStatus(HttpStatus.UNPROCESSABLE_ENTITY)
     fun handleInsufficientStock(e: InsufficientStockException): ErrorResponse =
         respond(e, "Insufficient stock", e.message ?: "Insufficient stock")
-
-    @ExceptionHandler(TaskRejectedException::class)
-    @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
-    fun handleTaskRejected(e: TaskRejectedException): ErrorResponse =
-        respond(e, "Order worker queue full", "Order processing queue is full, please retry later")
 }

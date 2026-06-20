@@ -7,7 +7,6 @@ import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.core.task.TaskExecutor
-import org.springframework.core.task.TaskRejectedException
 import org.springframework.dao.OptimisticLockingFailureException
 import org.springframework.dao.PessimisticLockingFailureException
 import org.springframework.data.domain.Page
@@ -57,7 +56,6 @@ class InventoryService(
         is InsufficientStockException -> "insufficient_stock"
         is NotFoundException -> "not_found"
         is OptimisticLockingFailureException, is PessimisticLockingFailureException -> "optimistic_exhausted"
-        is TaskRejectedException -> "queue_full"
         else -> "other"
     }
 
@@ -79,15 +77,9 @@ class InventoryService(
         log.info("[ORDER] accepted orderId={} userId={} itemCount={} correlationId={}", orderId, command.userId, command.items.size, command.correlationId)
         // Committed before the task is submitted, so the worker always sees the row.
         orderRepository.save(Order(orderId = orderId, userId = command.userId))
-        try {
-            orderWorkerExecutor.execute { runOrderTask(orderId, command, acceptedAtNs) }
-        } catch (e: TaskRejectedException) {
-            log.warn("[ORDER] worker queue full, rejecting orderId={} correlationId={}", orderId, command.correlationId)
-            orderRepository.updateStatus(orderId, OrderStatus.REJECTED, "worker queue full")
-            completedCounter("rejected", rejectionReason(e)).increment()
-            e2eTimer("rejected").record(System.nanoTime() - acceptedAtNs, TimeUnit.NANOSECONDS)
-            throw e
-        }
+        // Unbounded worker queue: execute() never rejects, so there is no queue-full load shedding
+        // (matches the ES branches, which absorb load on unbounded async executors).
+        orderWorkerExecutor.execute { runOrderTask(orderId, command, acceptedAtNs) }
         return orderId
     }
 
