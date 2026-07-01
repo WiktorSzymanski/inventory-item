@@ -10,6 +10,8 @@ import pl.szymanski.wiktor.service.command.CompleteOrderCommand
 import pl.szymanski.wiktor.service.command.CreateOrderCommand
 import pl.szymanski.wiktor.service.command.FailOrderCommand
 
+enum class OrderStatus { PENDING, COMPLETED, FAILED }
+
 @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
 @Aggregate
 class OrderAggregate {
@@ -17,6 +19,7 @@ class OrderAggregate {
     @AggregateIdentifier
     private lateinit var orderId: String
     private lateinit var items: List<OrderItem>
+    private var status: OrderStatus = OrderStatus.PENDING
 
     constructor()
 
@@ -27,15 +30,17 @@ class OrderAggregate {
 
     @CommandHandler
     fun handle(command: CompleteOrderCommand) {
+        if (status != OrderStatus.PENDING) return
         AggregateLifecycle.apply(OrderCompletedEvent(command.orderId))
     }
 
     @CommandHandler
     fun handle(command: FailOrderCommand) {
+        if (status != OrderStatus.PENDING) return
         AggregateLifecycle.apply(OrderFailedEvent(command.orderId, command.reason))
     }
 
-    @EventSourcingHandler fun on(event: OrderCreatedEvent)   { orderId = event.orderId; items = event.items }
-    @EventSourcingHandler fun on(event: OrderCompletedEvent) {}
-    @EventSourcingHandler fun on(event: OrderFailedEvent)    {}
+    @EventSourcingHandler fun on(event: OrderCreatedEvent)   { orderId = event.orderId; items = event.items; status = OrderStatus.PENDING }
+    @EventSourcingHandler fun on(event: OrderCompletedEvent) { status = OrderStatus.COMPLETED }
+    @EventSourcingHandler fun on(event: OrderFailedEvent)    { status = OrderStatus.FAILED }
 }
