@@ -16,12 +16,15 @@ import org.springframework.core.task.TaskExecutor
 import org.springframework.dao.OptimisticLockingFailureException
 import org.springframework.resilience.annotation.EnableResilientMethods
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig
+import pl.szymanski.wiktor.domain.OrderCreatedEvent
+import pl.szymanski.wiktor.domain.ReservedItem
 import pl.szymanski.wiktor.repository.InventoryRepository
 import pl.szymanski.wiktor.repository.OrderRepository
 import pl.szymanski.wiktor.service.command.CreateInventoryItemCommandHandler
-import pl.szymanski.wiktor.service.command.CreateOrderReservationCommand
-import pl.szymanski.wiktor.service.command.CreateOrderReservationCommandHandler
-import pl.szymanski.wiktor.service.command.OrderItem
+import pl.szymanski.wiktor.service.command.CreateOrderCommandHandler
+import pl.szymanski.wiktor.service.command.ReserveOrderItemsCommandHandler
+import java.time.Instant
+import java.util.UUID
 
 @SpringJUnitConfig(classes = [InventoryServiceRetryTest.RetryTestConfig::class])
 class InventoryServiceRetryTest {
@@ -29,34 +32,42 @@ class InventoryServiceRetryTest {
     private lateinit var inventoryService: InventoryService
 
     @Autowired
-    private lateinit var createOrderReservationCommandHandler: CreateOrderReservationCommandHandler
+    private lateinit var reserveOrderItemsCommandHandler: ReserveOrderItemsCommandHandler
+
+    private fun orderCreatedEvent() = OrderCreatedEvent(
+        orderId = "ORDER-1",
+        userId = "USER-1",
+        items = listOf(ReservedItem("ITEM-001", 1)),
+        correlationId = UUID.randomUUID(),
+        createdAt = Instant.EPOCH,
+    )
 
     @Test
     fun `order processing retries optimistic locking failures`() {
-        val command = CreateOrderReservationCommand("USER-1", listOf(OrderItem("ITEM-001", 1)))
+        val event = orderCreatedEvent()
 
-        every { createOrderReservationCommandHandler.handle("ORDER-1", command) } throws
+        every { reserveOrderItemsCommandHandler.handle(event) } throws
             OptimisticLockingFailureException("conflict") andThen Unit
 
-        inventoryService.processOrder("ORDER-1", command)
+        inventoryService.processOrder(event)
 
-        verify(exactly = 2) { createOrderReservationCommandHandler.handle("ORDER-1", command) }
+        verify(exactly = 2) { reserveOrderItemsCommandHandler.handle(event) }
     }
 
     @Test
     fun `order processing throws exhausted exception after retry attempts are exhausted`() {
-        val command = CreateOrderReservationCommand("USER-1", listOf(OrderItem("ITEM-001", 1)))
+        val event = orderCreatedEvent()
 
-        every { createOrderReservationCommandHandler.handle("ORDER-1", command) } throws
+        every { reserveOrderItemsCommandHandler.handle(event) } throws
             OptimisticLockingFailureException("conflict")
 
         try {
-            inventoryService.processOrder("ORDER-1", command)
+            inventoryService.processOrder(event)
             fail("Expected OptimisticLockingFailureException")
         } catch (_: OptimisticLockingFailureException) {
         }
 
-        verify(exactly = 5) { createOrderReservationCommandHandler.handle("ORDER-1", command) }
+        verify(exactly = 5) { reserveOrderItemsCommandHandler.handle(event) }
     }
 
     @Configuration
@@ -73,7 +84,10 @@ class InventoryServiceRetryTest {
         fun createInventoryItemCommandHandler(): CreateInventoryItemCommandHandler = mockk()
 
         @Bean
-        fun createOrderReservationCommandHandler(): CreateOrderReservationCommandHandler = mockk()
+        fun createOrderCommandHandler(): CreateOrderCommandHandler = mockk()
+
+        @Bean
+        fun reserveOrderItemsCommandHandler(): ReserveOrderItemsCommandHandler = mockk()
 
         @Bean
         fun orderWorkerExecutor(): TaskExecutor = SyncTaskExecutor()

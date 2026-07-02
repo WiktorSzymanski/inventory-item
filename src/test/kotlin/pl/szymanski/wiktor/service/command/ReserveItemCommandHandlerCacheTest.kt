@@ -15,29 +15,32 @@ import org.junit.jupiter.api.assertThrows
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.dao.OptimisticLockingFailureException
 import pl.szymanski.wiktor.domain.InventoryItem
+import pl.szymanski.wiktor.domain.Reservation
 import pl.szymanski.wiktor.repository.InventoryRepository
-import pl.szymanski.wiktor.repository.OrderRepository
 import pl.szymanski.wiktor.repository.ReservationRepository
 import java.time.Clock
+import java.util.Optional
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
-class CreateOrderReservationCommandHandlerCacheTest {
+class ReserveItemCommandHandlerCacheTest {
 
     private val inventoryRepo: InventoryRepository = mockk()
     private val reservationRepo: ReservationRepository = mockk(relaxed = true)
-    private val orderRepo: OrderRepository = mockk(relaxed = true)
     private val eventPublisher: ApplicationEventPublisher = mockk(relaxed = true)
     private lateinit var cache: Cache<String, InventoryItem>
-    private lateinit var handler: CreateOrderReservationCommandHandler
+    private lateinit var handler: ReserveItemCommandHandler
 
-    private val command = CreateOrderReservationCommand("USER-1", listOf(OrderItem("ITEM-001", 1)))
+    private val command = ReserveItemCommand("ORDER-1", "ITEM-001", 1, UUID.randomUUID())
 
     @BeforeEach
     fun setUp() {
+        // save() is generic, so a relaxed answer can't produce a Reservation; echo the argument.
+        every { reservationRepo.save(any<Reservation>()) } answers { firstArg() }
         cache = Caffeine.newBuilder().build()
-        handler = CreateOrderReservationCommandHandler(
-            inventoryRepo, reservationRepo, orderRepo, eventPublisher, cache, Clock.systemUTC(), SimpleMeterRegistry(),
+        handler = ReserveItemCommandHandler(
+            inventoryRepo, reservationRepo, eventPublisher, cache, Clock.systemUTC(), SimpleMeterRegistry(),
         )
     }
 
@@ -45,25 +48,24 @@ class CreateOrderReservationCommandHandlerCacheTest {
     fun `evicts the cached item on optimistic conflict so the retry rereads fresh`() {
         // Cache holds a (now stale) version; the conditional UPDATE fails.
         cache.put("ITEM-001", InventoryItem("ITEM-001", availableQty = 10, version = 5))
-        every { inventoryRepo.saveAll(any<List<InventoryItem>>()) } throws
-            OptimisticLockingFailureException("conflict")
+        every { inventoryRepo.save(any()) } throws OptimisticLockingFailureException("conflict")
 
-        assertThrows<OptimisticLockingFailureException> { handler.handle("ORDER-1", command) }
+        assertThrows<OptimisticLockingFailureException> { handler.handle(command) }
 
         // Served from cache, so no DB fetch happened; the conflict must have evicted the entry.
-        verify(exactly = 0) { inventoryRepo.findAllById(any()) }
+        verify(exactly = 0) { inventoryRepo.findById(any()) }
         assertNull(cache.getIfPresent("ITEM-001"))
     }
 
     @Test
     fun `populates the cache with the version-incremented item after a successful commit`() {
         // Cache miss -> DB fetch returns version 3; save returns the bumped version 4.
-        every { inventoryRepo.findAllById(any()) } returns
-            listOf(InventoryItem("ITEM-001", availableQty = 10, version = 3))
-        every { inventoryRepo.saveAll(any<List<InventoryItem>>()) } returns
-            listOf(InventoryItem("ITEM-001", availableQty = 9, version = 4))
+        every { inventoryRepo.findById("ITEM-001") } returns
+            Optional.of(InventoryItem("ITEM-001", availableQty = 10, version = 3))
+        every { inventoryRepo.save(any()) } returns
+            InventoryItem("ITEM-001", availableQty = 9, version = 4)
 
-        handler.handle("ORDER-1", command)
+        handler.handle(command)
 
         val cached = cache.getIfPresent("ITEM-001")
         assertEquals(4L, cached?.version)
@@ -74,10 +76,10 @@ class CreateOrderReservationCommandHandlerCacheTest {
     fun `version guard keeps the cache monotonic and never moves it backwards`() {
         // Cache already holds version 7; an out-of-order refresh carrying version 4 must not win.
         cache.put("ITEM-001", InventoryItem("ITEM-001", availableQty = 5, version = 7))
-        every { inventoryRepo.saveAll(any<List<InventoryItem>>()) } returns
-            listOf(InventoryItem("ITEM-001", availableQty = 4, version = 4))
+        every { inventoryRepo.save(any()) } returns
+            InventoryItem("ITEM-001", availableQty = 4, version = 4)
 
-        handler.handle("ORDER-1", command)
+        handler.handle(command)
 
         assertEquals(7L, cache.getIfPresent("ITEM-001")?.version)
     }

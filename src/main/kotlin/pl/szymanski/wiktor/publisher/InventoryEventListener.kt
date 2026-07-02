@@ -8,6 +8,7 @@ import org.springframework.modulith.events.ApplicationModuleListener
 import org.springframework.stereotype.Component
 import pl.szymanski.wiktor.domain.InventoryCreatedEvent
 import pl.szymanski.wiktor.domain.InventoryReservedEvent
+import pl.szymanski.wiktor.domain.OrderCreatedEvent
 import pl.szymanski.wiktor.domain.OrderReservationCreatedEvent
 import java.time.Duration
 import java.time.Instant
@@ -27,6 +28,9 @@ class InventoryEventListener(
 
     @ApplicationModuleListener
     fun on(event: InventoryReservedEvent) = publish("inventory-events", event.id, event, event.createdAt)
+
+    @ApplicationModuleListener
+    fun on(event: OrderCreatedEvent) = publish("order-events", event.orderId, event, event.createdAt)
 
     @ApplicationModuleListener
     fun on(event: OrderReservationCreatedEvent) = publish("order-events", event.orderId, event, event.createdAt)
