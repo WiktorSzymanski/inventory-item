@@ -25,6 +25,21 @@ data class InventoryReservedEvent(
 
 data class ReservedItem(val itemId: String, val quantity: Int)
 
+// Emitted when an order is admitted (PENDING). Carries the requested lines so the reservation
+// listener is self-contained: it can reserve every item from the event payload alone, without
+// re-reading the order (there is no order line-item table). Mirrors the ES branch's stored
+// OrderCreated event.
+data class OrderCreatedEvent(
+    val orderId: String,
+    val userId: String,
+    val items: List<ReservedItem>,
+    val correlationId: UUID,
+    val createdAt: Instant,
+    // Filler to inflate the serialized payload for benchmarking; mirrors InventoryCreatedEvent
+    // so TO and ES can be load-tested at equal payload sizes.
+    val additionalBytes: String = "",
+)
+
 data class OrderReservationCreatedEvent(
     val orderId: String,
     val userId: String,

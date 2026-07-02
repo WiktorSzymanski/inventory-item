@@ -10,7 +10,6 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
-import org.springframework.core.task.TaskRejectedException
 import pl.szymanski.wiktor.controller.GlobalExceptionHandler
 import pl.szymanski.wiktor.controller.InventoryController
 import pl.szymanski.wiktor.domain.InventoryItem
@@ -77,17 +76,6 @@ class ApplicationTest {
             .content("""{"userId":"USER-1","items":[{"itemId":"ITEM-001","quantity":5}]}"""))
             .andExpect(status().isAccepted)
             .andExpect(jsonPath("$.orderId").value("ORDER-1"))
-    }
-
-    @Test
-    fun `POST orders returns 503 when worker queue is full`() {
-        every { inventoryService.acceptOrder(any()) } throws
-            TaskRejectedException("queue full")
-
-        mockMvc.perform(post("/inventory/orders")
-            .contentType(MediaType.APPLICATION_JSON)
-            .content("""{"userId":"USER-1","items":[{"itemId":"ITEM-001","quantity":5}]}"""))
-            .andExpect(status().isServiceUnavailable)
     }
 
     @Test

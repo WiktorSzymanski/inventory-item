@@ -14,13 +14,13 @@ import org.springframework.web.bind.annotation.RestController
 import pl.szymanski.wiktor.domain.OrderStatus
 import pl.szymanski.wiktor.service.InventoryService
 import pl.szymanski.wiktor.service.command.CreateItemCommand
-import pl.szymanski.wiktor.service.command.CreateOrderReservationCommand
+import pl.szymanski.wiktor.service.command.CreateOrderCommand
 import pl.szymanski.wiktor.service.command.OrderItem
 import java.util.UUID
 
 data class CreateItemRequest(val id: String, val availableQty: Int, val additionalBytesSize: Int = 0)
 data class OrderItemRequest(val itemId: String, val quantity: Int)
-data class CreateOrderRequest(val userId: String, val items: List<OrderItemRequest>)
+data class CreateOrderRequest(val userId: String, val items: List<OrderItemRequest>, val additionalBytesSize: Int = 0)
 
 data class InventoryResponse(val itemId: String, val availableQty: Int, val version: Long)
 data class CreateItemResponse(val itemId: String, val availableQty: Int)
@@ -66,9 +66,10 @@ class InventoryController(
     fun createOrder(@RequestBody request: CreateOrderRequest): ResponseEntity<CreateOrderResponse> {
         log.info("POST /inventory/orders userId={} itemCount={}", request.userId, request.items.size)
         val orderId = inventoryService.acceptOrder(
-            CreateOrderReservationCommand(
+            CreateOrderCommand(
                 userId = request.userId,
                 items = request.items.map { OrderItem(it.itemId, it.quantity) },
+                additionalBytesSize = request.additionalBytesSize,
             )
         )
         log.info("POST /inventory/orders accepted orderId={}", orderId)
