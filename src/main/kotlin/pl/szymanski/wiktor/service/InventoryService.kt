@@ -11,10 +11,12 @@ import org.springframework.dao.OptimisticLockingFailureException
 import org.springframework.dao.PessimisticLockingFailureException
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
+import org.springframework.modulith.events.ApplicationModuleListener
 import org.springframework.resilience.annotation.Retryable
 import org.springframework.stereotype.Service
 import pl.szymanski.wiktor.domain.InventoryItem
 import pl.szymanski.wiktor.domain.Order
+import pl.szymanski.wiktor.domain.OrderCreatedEvent
 import pl.szymanski.wiktor.domain.OrderStatus
 import pl.szymanski.wiktor.exception.InsufficientStockException
 import pl.szymanski.wiktor.exception.NotFoundException
@@ -22,9 +24,11 @@ import pl.szymanski.wiktor.repository.InventoryRepository
 import pl.szymanski.wiktor.repository.OrderRepository
 import pl.szymanski.wiktor.service.command.CreateInventoryItemCommandHandler
 import pl.szymanski.wiktor.service.command.CreateItemCommand
-import pl.szymanski.wiktor.service.command.CreateOrderReservationCommand
-import pl.szymanski.wiktor.service.command.CreateOrderReservationCommandHandler
+import pl.szymanski.wiktor.service.command.CreateOrderCommand
+import pl.szymanski.wiktor.service.command.CreateOrderCommandHandler
+import pl.szymanski.wiktor.service.command.ReserveOrderItemsCommandHandler
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 @Service
@@ -32,7 +36,8 @@ class InventoryService(
     private val inventoryRepository: InventoryRepository,
     private val orderRepository: OrderRepository,
     private val createInventoryItemCommandHandler: CreateInventoryItemCommandHandler,
-    private val createOrderReservationCommandHandler: CreateOrderReservationCommandHandler,
+    private val createOrderCommandHandler: CreateOrderCommandHandler,
+    private val reserveOrderItemsCommandHandler: ReserveOrderItemsCommandHandler,
     @Qualifier("orderWorkerExecutor") private val orderWorkerExecutor: TaskExecutor,
     // Self-proxy so processOrder() invoked from the worker task goes through the
     // @Retryable interceptor; a direct this-call would bypass it.
@@ -40,6 +45,11 @@ class InventoryService(
     private val meterRegistry: MeterRegistry,
 ) {
     private val log = LoggerFactory.getLogger(this::class.java)
+
+    // Admission timestamp handed from acceptOrder (HTTP thread) to the after-commit reservation
+    // trigger, keyed by orderId. Populated before the OrderCreatedEvent can be delivered, removed
+    // when the worker task is submitted. Absent only on backup-poller replay after a crash.
+    private val acceptedAtByOrderId = ConcurrentHashMap<String, Long>()
 
     private val processingTimer: Timer = meterRegistry.timer("order.processing.time")
     private val queueWaitTimer: Timer = meterRegistry.timer("order.queue.wait")
@@ -71,37 +81,52 @@ class InventoryService(
     fun getOrder(orderId: String): Order? =
         orderRepository.findById(orderId).orElse(null)
 
-    fun acceptOrder(command: CreateOrderReservationCommand): String {
-        val acceptedAtNs = System.nanoTime()
+    fun acceptOrder(command: CreateOrderCommand): String {
         val orderId = UUID.randomUUID().toString()
+        // Record admission time before dispatch so it is available to the after-commit trigger,
+        // which may fire on another thread as soon as the admission transaction commits.
+        acceptedAtByOrderId[orderId] = System.nanoTime()
         log.info("[ORDER] accepted orderId={} userId={} itemCount={} correlationId={}", orderId, command.userId, command.items.size, command.correlationId)
-        // Committed before the task is submitted, so the worker always sees the row.
-        orderRepository.save(Order(orderId = orderId, userId = command.userId))
-        // Unbounded worker queue: execute() never rejects, so there is no queue-full load shedding
-        // (matches the ES branches, which absorb load on unbounded async executors).
-        orderWorkerExecutor.execute { runOrderTask(orderId, command, acceptedAtNs) }
+        // Committed before the reservation is triggered, so the reservation and any concurrent
+        // status query always see the row. Publishes OrderCreatedEvent as part of the same tx.
+        createOrderCommandHandler.handle(orderId, command)
         return orderId
     }
 
-    private fun runOrderTask(orderId: String, command: CreateOrderReservationCommand, acceptedAtNs: Long) {
-        queueWaitTimer.record(System.nanoTime() - acceptedAtNs, TimeUnit.NANOSECONDS)
+    /**
+     * Reservation trigger: consumes OrderCreatedEvent after the admission transaction commits and
+     * hands the work to the unbounded worker pool (execute() never rejects, so there is no
+     * queue-full load shedding — matches the ES branches' unbounded async executors).
+     */
+    @ApplicationModuleListener
+    fun onOrderCreated(event: OrderCreatedEvent) {
+        val acceptedAtNs = acceptedAtByOrderId.remove(event.orderId) ?: -1L
+        orderWorkerExecutor.execute { runOrderTask(event, acceptedAtNs) }
+    }
+
+    private fun runOrderTask(event: OrderCreatedEvent, acceptedAtNs: Long) {
+        if (acceptedAtNs >= 0) {
+            queueWaitTimer.record(System.nanoTime() - acceptedAtNs, TimeUnit.NANOSECONDS)
+        }
         val sample = Timer.start()
         var outcome = "confirmed"
         try {
-            self.getObject().processOrder(orderId, command)
+            self.getObject().processOrder(event)
             completedCounter("confirmed", "none").increment()
         } catch (e: Exception) {
             outcome = "rejected"
-            log.warn("[ORDER] rejected orderId={} reason={} correlationId={}", orderId, e.message, command.correlationId)
+            log.warn("[ORDER] rejected orderId={} reason={} correlationId={}", event.orderId, e.message, event.correlationId)
             meterRegistry.counter("inventory.exception", "type", e.javaClass.simpleName).increment()
             if (e is OptimisticLockingFailureException || e is PessimisticLockingFailureException) {
                 optimisticExhaustedCounter.increment()
             }
             completedCounter("rejected", rejectionReason(e)).increment()
-            orderRepository.updateStatus(orderId, OrderStatus.REJECTED, e.message)
+            orderRepository.updateStatus(event.orderId, OrderStatus.REJECTED, e.message)
         } finally {
             sample.stop(processingTimer)
-            e2eTimer(outcome).record(System.nanoTime() - acceptedAtNs, TimeUnit.NANOSECONDS)
+            if (acceptedAtNs >= 0) {
+                e2eTimer(outcome).record(System.nanoTime() - acceptedAtNs, TimeUnit.NANOSECONDS)
+            }
         }
     }
 
@@ -112,9 +137,9 @@ class InventoryService(
         multiplier = 2.0,
         maxDelay = 500,
     )
-    fun processOrder(orderId: String, command: CreateOrderReservationCommand) =
+    fun processOrder(event: OrderCreatedEvent) =
         try {
-            createOrderReservationCommandHandler.handle(orderId, command)
+            reserveOrderItemsCommandHandler.handle(event)
         } catch (e: Exception) {
             if (e is OptimisticLockingFailureException || e is PessimisticLockingFailureException) {
                 optimisticRetryCounter.increment()
