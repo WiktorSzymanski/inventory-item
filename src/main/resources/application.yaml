@@ -16,12 +16,18 @@ spring:
     locations: classpath:db/migration
   modulith:
     events:
-      polling-interval: PT30S   # interval between polling runs; tune per your latency requirement
+      polling-interval: PT1S   # interval between polling runs; tune per your latency requirement
+  task:
+    scheduling:
+      pool:
+        size: 2   # so a long drain() tick doesn't starve the outbox.backlog gauge
 
 app:
   order-worker:
     threads: ${ORDER_WORKER_THREADS:200}                   # worker pool processing accepted orders
     queue-capacity: ${ORDER_WORKER_QUEUE_CAPACITY:2147483647}  # unbounded by default (Int.MAX_VALUE); absorb load like ES, no queue-full shedding
+  outbox-poller:
+    threads: ${OUTBOX_POLLER_THREADS:10}                    # parallel outbox delivery workers; 1 preserves global publication order
 
 management:
   endpoints:
