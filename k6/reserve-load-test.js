@@ -3,8 +3,10 @@ import { check, sleep } from 'k6';
 import { Counter, Trend } from 'k6/metrics';
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
-const VUS = parseInt(__ENV.VUS || '10');
-const DURATION = __ENV.DURATION || '10m';
+const START_RATE = parseInt(__ENV.START_RATE || '10');
+const TARGET_RATE = parseInt(__ENV.TARGET_RATE || '200');
+const DURATION = __ENV.DURATION || '5m';
+const MAX_VUS = parseInt(__ENV.MAX_VUS || '300');
 const ITEMS_PER_ORDER = parseInt(__ENV.ITEMS_PER_ORDER || '1');
 
 const ordersMade = new Counter('orders_made');
@@ -40,9 +42,14 @@ export function setup() {
 export const options = {
     scenarios: {
         order: {
-            executor: 'constant-vus',
-            vus: VUS,
-            duration: DURATION,
+            executor: 'ramping-arrival-rate',
+            startRate: START_RATE,
+            timeUnit: '1s',
+            preAllocatedVUs: START_RATE,
+            maxVUs: MAX_VUS,
+            stages: [
+                { target: TARGET_RATE, duration: DURATION },
+            ],
         },
     },
 };

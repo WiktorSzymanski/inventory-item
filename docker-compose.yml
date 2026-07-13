@@ -55,8 +55,8 @@ services:
     environment:
       BASE_URL:  "http://api-to:8080"
 #      BASE_URL:  "http://host.docker.internal:8080"
-      VUS:       "${VUS:-50}"
-      DURATION:  "${DURATION:-10m}"
+#      VUS:       "${VUS:-50}"
+      DURATION:  "${DURATION:-5m}"
     entrypoint: ["/bin/sh", "/scripts/run.sh"]
     depends_on:
       - grafana-reporter
