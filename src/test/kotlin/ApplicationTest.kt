@@ -14,7 +14,9 @@ import pl.szymanski.wiktor.controller.GlobalExceptionHandler
 import pl.szymanski.wiktor.controller.InventoryController
 import pl.szymanski.wiktor.domain.InventoryItem
 import pl.szymanski.wiktor.domain.Order
+import pl.szymanski.wiktor.domain.OrderItems
 import pl.szymanski.wiktor.domain.OrderStatus
+import pl.szymanski.wiktor.domain.ReservedItem
 import pl.szymanski.wiktor.exception.ItemAlreadyExistsException
 import pl.szymanski.wiktor.service.InventoryService
 
@@ -81,7 +83,7 @@ class ApplicationTest {
     @Test
     fun `GET order returns 200 with status`() {
         every { inventoryService.getOrder("ORDER-1") } returns
-            Order("ORDER-1", "USER-1", OrderStatus.REJECTED, "Item MISSING not found")
+            Order("ORDER-1", "USER-1", OrderItems(listOf(ReservedItem("MISSING", 1))), OrderStatus.REJECTED, "Item MISSING not found")
 
         mockMvc.perform(get("/inventory/orders/ORDER-1"))
             .andExpect(status().isOk)

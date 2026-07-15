@@ -17,7 +17,6 @@ import org.springframework.stereotype.Service
 import pl.szymanski.wiktor.domain.InventoryItem
 import pl.szymanski.wiktor.domain.Order
 import pl.szymanski.wiktor.domain.OrderCreatedEvent
-import pl.szymanski.wiktor.domain.OrderStatus
 import pl.szymanski.wiktor.exception.InsufficientStockException
 import pl.szymanski.wiktor.exception.NotFoundException
 import pl.szymanski.wiktor.repository.InventoryRepository
@@ -26,6 +25,8 @@ import pl.szymanski.wiktor.service.command.CreateInventoryItemCommandHandler
 import pl.szymanski.wiktor.service.command.CreateItemCommand
 import pl.szymanski.wiktor.service.command.CreateOrderCommand
 import pl.szymanski.wiktor.service.command.CreateOrderCommandHandler
+import pl.szymanski.wiktor.service.command.FailOrderCommand
+import pl.szymanski.wiktor.service.command.FailOrderCommandHandler
 import pl.szymanski.wiktor.service.command.ReserveOrderItemsCommandHandler
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -38,6 +39,7 @@ class InventoryService(
     private val createInventoryItemCommandHandler: CreateInventoryItemCommandHandler,
     private val createOrderCommandHandler: CreateOrderCommandHandler,
     private val reserveOrderItemsCommandHandler: ReserveOrderItemsCommandHandler,
+    private val failOrderCommandHandler: FailOrderCommandHandler,
     @Qualifier("orderWorkerExecutor") private val orderWorkerExecutor: TaskExecutor,
     // Self-proxy so processOrder() invoked from the worker task goes through the
     // @Retryable interceptor; a direct this-call would bypass it.
@@ -121,7 +123,15 @@ class InventoryService(
                 optimisticExhaustedCounter.increment()
             }
             completedCounter("rejected", rejectionReason(e)).increment()
-            orderRepository.updateStatus(event.orderId, OrderStatus.REJECTED, e.message)
+            // Rejection goes through the aggregate's command handler (own transaction, records
+            // OrderFailedEvent to the outbox). Never let a failure here escape into the executor.
+            try {
+                failOrderCommandHandler.handle(
+                    FailOrderCommand(event.orderId, e.message ?: e.javaClass.simpleName, event.correlationId)
+                )
+            } catch (rejectError: Exception) {
+                log.error("[ORDER] failed to reject orderId={} correlationId={}", event.orderId, event.correlationId, rejectError)
+            }
         } finally {
             sample.stop(processingTimer)
             if (acceptedAtNs >= 0) {
