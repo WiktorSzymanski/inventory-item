@@ -22,6 +22,7 @@ import pl.szymanski.wiktor.repository.InventoryRepository
 import pl.szymanski.wiktor.repository.OrderRepository
 import pl.szymanski.wiktor.service.command.CreateInventoryItemCommandHandler
 import pl.szymanski.wiktor.service.command.CreateOrderCommandHandler
+import pl.szymanski.wiktor.service.command.FailOrderCommandHandler
 import pl.szymanski.wiktor.service.command.ReserveOrderItemsCommandHandler
 import java.time.Instant
 import java.util.UUID
@@ -88,6 +89,9 @@ class InventoryServiceRetryTest {
 
         @Bean
         fun reserveOrderItemsCommandHandler(): ReserveOrderItemsCommandHandler = mockk()
+
+        @Bean
+        fun failOrderCommandHandler(): FailOrderCommandHandler = mockk(relaxed = true)
 
         @Bean
         fun orderWorkerExecutor(): TaskExecutor = SyncTaskExecutor()

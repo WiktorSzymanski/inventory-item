@@ -40,10 +40,15 @@ data class OrderCreatedEvent(
     val additionalBytes: String = "",
 )
 
-data class OrderReservationCreatedEvent(
+// Terminal order events mirror the ES branch's OrderCompletedEvent/OrderFailedEvent payloads,
+// plus the TO-mandatory createdAt (ES gets the timestamp from event-store metadata instead).
+data class OrderCompletedEvent(
     val orderId: String,
-    val userId: String,
-    val items: List<ReservedItem>,
-    val correlationId: UUID,
+    val createdAt: Instant,
+)
+
+data class OrderFailedEvent(
+    val orderId: String,
+    val reason: String,
     val createdAt: Instant,
 )
