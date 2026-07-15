@@ -16,8 +16,10 @@ CREATE TABLE reservations (
 CREATE TABLE orders (
     order_id       VARCHAR(64)  PRIMARY KEY,
     user_id        VARCHAR(64)  NOT NULL,
+    items          JSONB        NOT NULL DEFAULT '{}',
     status         VARCHAR(16)  NOT NULL DEFAULT 'PENDING',
     failure_reason TEXT,
+    version        BIGINT       NOT NULL DEFAULT 0,
     created_at     TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
