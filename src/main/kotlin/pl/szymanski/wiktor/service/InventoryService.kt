@@ -104,6 +104,7 @@ class InventoryService(
     fun onOrderCreated(event: OrderCreatedEvent) {
         val acceptedAtNs = acceptedAtByOrderId.remove(event.orderId) ?: -1L
         orderWorkerExecutor.execute { runOrderTask(event, acceptedAtNs) }
+        // TODO: Ponoć zrobienie tego przez Async odrazu zwraca i nie powtarza jeśli się nie powiedzie, sam handler też jest async więc czemu bezpośrednio w nim nie może być kod który jak zrobi fail to oznaczy event za nie dostarczony.
     }
 
     private fun runOrderTask(event: OrderCreatedEvent, acceptedAtNs: Long) {
