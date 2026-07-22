@@ -1145,6 +1145,82 @@
           "refId": "B"
         }
       ]
+    },
+    {
+      "id": 14,
+      "title": "Order E2E Latency by Outcome — p50 / p95 / p99",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 84,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum(rate(order_e2e_time_seconds_bucket[1m])) by (le, outcome))",
+          "legendFormat": "{{outcome}} p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum(rate(order_e2e_time_seconds_bucket[1m])) by (le, outcome))",
+          "legendFormat": "{{outcome}} p95",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum(rate(order_e2e_time_seconds_bucket[1m])) by (le, outcome))",
+          "legendFormat": "{{outcome}} p99",
+          "refId": "C"
+        }
+      ]
     }
   ]
 }
