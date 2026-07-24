@@ -1,19 +1,13 @@
 package pl.szymanski.wiktor.config
 
-import org.axonframework.common.caching.NoCache
-import org.axonframework.config.AggregateConfigurer
-import org.axonframework.config.Configurer
 import org.axonframework.config.EventProcessingConfigurer
 import org.axonframework.eventhandling.TrackingEventProcessorConfiguration
-import org.axonframework.eventsourcing.SnapshotTriggerDefinition
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Configuration
-import pl.szymanski.wiktor.domain.InventoryItem
 
 @Configuration
-@EnableConfigurationProperties(CacheProperties::class, SagaProcessorProperties::class)
+@EnableConfigurationProperties(SagaProcessorProperties::class)
 class AxonCustomizerConfig {
 
     @Autowired
@@ -42,18 +36,7 @@ class AxonCustomizerConfig {
         }
     }
 
-    @Autowired
-    fun configureInventoryItemCache(
-        configurer: Configurer,
-        cacheProperties: CacheProperties,
-        @Qualifier("inventorySnapshotTrigger") snapshotTrigger: SnapshotTriggerDefinition,
-    ) {
-        val cache: org.axonframework.common.caching.Cache =
-            if (cacheProperties.enabled) StrongCache() else NoCache.INSTANCE
-        configurer.configureAggregate(
-            AggregateConfigurer.defaultConfiguration(InventoryItem::class.java)
-                .configureCache { cache }
-                .configureSnapshotTrigger { snapshotTrigger }
-        )
-    }
+    // ES-3-optimistic: the former manual configureAggregate(InventoryItem) + StrongCache/NoCache wiring
+    // was removed. InventoryItem is now registered solely via @Aggregate(repository = "inventoryItemRepository"),
+    // which resolves the previous @Aggregate + manual-config dual registration. See AxonConfig.inventoryItemRepository.
 }

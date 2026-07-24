@@ -4,7 +4,11 @@ import com.fasterxml.jackson.module.kotlin.kotlinModule
 import com.zaxxer.hikari.HikariDataSource
 import io.micrometer.core.instrument.MeterRegistry
 import org.axonframework.common.jdbc.DataSourceConnectionProvider
+import org.axonframework.common.lock.NullLockFactory
 import org.axonframework.common.transaction.TransactionManager
+import org.axonframework.eventsourcing.EventSourcingRepository
+import org.axonframework.eventsourcing.GenericAggregateFactory
+import org.axonframework.eventsourcing.eventstore.EventStore
 import org.axonframework.eventhandling.tokenstore.jdbc.JdbcTokenStore
 import org.axonframework.eventhandling.tokenstore.jdbc.TokenSchema
 import org.axonframework.eventsourcing.EventCountSnapshotTriggerDefinition
@@ -14,11 +18,13 @@ import org.axonframework.eventsourcing.Snapshotter
 import org.axonframework.eventsourcing.eventstore.EventStorageEngine
 import org.axonframework.eventsourcing.eventstore.jdbc.EventSchema
 import org.axonframework.eventsourcing.eventstore.jdbc.JdbcEventStorageEngine
+import org.axonframework.eventsourcing.eventstore.jpa.SQLStateResolver
 import org.axonframework.modelling.saga.repository.jdbc.JdbcSagaStore
 import org.axonframework.modelling.saga.repository.jdbc.PostgresSagaSqlSchema
 import org.axonframework.modelling.saga.repository.jdbc.SagaSchema
 import org.axonframework.serialization.Serializer
 import org.axonframework.spring.messaging.unitofwork.SpringTransactionManager
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.context.properties.EnableConfigurationProperties
@@ -28,11 +34,14 @@ import org.springframework.context.annotation.Primary
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.jdbc.datasource.DataSourceTransactionManager
 import org.springframework.transaction.PlatformTransactionManager
+import pl.szymanski.wiktor.domain.InventoryItem
 import javax.sql.DataSource
 
 @Configuration
 @EnableConfigurationProperties(SnapshotProperties::class, CacheProperties::class)
 class AxonConfig {
+
+    private val log = LoggerFactory.getLogger(AxonConfig::class.java)
 
     @Bean
     fun axonObjectMapper(): com.fasterxml.jackson.databind.ObjectMapper =
@@ -123,6 +132,11 @@ class AxonConfig {
         eventSchema: EventSchema,
         @Qualifier("eventSerializer") eventSerializer: Serializer,
         meterRegistry: MeterRegistry,
+        // ES-3-optimistic: gap-handling tuning. Overridable so the benchmark can A/B the default
+        // (maxGapOffset=10000, gapTimeout=60000) against the tightened values below.
+        @Value("\${axon.eventstore.max-gap-offset:500}") maxGapOffset: Int,
+        @Value("\${axon.eventstore.gap-timeout-ms:5000}") gapTimeoutMs: Int,
+        @Value("\${axon.eventstore.gap-cleaning-threshold:250}") gapCleaningThreshold: Int,
     ): EventStorageEngine {
         val jdbc = JdbcEventStorageEngine.builder()
             .connectionProvider(DataSourceConnectionProvider(axonDataSource))
@@ -130,6 +144,20 @@ class AxonConfig {
             .schema(eventSchema)
             .eventSerializer(eventSerializer)
             .snapshotSerializer(eventSerializer)
+            // ES-3-optimistic: with NullLockFactory the UNIQUE (aggregate_identifier, sequence_number)
+            // constraint is the ONLY conflict detector. Translate Postgres 23xxx (unique_violation
+            // 23505) into Axon's ConcurrencyException so the gateway RetryScheduler fires instead of
+            // leaking a raw store exception.
+            .persistenceExceptionResolver(SQLStateResolver())
+            // ES-3-optimistic: every lost append burns a non-transactional BIGSERIAL global_index,
+            // leaving a PERMANENT gap. With defaults (maxGapOffset=10000, gapTimeout=60s) the
+            // GapAwareTrackingToken carries ~10k gaps (~41 kB) and is rewritten every batch, bloating
+            // the token_entry TOAST to double-digit GB. Since these gaps never fill, a small window is
+            // safe: record gaps only within maxGapOffset of the head, and let gapCleaningThreshold +
+            // the short gapTimeout purge them from the token continuously (on the fly).
+            .maxGapOffset(maxGapOffset)
+            .gapTimeout(gapTimeoutMs)
+            .gapCleaningThreshold(gapCleaningThreshold)
             .build()
         return TimedEventStorageEngine(jdbc, meterRegistry)
     }
@@ -143,6 +171,38 @@ class AxonConfig {
             EventCountSnapshotTriggerDefinition(snapshotter, snapshotProperties.eventCount)
         else
             NoSnapshotTriggerDefinition.INSTANCE
+
+    // ES-3-optimistic: lock-free copy-on-write repository for the hot InventoryItem aggregate.
+    // Referenced by @Aggregate(repository = "inventoryItemRepository") on InventoryItem, so it fully
+    // replaces the default CachingEventSourcingRepository + PessimisticLockFactory for that aggregate.
+    // OrderAggregate keeps Axon's default (pessimistic) repository.
+    @Bean
+    fun inventoryItemRepository(
+        eventStore: EventStore,
+        @Qualifier("inventorySnapshotTrigger") snapshotTrigger: SnapshotTriggerDefinition,
+        @Qualifier("axonObjectMapper") axonObjectMapper: com.fasterxml.jackson.databind.ObjectMapper,
+        meterRegistry: MeterRegistry,
+        cacheProperties: CacheProperties,
+    ): OptimisticCachingRepository<InventoryItem> {
+        val builder = EventSourcingRepository.builder(InventoryItem::class.java)
+            .eventStore(eventStore)
+            .aggregateFactory(GenericAggregateFactory(InventoryItem::class.java))
+            .snapshotTriggerDefinition(snapshotTrigger)
+            .lockFactory(NullLockFactory.INSTANCE)
+        log.info(
+            "InventoryItem -> OptimisticCachingRepository (NullLockFactory, copy-on-write, cache.enabled={})",
+            cacheProperties.enabled,
+        )
+        return OptimisticCachingRepository(
+            builder = builder,
+            eventStore = eventStore,
+            aggregateType = InventoryItem::class.java,
+            snapshotTriggerDefinition = snapshotTrigger,
+            objectMapper = axonObjectMapper,
+            meterRegistry = meterRegistry,
+            cacheEnabled = cacheProperties.enabled,
+        )
+    }
 
     @Bean
     fun sagaStore(
