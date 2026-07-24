@@ -13,29 +13,37 @@ import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * ES-3-optimistic copy-on-write repository.
+ * ES-3-pesimistic copy-on-write repository.
+ *
+ * Identical caching machinery to the ES-3-optimistic variant — the ONLY difference is the lock: this
+ * repository is built with Axon's default [org.axonframework.common.lock.PessimisticLockFactory]
+ * instead of `NullLockFactory`, so commands targeting the same aggregate are serialised inside the JVM
+ * and never race for the same sequence number. The two branches are therefore a clean A/B of the
+ * concurrency strategy alone.
  *
  * Holds only CONFIRMED (persisted) aggregate state at a known sequence number in a strong-reference,
- * never-evicted cache. Each command works on its OWN deep copy of that state, so there is no shared
- * mutable aggregate instance and hence no need for a lock — this repository is built with
- * [org.axonframework.common.lock.NullLockFactory]. Correctness rests on the event store's
- * `UNIQUE (aggregate_identifier, sequence_number)` constraint: two commands that both start from
- * sequence N try to append N+1, exactly one wins, the loser gets a `ConcurrencyException` (the JDBC
- * engine's `SQLStateResolver` translates the Postgres 23xxx violation) and is retried by the gateway.
+ * never-evicted cache. Each command still works on its OWN deep copy of that state: with the lock in
+ * place this is no longer required for correctness, but it keeps the cache immune to a rolled-back
+ * command's partial mutations, so a rollback needs no cache invalidation (unlike Axon's stock
+ * `CachingEventSourcingRepository`, which shares one instance and must evict it on failure).
+ *
+ * Lock/cache interplay: [org.axonframework.modelling.command.LockingRepository] obtains the lock
+ * before [doLoadWithLock] and releases it in the UnitOfWork CLEANUP phase — i.e. after AFTER_COMMIT.
+ * [advance] therefore always runs while the lock is still held, so the next command for the same
+ * aggregate is guaranteed to observe the cache at the store head: a hit is never stale.
  *
  * Cache lifecycle:
  *  - load (hit)  -> deep-copy the confirmed root, reconstruct the aggregate at seq N (NO replay).
  *  - load (miss) -> cold replay via `super` (snapshot + tail), then seed the cache.
  *  - afterCommit -> monotonically advance the cache to the just-persisted state (confirmed only).
- *  - onRollback  -> incremental catch-up: read just the missing delta (`readEvents(id, N+1)`,
- *                   usually 1 event) and advance the cache, so the gateway retry re-runs on
- *                   `cached + delta` instead of `snapshot + full-tail` replay. On any failure the
- *                   entry is evicted so the retry cold-loads (always correct).
+ *  - onRollback  -> incremental catch-up: read just the missing delta (`readEvents(id, N+1)`) and
+ *                   advance the cache. With the pessimistic lock this finds nothing on a single node;
+ *                   it stays for the multi-node case (the lock is JVM-local, not distributed).
  *
  * Set `cache.enabled=false` to bypass the cache entirely (every load cold-replays) while keeping the
- * lock-free behaviour — useful for A/B measurement against the cached path.
+ * pessimistic locking — useful for A/B measurement against the cached path.
  */
-class OptimisticCachingRepository<T : Any>(
+class PessimisticCachingRepository<T : Any>(
     builder: EventSourcingRepository.Builder<T>,
     private val eventStore: EventStore,
     private val aggregateType: Class<T>,
@@ -50,6 +58,8 @@ class OptimisticCachingRepository<T : Any>(
     /** Repository-level strong-reference cache of confirmed state. Never evicted (bounded aggregate set). */
     private val confirmed = ConcurrentHashMap<String, Confirmed<T>>()
 
+    // Metric names are deliberately identical to the ES-3-optimistic branch so the same dashboard and
+    // report queries compare both variants without renaming anything.
     private val hitCounter = meterRegistry.counter("inventory.opt.cache.hit")
     private val missCounter = meterRegistry.counter("inventory.opt.cache.miss")
     private val catchupCounter = meterRegistry.counter("inventory.opt.catchup")
@@ -86,8 +96,10 @@ class OptimisticCachingRepository<T : Any>(
         if (!CurrentUnitOfWork.isStarted()) return
         val uow = CurrentUnitOfWork.get()
         // afterCommit fires only on a successful commit => cache holds persisted state exclusively.
+        // It runs before the lock is released (CLEANUP), so the next command sees the advanced state.
         uow.afterCommit { advance(aggregate.identifierAsString(), aggregate) }
-        // onRollback fires on ConcurrencyException (append lost) => bring the cache up to the store head.
+        // onRollback fires on a failed command; thanks to the deep copy there is nothing to undo, so
+        // this only pulls in events another node may have appended.
         uow.onRollback { catchUp(aggregate.identifierAsString(), baseSequence) }
     }
 
@@ -99,14 +111,13 @@ class OptimisticCachingRepository<T : Any>(
     }
 
     /**
-     * Incremental catch-up after a lost append: read only the delta events the cached state is
-     * missing and apply them, so the next (retried) load serves fresh state without a snapshot replay.
+     * Incremental catch-up after a rolled-back command: read only the delta events the cached state is
+     * missing and apply them, so the next load serves fresh state without a snapshot replay.
      *
-     * On a single node the winning command's [advance] (afterCommit) has usually already moved the
-     * cache to the store head by retry time; this delta read is the same-effect realisation of that
-     * for the case where no local commit updated the cache (e.g. a different node won). It is
-     * strictly best-effort and NON-destructive: on any failure the cache is left untouched (never
-     * evicted) so we never fall back into the snapshot+tail replay path this cache exists to avoid.
+     * On a single node with the pessimistic lock this finds nothing — no other command could have
+     * appended while this one held the lock. It matters only when a second node writes to the same
+     * aggregate. Strictly best-effort and NON-destructive: on any failure the cache is left untouched
+     * (never evicted) so we never fall back into the snapshot+tail replay path this cache exists to avoid.
      */
     private fun catchUp(id: String, baseSequence: Long) {
         try {
@@ -126,8 +137,8 @@ class OptimisticCachingRepository<T : Any>(
                 catchupEvents.record((newSequence - current.sequence).toDouble())
             }
         } catch (e: Exception) {
-            // Non-destructive: leave the cache as-is; the winning command's afterCommit keeps it fresh.
-            log.debug("[OPT] delta catch-up skipped for {} (base={}): {}", id, baseSequence, e.message)
+            // Non-destructive: leave the cache as-is; the committing command's afterCommit keeps it fresh.
+            log.debug("[PES] delta catch-up skipped for {} (base={}): {}", id, baseSequence, e.message)
         }
     }
 
@@ -137,6 +148,6 @@ class OptimisticCachingRepository<T : Any>(
     fun cachedSequence(id: String): Long? = confirmed[id]?.sequence
 
     companion object {
-        private val log = LoggerFactory.getLogger(OptimisticCachingRepository::class.java)
+        private val log = LoggerFactory.getLogger(PessimisticCachingRepository::class.java)
     }
 }

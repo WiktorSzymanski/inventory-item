@@ -4,7 +4,7 @@ import com.fasterxml.jackson.module.kotlin.kotlinModule
 import com.zaxxer.hikari.HikariDataSource
 import io.micrometer.core.instrument.MeterRegistry
 import org.axonframework.common.jdbc.DataSourceConnectionProvider
-import org.axonframework.common.lock.NullLockFactory
+import org.axonframework.common.lock.PessimisticLockFactory
 import org.axonframework.common.transaction.TransactionManager
 import org.axonframework.eventsourcing.EventSourcingRepository
 import org.axonframework.eventsourcing.GenericAggregateFactory
@@ -132,7 +132,7 @@ class AxonConfig {
         eventSchema: EventSchema,
         @Qualifier("eventSerializer") eventSerializer: Serializer,
         meterRegistry: MeterRegistry,
-        // ES-3-optimistic: gap-handling tuning. Overridable so the benchmark can A/B the default
+        // Gap-handling tuning. Overridable so the benchmark can A/B the default
         // (maxGapOffset=10000, gapTimeout=60000) against the tightened values below.
         @Value("\${axon.eventstore.max-gap-offset:500}") maxGapOffset: Int,
         @Value("\${axon.eventstore.gap-timeout-ms:5000}") gapTimeoutMs: Int,
@@ -144,17 +144,19 @@ class AxonConfig {
             .schema(eventSchema)
             .eventSerializer(eventSerializer)
             .snapshotSerializer(eventSerializer)
-            // ES-3-optimistic: with NullLockFactory the UNIQUE (aggregate_identifier, sequence_number)
-            // constraint is the ONLY conflict detector. Translate Postgres 23xxx (unique_violation
-            // 23505) into Axon's ConcurrencyException so the gateway RetryScheduler fires instead of
-            // leaking a raw store exception.
+            // The in-JVM lock cannot cover a second node writing the same aggregate, so the
+            // UNIQUE (aggregate_identifier, sequence_number) constraint stays the last line of defence.
+            // Translate Postgres 23xxx (unique_violation 23505) into Axon's ConcurrencyException so the
+            // gateway RetryScheduler fires instead of leaking a raw store exception. Kept identical to
+            // ES-3-optimistic so both branches run the same storage engine configuration.
             .persistenceExceptionResolver(SQLStateResolver())
-            // ES-3-optimistic: every lost append burns a non-transactional BIGSERIAL global_index,
-            // leaving a PERMANENT gap. With defaults (maxGapOffset=10000, gapTimeout=60s) the
-            // GapAwareTrackingToken carries ~10k gaps (~41 kB) and is rewritten every batch, bloating
-            // the token_entry TOAST to double-digit GB. Since these gaps never fill, a small window is
-            // safe: record gaps only within maxGapOffset of the head, and let gapCleaningThreshold +
-            // the short gapTimeout purge them from the token continuously (on the fly).
+            // Kept from ES-3-optimistic so the two variants share identical infrastructure. A rolled-back
+            // append burns a non-transactional BIGSERIAL global_index, leaving a PERMANENT gap; with
+            // defaults (maxGapOffset=10000, gapTimeout=60s) the GapAwareTrackingToken carries ~10k gaps
+            // (~41 kB) rewritten every batch, bloating the token_entry TOAST. Under pessimistic locking
+            // such rollbacks are rare, so this is cheap insurance rather than a necessity here: record
+            // gaps only within maxGapOffset of the head, and let gapCleaningThreshold + the short
+            // gapTimeout purge them from the token continuously (on the fly).
             .maxGapOffset(maxGapOffset)
             .gapTimeout(gapTimeoutMs)
             .gapCleaningThreshold(gapCleaningThreshold)
@@ -172,10 +174,12 @@ class AxonConfig {
         else
             NoSnapshotTriggerDefinition.INSTANCE
 
-    // ES-3-optimistic: lock-free copy-on-write repository for the hot InventoryItem aggregate.
-    // Referenced by @Aggregate(repository = "inventoryItemRepository") on InventoryItem, so it fully
-    // replaces the default CachingEventSourcingRepository + PessimisticLockFactory for that aggregate.
-    // OrderAggregate keeps Axon's default (pessimistic) repository.
+    // ES-3-pesimistic: cached copy-on-write repository for the hot InventoryItem aggregate, locked with
+    // Axon's default PessimisticLockFactory (same cache as ES-3-optimistic, opposite concurrency model).
+    // Referenced by @Aggregate(repository = "inventoryItemRepository") on InventoryItem — wiring the
+    // repository through the annotation is what makes the cache actually take effect, since @Aggregate
+    // registration wins over any manual configurer.configureAggregate(...) for the same type.
+    // OrderAggregate keeps Axon's default (pessimistic, uncached) repository.
     @Bean
     fun inventoryItemRepository(
         eventStore: EventStore,
@@ -183,17 +187,19 @@ class AxonConfig {
         @Qualifier("axonObjectMapper") axonObjectMapper: com.fasterxml.jackson.databind.ObjectMapper,
         meterRegistry: MeterRegistry,
         cacheProperties: CacheProperties,
-    ): OptimisticCachingRepository<InventoryItem> {
+    ): PessimisticCachingRepository<InventoryItem> {
         val builder = EventSourcingRepository.builder(InventoryItem::class.java)
             .eventStore(eventStore)
             .aggregateFactory(GenericAggregateFactory(InventoryItem::class.java))
             .snapshotTriggerDefinition(snapshotTrigger)
-            .lockFactory(NullLockFactory.INSTANCE)
+            // Explicit, though this is also the LockingRepository.Builder default: commands on one
+            // aggregate are serialised in-JVM, so conflicting appends never reach the event store.
+            .lockFactory(PessimisticLockFactory.usingDefaults())
         log.info(
-            "InventoryItem -> OptimisticCachingRepository (NullLockFactory, copy-on-write, cache.enabled={})",
+            "InventoryItem -> PessimisticCachingRepository (PessimisticLockFactory, copy-on-write, cache.enabled={})",
             cacheProperties.enabled,
         )
-        return OptimisticCachingRepository(
+        return PessimisticCachingRepository(
             builder = builder,
             eventStore = eventStore,
             aggregateType = InventoryItem::class.java,

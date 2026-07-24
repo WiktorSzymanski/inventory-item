@@ -11,8 +11,8 @@ import pl.szymanski.wiktor.service.command.ReleaseReservationCommand
 import pl.szymanski.wiktor.service.command.SagaReserveItemCommand
 
 // ES-2: Jackson cannot access private Kotlin fields by default — field visibility lets it serialize all aggregate state into the snapshot
-// ES-3-optimistic: routed to the lock-free copy-on-write "inventoryItemRepository" bean (NullLockFactory);
-// snapshot trigger is configured on that repository, not here.
+// ES-3-pesimistic: routed to the cached copy-on-write "inventoryItemRepository" bean, which locks with
+// Axon's default PessimisticLockFactory; snapshot trigger is configured on that repository, not here.
 @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
 @Aggregate(repository = "inventoryItemRepository")
 class InventoryItem {

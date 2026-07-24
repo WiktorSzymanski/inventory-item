@@ -1,7 +1,8 @@
--- ES-3-optimistic safety net for token_entry TOAST bloat.
+-- Safety net for token_entry TOAST bloat, kept identical to ES-3-optimistic so both variants run the
+-- same schema and differ only in the aggregate lock.
 --
--- Under the lock-free (NullLockFactory) command side, every lost optimistic append rolls back but
--- still burns a non-transactional BIGSERIAL global_index, leaving permanent gaps. The tracking
+-- Every rolled-back append still burns a non-transactional BIGSERIAL global_index, leaving permanent
+-- gaps (frequent under the lock-free ES-3-optimistic command side, rare here). The tracking
 -- processors' GapAwareTrackingToken records those gaps and the token (BYTEA -> TOAST) is rewritten
 -- on every batch. At benchmark throughput this produced ~1M UPDATEs against ~35 rows and bloated the
 -- token_entry TOAST into double-digit GB because default autovacuum could not keep pace.

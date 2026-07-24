@@ -27,8 +27,9 @@ axon:
   jdbc:
     pool:
       size: 150
-  # ES-3-optimistic: tighten gap tracking so tokens don't accumulate the permanent gaps left by
-  # rolled-back optimistic appends (see AxonConfig.eventStorageEngine). Defaults would be 10000 / 60000.
+  # Tighten gap tracking so tokens don't accumulate the permanent gaps left by rolled-back appends
+  # (see AxonConfig.eventStorageEngine). Defaults would be 10000 / 60000. Kept identical to
+  # ES-3-optimistic so the two variants differ only in the aggregate lock.
   eventstore:
     max-gap-offset: 500
     gap-timeout-ms: 5000
