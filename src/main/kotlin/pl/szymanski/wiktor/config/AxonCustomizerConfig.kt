@@ -1,6 +1,7 @@
 package pl.szymanski.wiktor.config
 
 import org.axonframework.common.caching.NoCache
+import org.axonframework.common.caching.WeakReferenceCache
 import org.axonframework.config.AggregateConfigurer
 import org.axonframework.config.Configurer
 import org.axonframework.config.EventProcessingConfigurer
@@ -49,7 +50,7 @@ class AxonCustomizerConfig {
         @Qualifier("inventorySnapshotTrigger") snapshotTrigger: SnapshotTriggerDefinition,
     ) {
         val cache: org.axonframework.common.caching.Cache =
-            if (cacheProperties.enabled) StrongCache() else NoCache.INSTANCE
+            if (cacheProperties.enabled) WeakReferenceCache() else NoCache.INSTANCE
         configurer.configureAggregate(
             AggregateConfigurer.defaultConfiguration(InventoryItem::class.java)
                 .configureCache { cache }
