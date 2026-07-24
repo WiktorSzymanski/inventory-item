@@ -5,6 +5,8 @@ import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.MeterRegistry
 import org.axonframework.eventsourcing.EventSourcedAggregate
 import org.axonframework.eventsourcing.EventSourcingRepository
+import org.axonframework.eventsourcing.NoSnapshotTriggerDefinition
+import org.axonframework.eventsourcing.SnapshotTrigger
 import org.axonframework.eventsourcing.SnapshotTriggerDefinition
 import org.axonframework.eventsourcing.eventstore.EventStore
 import org.axonframework.messaging.unitofwork.CurrentUnitOfWork
@@ -33,7 +35,9 @@ import java.util.concurrent.ConcurrentHashMap
  * aggregate is guaranteed to observe the cache at the store head: a hit is never stale.
  *
  * Cache lifecycle:
- *  - load (hit)  -> deep-copy the confirmed root, reconstruct the aggregate at seq N (NO replay).
+ *  - load (hit)  -> deep-copy the confirmed root, reconstruct the aggregate at seq N (NO replay),
+ *                   re-attaching the cached [org.axonframework.eventsourcing.SnapshotTrigger] so the
+ *                   snapshot event counter survives (see [Confirmed]).
  *  - load (miss) -> cold replay via `super` (snapshot + tail), then seed the cache.
  *  - afterCommit -> monotonically advance the cache to the just-persisted state (confirmed only).
  *  - onRollback  -> incremental catch-up: read just the missing delta (`readEvents(id, N+1)`) and
@@ -53,7 +57,19 @@ class PessimisticCachingRepository<T : Any>(
     private val cacheEnabled: Boolean,
 ) : EventSourcingRepository<T>(builder) {
 
-    private data class Confirmed<T>(val root: T, val sequence: Long, val deleted: Boolean)
+    /**
+     * [trigger] is cached alongside the state for the same reason Axon's [AggregateCacheEntry] keeps
+     * one: [SnapshotTriggerDefinition.prepareTrigger] hands out a trigger with a ZEROED event counter,
+     * so preparing a fresh one per cache hit would stop `EventCountSnapshotTriggerDefinition` from ever
+     * reaching its threshold and silently disable snapshotting. The live trigger is carried forward and
+     * re-attached via [SnapshotTriggerDefinition.reconfigure] instead.
+     */
+    private data class Confirmed<T>(
+        val root: T,
+        val sequence: Long,
+        val deleted: Boolean,
+        val trigger: SnapshotTrigger,
+    )
 
     /** Repository-level strong-reference cache of confirmed state. Never evicted (bounded aggregate set). */
     private val confirmed = ConcurrentHashMap<String, Confirmed<T>>()
@@ -77,7 +93,8 @@ class PessimisticCachingRepository<T : Any>(
             return aggregate
         }
         hitCounter.increment()
-        val trigger = snapshotTriggerDefinition.prepareTrigger(aggregateType)
+        // reconfigure (NOT prepareTrigger): keeps the snapshot event counter running across commands.
+        val trigger = snapshotTriggerDefinition.reconfigure(aggregateType, cached.trigger)
         val aggregate = EventSourcedAggregate.reconstruct(
             deepCopy(cached.root), aggregateModel(), cached.sequence, cached.deleted, eventStore, trigger,
         )
@@ -106,7 +123,8 @@ class PessimisticCachingRepository<T : Any>(
     /** Monotonically advance the confirmed cache to the aggregate's just-persisted state. */
     private fun advance(id: String, aggregate: EventSourcedAggregate<T>) {
         val newSequence = aggregate.version() ?: return
-        val entry = Confirmed(deepCopy(aggregate.aggregateRoot), newSequence, aggregate.isDeleted)
+        // Carry the live trigger (already counting this command's events) into the new entry.
+        val entry = Confirmed(deepCopy(aggregate.aggregateRoot), newSequence, aggregate.isDeleted, aggregate.snapshotTrigger)
         confirmed.merge(id, entry) { old, candidate -> if (candidate.sequence > old.sequence) candidate else old }
     }
 
@@ -124,14 +142,17 @@ class PessimisticCachingRepository<T : Any>(
             val current = confirmed[id] ?: return
             val delta = eventStore.readEvents(id, current.sequence + 1)
             if (!delta.hasNext()) return
-            val trigger = snapshotTriggerDefinition.prepareTrigger(aggregateType)
+            // Throwaway trigger: this replay is a cache repair, not command execution — it must not
+            // schedule a snapshot from inside a rollback, nor advance the live counter.
             val aggregate = EventSourcedAggregate.reconstruct(
-                deepCopy(current.root), aggregateModel(), current.sequence, current.deleted, eventStore, trigger,
+                deepCopy(current.root), aggregateModel(), current.sequence, current.deleted, eventStore,
+                NoSnapshotTriggerDefinition.TRIGGER,
             )
             aggregate.initializeState(delta) // replays the delta onto the pre-seeded root (no re-publish)
             val newSequence = aggregate.version() ?: return
             if (newSequence > current.sequence) {
-                val entry = Confirmed(deepCopy(aggregate.aggregateRoot), newSequence, aggregate.isDeleted)
+                // Keep the live trigger; only the state moved forward.
+                val entry = Confirmed(deepCopy(aggregate.aggregateRoot), newSequence, aggregate.isDeleted, current.trigger)
                 confirmed.merge(id, entry) { old, candidate -> if (candidate.sequence > old.sequence) candidate else old }
                 catchupCounter.increment()
                 catchupEvents.record((newSequence - current.sequence).toDouble())

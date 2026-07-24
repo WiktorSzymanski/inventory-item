@@ -6,7 +6,9 @@ import org.axonframework.commandhandling.gateway.CommandGateway
 import org.axonframework.eventsourcing.eventstore.EventStore
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.boot.test.context.SpringBootTest
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.testcontainers.containers.PostgreSQLContainer
@@ -41,6 +43,7 @@ class InventoryPessimisticConcurrencyTest {
     @Autowired lateinit var eventStore: EventStore
     @Autowired lateinit var meterRegistry: MeterRegistry
     @Autowired lateinit var inventoryItemRepository: PessimisticCachingRepository<InventoryItem>
+    @Autowired @Qualifier("axonJdbcTemplate") lateinit var jdbc: NamedParameterJdbcTemplate
 
     @Test
     fun `concurrent reserves on one item are serialised by the lock with no conflicts`() {
@@ -70,11 +73,13 @@ class InventoryPessimisticConcurrencyTest {
         pool.shutdown()
 
         // Reduce the event store — the single source of truth — rather than the async projection.
+        // readEvents(id, 0) reads the raw stream from sequence 0; the single-argument overload would
+        // start at the newest snapshot and hide every event before it.
         var created = 0
         var reserved = 0
         var failed = 0
         var head = -1L
-        val stream = eventStore.readEvents(itemId)
+        val stream = eventStore.readEvents(itemId, 0L)
         while (stream.hasNext()) {
             val event = stream.next()
             head = event.sequenceNumber
@@ -101,11 +106,29 @@ class InventoryPessimisticConcurrencyTest {
         assertThat(exhausted).`as`("no command exhausted its retries").isEqualTo(0.0)
         assertThat(rejected.get()).`as`("no reserve command failed").isEqualTo(0)
         assertThat(reserved).`as`("every reserve honoured").isEqualTo(concurrentReserves)
+        // Regression guard: serving loads from cache must NOT starve the event-count snapshot trigger.
+        // Preparing a fresh trigger per hit resets its counter to 0, so with 100 events and a
+        // threshold of 30 no snapshot would ever be written — the cache must carry the live trigger.
+        assertThat(awaitSnapshot(itemId)).`as`("snapshots still triggered while serving from cache").isTrue()
 
         println(
             "[PES-IT] stock=$initialStock attempts=$concurrentReserves reserved=$reserved failed=$failed " +
                 "rejected=${rejected.get()} head=$head retries=$retries cacheSeq=${inventoryItemRepository.cachedSequence(itemId)}",
         )
+    }
+
+    /** The snapshotter runs asynchronously, so poll rather than sleep a fixed amount. */
+    private fun awaitSnapshot(itemId: String, timeoutMs: Long = 15_000): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val snapshots = jdbc.queryForObject(
+                "SELECT count(*) FROM snapshot_event_entry WHERE aggregate_identifier = :id",
+                mapOf("id" to itemId), Int::class.java,
+            ) ?: 0
+            if (snapshots > 0) return true
+            Thread.sleep(250)
+        }
+        return false
     }
 
     companion object {
