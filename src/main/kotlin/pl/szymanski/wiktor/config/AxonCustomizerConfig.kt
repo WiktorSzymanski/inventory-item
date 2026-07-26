@@ -24,6 +24,9 @@ class AxonCustomizerConfig {
             .registerTrackingEventProcessor("mock-kafka-publisher")
             .registerTrackingEventProcessor("order-projection")
             .registerTrackingEventProcessor("order-saga")
+            // Subscribing (not tracking): runs on the replica that published the event, so the
+            // reserve-applied counter reflects true per-replica append distribution.
+            .registerSubscribingEventProcessor("reserve-metrics")
         configurer.registerTrackingEventProcessorConfiguration("inventory-projection") { _ ->
             TrackingEventProcessorConfiguration.forSingleThreadedProcessing()
                 .andBatchSize(100)
@@ -36,9 +39,17 @@ class AxonCustomizerConfig {
             TrackingEventProcessorConfiguration.forSingleThreadedProcessing()
                 .andBatchSize(100)
         }
+        // Per-node claim count = ceil(totalSegments / replicas), so each replica claims a fair,
+        // even share of the fixed segment pool. Only the claim count changes with replica count;
+        // totalSegments stays constant (no token reset needed when scaling up/down).
+        val sagaThreadsPerNode = (sagaProps.totalSegments + sagaProps.replicas - 1) / sagaProps.replicas
         configurer.registerTrackingEventProcessorConfiguration("order-saga") { _ ->
-            TrackingEventProcessorConfiguration.forParallelProcessing(sagaProps.segments)
-                .andInitialTrackingToken { source -> source.createTailToken() }
+            TrackingEventProcessorConfiguration.forParallelProcessing(sagaThreadsPerNode)
+                .andInitialSegmentsCount(sagaProps.totalSegments)
+                // Head, not tail: on a (re)init the saga starts from the END of the stream and only
+                // processes NEW orders. A token reset (e.g. changing total-segments) therefore does
+                // NOT replay the whole order history. createTailToken() would replay from the start.
+                .andInitialTrackingToken { source -> source.createHeadToken() }
                 .andBatchSize(100)
         }
     }
