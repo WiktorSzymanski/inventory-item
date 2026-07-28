@@ -1,1150 +1,1522 @@
 {
-  "annotations": {
-    "list": []
-  },
-  "editable": true,
-  "graphTooltip": 1,
-  "links": [],
-  "refresh": "5s",
-  "schemaVersion": 39,
-  "tags": [
-    "inventory",
-    "thesis"
-  ],
-  "time": {
-    "from": "now-15m",
-    "to": "now"
-  },
-  "timepicker": {},
-  "timezone": "browser",
-  "title": "Metrics to compare",
-  "uid": "the-dashboard",
-  "version": 1,
-  "templating": {
-    "list": []
-  },
-  "panels": [
-    {
-      "id": 2,
-      "title": "Request Throughput by Endpoint & Method",
-      "type": "timeseries",
-      "gridPos": {
-        "x": 0,
-        "y": 0,
-        "w": 24,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max",
-            "lastNotNull"
-          ],
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(http_server_requests_seconds_count{uri=~\"/inventory.*\"}[1m])) by (uri, method)",
-          "legendFormat": "{{method}} {{uri}}",
-          "refId": "A"
-        }
-      ]
+ "annotations": {
+  "list": []
+ },
+ "editable": true,
+ "graphTooltip": 1,
+ "links": [],
+ "refresh": "5s",
+ "schemaVersion": 39,
+ "tags": [
+  "inventory",
+  "thesis"
+ ],
+ "time": {
+  "from": "now-30m",
+  "to": "now"
+ },
+ "timepicker": {},
+ "timezone": "browser",
+ "title": "Metrics to compare",
+ "uid": "the-dashboard",
+ "version": 1,
+ "templating": {
+  "list": [
+   {
+    "name": "job",
+    "label": "API job",
+    "type": "query",
+    "datasource": {
+     "type": "prometheus",
+     "uid": "prometheus"
     },
-    {
-      "id": 1,
-      "title": "Request Latency \u2014 p50 / p80 / p95",
-      "description": "Select one or more endpoints from the dropdown above. All three percentiles are always shown; click legend entries to hide individual series.",
-      "type": "timeseries",
-      "gridPos": {
-        "x": 0,
-        "y": 8,
-        "w": 24,
-        "h": 10
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 5,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max",
-            "lastNotNull"
-          ],
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.50, sum(rate(http_server_requests_seconds_bucket{uri=~\"/inventory.*\"}[1m])) by (le, uri, method))",
-          "legendFormat": "{{method}} {{uri}} p50",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.80, sum(rate(http_server_requests_seconds_bucket{uri=~\"/inventory.*\"}[1m])) by (le, uri, method))",
-          "legendFormat": "{{method}} {{uri}} p80",
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{uri=~\"/inventory.*\"}[1m])) by (le, uri, method))",
-          "legendFormat": "{{method}} {{uri}} p95",
-          "refId": "C"
-        }
-      ]
+    "query": {
+     "query": "label_values(process_cpu_usage, job)",
+     "refId": "job-variable"
     },
-    {
-      "id": 3,
-      "title": "CPU Usage",
-      "type": "timeseries",
-      "gridPos": {
-        "x": 0,
-        "y": 18,
-        "w": 8,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1,
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max"
-          ],
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "process_cpu_usage{job=\"inventory-es\"}",
-          "legendFormat": "process",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "system_cpu_usage{job=\"inventory-es\"}",
-          "legendFormat": "system",
-          "refId": "B"
-        }
-      ]
-    },
-    {
-      "id": 4,
-      "title": "JVM Memory Usage",
-      "type": "timeseries",
-      "gridPos": {
-        "x": 8,
-        "y": 18,
-        "w": 8,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bytes",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max"
-          ],
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(jvm_memory_used_bytes{job=\"inventory-es\",area=\"heap\"})",
-          "legendFormat": "heap used",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(jvm_memory_max_bytes{job=\"inventory-es\",area=\"heap\"})",
-          "legendFormat": "heap max",
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(jvm_memory_used_bytes{job=\"inventory-es\",area=\"nonheap\"})",
-          "legendFormat": "non-heap used",
-          "refId": "C"
-        }
-      ]
-    },
-    {
-      "id": 8,
-      "title": "Publish Lag (Mock Kafka)",
-      "description": "Time from event written to KurrentDB until the mock-Kafka subscriber would have inserted it into the queue. Broken down by event type.",
-      "type": "timeseries",
-      "gridPos": {
-        "x": 0,
-        "y": 26,
-        "w": 24,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 5,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max"
-          ],
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.50, sum(rate(publish_lag_seconds_bucket[1m])) by (le, eventType))",
-          "legendFormat": "p50 {{eventType}}",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.95, sum(rate(publish_lag_seconds_bucket[1m])) by (le, eventType))",
-          "legendFormat": "p95 {{eventType}}",
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.99, sum(rate(publish_lag_seconds_bucket[1m])) by (le, eventType))",
-          "legendFormat": "p99 {{eventType}}",
-          "refId": "C"
-        }
-      ]
-    },
-    {
-      "id": 7,
-      "title": "Projection Lag",
-      "description": "Time from event written to KurrentDB until the state change is committed to the PostgreSQL projection. Measured at the end of each successful transaction.",
-      "type": "timeseries",
-      "gridPos": {
-        "x": 0,
-        "y": 34,
-        "w": 24,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 5,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max"
-          ],
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.50, sum(rate(projection_lag_seconds_bucket[1m])) by (le))",
-          "legendFormat": "p50",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.95, sum(rate(projection_lag_seconds_bucket[1m])) by (le))",
-          "legendFormat": "p95",
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.99, sum(rate(projection_lag_seconds_bucket[1m])) by (le))",
-          "legendFormat": "p99",
-          "refId": "C"
-        }
-      ]
-    },
-    {
-      "id": 6,
-      "title": "State Load Time by Phase",
-      "description": "Breakdown of aggregate state load time per phase (p50/p95/p99). snapshot=JDBC snapshot row read, events=JDBC event rows fetch, replay=in-memory @EventSourcingHandler application, total=end-to-end from first I/O to aggregate ready.",
-      "type": "timeseries",
-      "gridPos": {
-        "x": 0,
-        "y": 42,
-        "w": 24,
-        "h": 10
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 5,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max"
-          ],
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"snapshot\"}[1m])) by (le))",
-          "legendFormat": "p50 snapshot",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"snapshot\"}[1m])) by (le))",
-          "legendFormat": "p95 snapshot",
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"snapshot\"}[1m])) by (le))",
-          "legendFormat": "p99 snapshot",
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"events\"}[1m])) by (le))",
-          "legendFormat": "p50 events",
-          "refId": "D"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"events\"}[1m])) by (le))",
-          "legendFormat": "p95 events",
-          "refId": "E"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"events\"}[1m])) by (le))",
-          "legendFormat": "p99 events",
-          "refId": "F"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"replay\"}[1m])) by (le))",
-          "legendFormat": "p50 replay",
-          "refId": "G"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"replay\"}[1m])) by (le))",
-          "legendFormat": "p95 replay",
-          "refId": "H"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"replay\"}[1m])) by (le))",
-          "legendFormat": "p99 replay",
-          "refId": "I"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"total\"}[1m])) by (le))",
-          "legendFormat": "p50 total",
-          "refId": "J"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"total\"}[1m])) by (le))",
-          "legendFormat": "p95 total",
-          "refId": "K"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"total\"}[1m])) by (le))",
-          "legendFormat": "p99 total",
-          "refId": "L"
-        }
-      ]
-    },
-    {
-      "id": 13,
-      "title": "State Persist Time",
-      "description": "Synchronous JDBC INSERT time for appended event rows (p50/p95/p99), recorded as state_persist_time{source=db_write}. Write-path mirror of \"State Load Time by Phase\"; comparable to the TO branch's identically-named metric.",
-      "type": "timeseries",
-      "gridPos": {
-        "x": 0,
-        "y": 52,
-        "w": 24,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 5,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max"
-          ],
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.50, sum(rate(state_persist_time_seconds_bucket{source=\"db_write\"}[1m])) by (le))",
-          "legendFormat": "p50",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.95, sum(rate(state_persist_time_seconds_bucket{source=\"db_write\"}[1m])) by (le))",
-          "legendFormat": "p95",
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "histogram_quantile(0.99, sum(rate(state_persist_time_seconds_bucket{source=\"db_write\"}[1m])) by (le))",
-          "legendFormat": "p99",
-          "refId": "C"
-        }
-      ]
-    },
-    {
-      "id": 10,
-      "title": "POST /inventory/reserve \u2014 Response Counts by Status",
-      "type": "timeseries",
-      "gridPos": {
-        "x": 0,
-        "y": 60,
-        "w": 24,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max",
-            "lastNotNull"
-          ],
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum(rate(http_server_requests_seconds_count{method=\"POST\",uri=\"/inventory/reserve\"}[1m])) by (status)",
-          "legendFormat": "HTTP {{status}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 9,
-      "title": "Optimistic Locking \u2014 Append Success vs Conflict",
-      "description": "Rate of successful event appends vs ConcurrencyException conflicts (each conflict triggers a retry via ConcurrencyRetryScheduler; exhausted = all retries consumed and command failed).",
-      "type": "timeseries",
-      "gridPos": {
-        "x": 0,
-        "y": 60,
-        "w": 24,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ops",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "conflict (retry)"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "orange",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "exhausted"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "success"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "green",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max",
-            "lastNotNull"
-          ],
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "rate(inventory_append_success_total[1m])",
-          "legendFormat": "success",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "rate(inventory_optimistic_retry_total[1m])",
-          "legendFormat": "conflict (retry)",
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "rate(inventory_optimistic_exhausted_total[1m])",
-          "legendFormat": "exhausted",
-          "refId": "C"
-        }
-      ]
-    },
-    {
-      "id": 11,
-      "title": "Business Exception Rate by Type",
-      "description": "Rate of business failures reaching the exception handler, broken down by type. In the saga path, InsufficientStockException is emitted as an InventoryReservationFailedEvent and counted here via the projection updater.",
-      "type": "timeseries",
-      "gridPos": {
-        "x": 0,
-        "y": 68,
-        "w": 24,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ops",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "max",
-            "lastNotNull"
-          ],
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (type) (rate(inventory_exception_total[1m]))",
-          "legendFormat": "{{type}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 12,
-      "title": "Saga Outcome \u2014 Completed vs Failed & Success Rate",
-      "description": "Rate of completed sagas (all items reserved \u2192 OrderCompletedEvent) vs failed sagas (insufficient stock \u2192 OrderFailedEvent), plus the rolling success rate on the right axis.",
-      "type": "timeseries",
-      "gridPos": {
-        "x": 0,
-        "y": 76,
-        "w": 24,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ops",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "completed/s"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "green",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "failed/s"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "success rate"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "percentunit"
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 1
-              },
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "blue",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.axisPlacement",
-                "value": "right"
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 0
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 2
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "min",
-            "lastNotNull"
-          ],
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "rate(es_events_processed_total{eventType=\"OrderCompletedEvent\"}[1m])",
-          "legendFormat": "completed/s",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "rate(es_events_processed_total{eventType=\"OrderFailedEvent\"}[1m])",
-          "legendFormat": "failed/s",
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "rate(es_events_processed_total{eventType=\"OrderCompletedEvent\"}[1m]) / (rate(es_events_processed_total{eventType=\"OrderCompletedEvent\"}[1m]) + rate(es_events_processed_total{eventType=\"OrderFailedEvent\"}[1m]))",
-          "legendFormat": "success rate",
-          "refId": "C"
-        }
-      ]
-    },
-    {
-      "id": 5,
-      "title": "Database Storage",
-      "type": "timeseries",
-      "gridPos": {
-        "x": 16,
-        "y": 18,
-        "w": 8,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bytes",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "mean",
-            "lastNotNull"
-          ],
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "pg_database_size_bytes{datname=\"inventory\"}",
-          "legendFormat": "PostgreSQL",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "kurrentdb_disk_io_bytes_total{activity=\"written\"}",
-          "legendFormat": "KurrentDB",
-          "refId": "B"
-        }
-      ]
-    }
+    "definition": "label_values(process_cpu_usage, job)",
+    "refresh": 1,
+    "includeAll": false,
+    "multi": false,
+    "sort": 1,
+    "current": {},
+    "options": [],
+    "hide": 0
+   }
   ]
+ },
+ "panels": [
+  {
+   "id": 2,
+   "title": "Request Throughput by Endpoint & Method",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 24,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineInterpolation": "linear",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(http_server_requests_seconds_count{uri=~\"/inventory.*\"}[1m])) by (uri, method)",
+     "legendFormat": "{{method}} {{uri}}",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "title": "Request Latency \u2014 p50 / p80 / p95",
+   "description": "Select one or more endpoints from the dropdown above. All three percentiles are always shown; click legend entries to hide individual series.",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 0,
+    "y": 8,
+    "w": 24,
+    "h": 10
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineInterpolation": "linear",
+      "lineWidth": 2,
+      "fillOpacity": 5,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.50, sum(rate(http_server_requests_seconds_bucket{uri=~\"/inventory.*\"}[1m])) by (le, uri, method))",
+     "legendFormat": "{{method}} {{uri}} p50",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.80, sum(rate(http_server_requests_seconds_bucket{uri=~\"/inventory.*\"}[1m])) by (le, uri, method))",
+     "legendFormat": "{{method}} {{uri}} p80",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{uri=~\"/inventory.*\"}[1m])) by (le, uri, method))",
+     "legendFormat": "{{method}} {{uri}} p95",
+     "refId": "C"
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "title": "CPU Usage",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 0,
+    "y": 18,
+    "w": 8,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "min": 0,
+     "max": 1,
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "avg(process_cpu_usage{job=\"$job\"})",
+     "legendFormat": "process",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "avg(system_cpu_usage{job=\"$job\"})",
+     "legendFormat": "system",
+     "refId": "B"
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "title": "JVM Memory Usage",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 8,
+    "y": 18,
+    "w": 8,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(jvm_memory_used_bytes{job=\"$job\",area=\"heap\"})",
+     "legendFormat": "heap used",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(jvm_memory_max_bytes{job=\"$job\",area=\"heap\"})",
+     "legendFormat": "heap max",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(jvm_memory_used_bytes{job=\"$job\",area=\"nonheap\"})",
+     "legendFormat": "non-heap used",
+     "refId": "C"
+    }
+   ]
+  },
+  {
+   "id": 8,
+   "title": "Publish Lag (Mock Kafka)",
+   "description": "Time from event written to KurrentDB until the mock-Kafka subscriber would have inserted it into the queue. Broken down by event type.",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 0,
+    "y": 26,
+    "w": 24,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 5,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.50, sum(rate(publish_lag_seconds_bucket[1m])) by (le, eventType))",
+     "legendFormat": "p50 {{eventType}}",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.95, sum(rate(publish_lag_seconds_bucket[1m])) by (le, eventType))",
+     "legendFormat": "p95 {{eventType}}",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.99, sum(rate(publish_lag_seconds_bucket[1m])) by (le, eventType))",
+     "legendFormat": "p99 {{eventType}}",
+     "refId": "C"
+    }
+   ]
+  },
+  {
+   "id": 7,
+   "title": "Projection Lag",
+   "description": "Time from event written to KurrentDB until the state change is committed to the PostgreSQL projection. Measured at the end of each successful transaction.",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 0,
+    "y": 34,
+    "w": 24,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 5,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.50, sum(rate(projection_lag_seconds_bucket[1m])) by (le))",
+     "legendFormat": "p50",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.95, sum(rate(projection_lag_seconds_bucket[1m])) by (le))",
+     "legendFormat": "p95",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.99, sum(rate(projection_lag_seconds_bucket[1m])) by (le))",
+     "legendFormat": "p99",
+     "refId": "C"
+    }
+   ]
+  },
+  {
+   "id": 6,
+   "title": "State Load Time by Phase",
+   "description": "Breakdown of aggregate state load time per phase (p50/p95/p99). snapshot=JDBC snapshot row read, events=JDBC event rows fetch, replay=in-memory @EventSourcingHandler application, total=end-to-end from first I/O to aggregate ready.",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 0,
+    "y": 42,
+    "w": 24,
+    "h": 10
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 5,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"snapshot\"}[1m])) by (le))",
+     "legendFormat": "p50 snapshot",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"snapshot\"}[1m])) by (le))",
+     "legendFormat": "p95 snapshot",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"snapshot\"}[1m])) by (le))",
+     "legendFormat": "p99 snapshot",
+     "refId": "C"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"events\"}[1m])) by (le))",
+     "legendFormat": "p50 events",
+     "refId": "D"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"events\"}[1m])) by (le))",
+     "legendFormat": "p95 events",
+     "refId": "E"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"events\"}[1m])) by (le))",
+     "legendFormat": "p99 events",
+     "refId": "F"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"replay\"}[1m])) by (le))",
+     "legendFormat": "p50 replay",
+     "refId": "G"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"replay\"}[1m])) by (le))",
+     "legendFormat": "p95 replay",
+     "refId": "H"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"replay\"}[1m])) by (le))",
+     "legendFormat": "p99 replay",
+     "refId": "I"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"total\"}[1m])) by (le))",
+     "legendFormat": "p50 total",
+     "refId": "J"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"total\"}[1m])) by (le))",
+     "legendFormat": "p95 total",
+     "refId": "K"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"total\"}[1m])) by (le))",
+     "legendFormat": "p99 total",
+     "refId": "L"
+    }
+   ]
+  },
+  {
+   "id": 13,
+   "title": "State Persist Time",
+   "description": "Synchronous JDBC INSERT time for appended event rows (p50/p95/p99), recorded as state_persist_time{source=db_write}. Write-path mirror of \"State Load Time by Phase\"; comparable to the TO branch's identically-named metric.",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 0,
+    "y": 52,
+    "w": 24,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 5,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.50, sum(rate(state_persist_time_seconds_bucket{source=\"db_write\"}[1m])) by (le))",
+     "legendFormat": "p50",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.95, sum(rate(state_persist_time_seconds_bucket{source=\"db_write\"}[1m])) by (le))",
+     "legendFormat": "p95",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.99, sum(rate(state_persist_time_seconds_bucket{source=\"db_write\"}[1m])) by (le))",
+     "legendFormat": "p99",
+     "refId": "C"
+    }
+   ]
+  },
+  {
+   "id": 10,
+   "title": "POST /inventory/orders \u2014 Response Counts by Status",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 0,
+    "y": 60,
+    "w": 24,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineInterpolation": "linear",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(http_server_requests_seconds_count{job=\"$job\",method=\"POST\",uri=\"/inventory/orders\"}[1m])) by (status)",
+     "legendFormat": "{{status}}",
+     "refId": "A"
+    }
+   ],
+   "description": "Admission outcomes. 202 is the only success; the reservation itself is asynchronous, so this says nothing about whether stock was available \u2014 see Order Outcome Mix for that."
+  },
+  {
+   "id": 9,
+   "title": "Optimistic Locking \u2014 Append Success vs Conflict",
+   "description": "Rate of successful event appends vs ConcurrencyException conflicts (each conflict triggers a retry via ConcurrencyRetryScheduler; exhausted = all retries consumed and command failed).",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 0,
+    "y": 68,
+    "w": 24,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineInterpolation": "linear",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "conflict (retry)"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "fixedColor": "orange",
+         "mode": "fixed"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "exhausted"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "fixedColor": "red",
+         "mode": "fixed"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "success"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "fixedColor": "green",
+         "mode": "fixed"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(inventory_append_success_total{job=\"$job\"}[1m]))",
+     "legendFormat": "success",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(inventory_optimistic_retry_total{job=\"$job\"}[1m]))",
+     "legendFormat": "conflict (retry)",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(inventory_optimistic_exhausted_total{job=\"$job\"}[1m]))",
+     "legendFormat": "exhausted",
+     "refId": "C"
+    }
+   ]
+  },
+  {
+   "id": 11,
+   "title": "Business Exception Rate by Type",
+   "description": "Rate of business failures reaching the exception handler, broken down by type. In the saga path, InsufficientStockException is emitted as an InventoryReservationFailedEvent and counted here via the projection updater.",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 0,
+    "y": 76,
+    "w": 24,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineInterpolation": "linear",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum by (type) (rate(inventory_exception_total[1m]))",
+     "legendFormat": "{{type}}",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 12,
+   "title": "Saga Outcome \u2014 Completed vs Failed & Success Rate",
+   "description": "Rate of completed sagas (all items reserved \u2192 OrderCompletedEvent) vs failed sagas (insufficient stock \u2192 OrderFailedEvent), plus the rolling success rate on the right axis.",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 0,
+    "y": 84,
+    "w": 24,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineInterpolation": "linear",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "completed/s"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "fixedColor": "green",
+         "mode": "fixed"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "failed/s"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "fixedColor": "red",
+         "mode": "fixed"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "success rate"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "percentunit"
+       },
+       {
+        "id": "min",
+        "value": 0
+       },
+       {
+        "id": "max",
+        "value": 1
+       },
+       {
+        "id": "color",
+        "value": {
+         "fixedColor": "blue",
+         "mode": "fixed"
+        }
+       },
+       {
+        "id": "custom.axisPlacement",
+        "value": "right"
+       },
+       {
+        "id": "custom.fillOpacity",
+        "value": 0
+       },
+       {
+        "id": "custom.lineWidth",
+        "value": 2
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "min",
+      "lastNotNull"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(es_events_processed_total{job=\"$job\",eventType=\"OrderCompletedEvent\"}[1m]))",
+     "legendFormat": "completed/s",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(es_events_processed_total{job=\"$job\",eventType=\"OrderFailedEvent\"}[1m]))",
+     "legendFormat": "failed/s",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(es_events_processed_total{job=\"$job\",eventType=\"OrderCompletedEvent\"}[1m])) / (sum(rate(es_events_processed_total{job=\"$job\",eventType=\"OrderCompletedEvent\"}[1m])) + sum(rate(es_events_processed_total{job=\"$job\",eventType=\"OrderFailedEvent\"}[1m])))",
+     "legendFormat": "success rate",
+     "refId": "C"
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "title": "Database Storage",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 16,
+    "y": 18,
+    "w": 8,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "lastNotNull"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(pg_database_size_bytes{datname=\"inventory\"})",
+     "legendFormat": "PostgreSQL size",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "deriv(sum(pg_database_size_bytes{datname=\"inventory\"})[5m:30s])",
+     "legendFormat": "bytes/s written",
+     "refId": "B"
+    }
+   ],
+   "description": "Total database size, plus its rate of growth. The KurrentDB series this panel used to carry has been dead since the move to the Postgres event store."
+  },
+  {
+   "id": 14,
+   "title": "Order E2E Latency by Outcome \u2014 p50 / p95 / p99",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 0,
+    "y": 92,
+    "w": 24,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.50, sum(rate(order_e2e_time_seconds_bucket[1m])) by (le, outcome))",
+     "legendFormat": "{{outcome}} p50",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.95, sum(rate(order_e2e_time_seconds_bucket[1m])) by (le, outcome))",
+     "legendFormat": "{{outcome}} p95",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.99, sum(rate(order_e2e_time_seconds_bucket[1m])) by (le, outcome))",
+     "legendFormat": "{{outcome}} p99",
+     "refId": "C"
+    }
+   ]
+  },
+  {
+   "id": 20,
+   "title": "In-flight Orders (admitted minus completed)",
+   "description": "Orders accepted with 202 that have not yet reached a terminal event. The single clearest saturation signal: at a constant offered rate this line is flat when the system is keeping up and rises monotonically when it is not. Its slope after load stops is the drain rate.",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 0,
+    "y": 100,
+    "w": 24,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 5,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(http_server_requests_seconds_count{job=\"$job\",uri=\"/inventory/orders\",method=\"POST\",status=\"202\"}) - sum(order_e2e_time_seconds_count{job=\"$job\"})",
+     "legendFormat": "in-flight",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 21,
+   "title": "Offered vs Achieved vs Dropped",
+   "description": "k6's offered rate (remote-write) against the server's accepted rate. dropped_iterations above zero means k6 could not start an iteration on schedule \u2014 if it correlates with maxVUs the run measures the load generator, not the system.",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 0,
+    "y": 108,
+    "w": 24,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 5,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(k6_iterations_total[30s]))",
+     "legendFormat": "offered (k6)",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(http_server_requests_seconds_count{job=\"$job\",uri=\"/inventory/orders\",method=\"POST\",status=\"202\"}[30s]))",
+     "legendFormat": "achieved (202)",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(k6_dropped_iterations_total[30s]))",
+     "legendFormat": "dropped (k6)",
+     "refId": "C"
+    }
+   ]
+  },
+  {
+   "id": 22,
+   "title": "Order Outcome Mix",
+   "description": "Terminal order outcomes per second, and the confirmed share. A collapse of the confirmed share to zero means the seeded stock ran out and the run is now benchmarking the compensation path rather than the reservation path.",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 0,
+    "y": 116,
+    "w": 24,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 5,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(order_e2e_time_seconds_count{job=\"$job\"}[1m])) by (outcome)",
+     "legendFormat": "{{outcome}}/s",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(order_e2e_time_seconds_count{job=\"$job\",outcome=\"confirmed\"}[1m])) / sum(rate(order_e2e_time_seconds_count{job=\"$job\"}[1m]))",
+     "legendFormat": "confirmed share",
+     "refId": "B"
+    }
+   ]
+  },
+  {
+   "id": 23,
+   "title": "Aggregate Cache Hit Ratio",
+   "description": "PessimisticCachingRepository hit ratio. A hit skips stream replay entirely, so this is the core of the ES-3 cache-variant story; catch-up counts the incremental re-reads after a rolled-back append.",
+   "type": "timeseries",
+   "gridPos": {
+    "x": 0,
+    "y": 124,
+    "w": 24,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 5,
+      "showPoints": "never",
+      "spanNulls": false
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ],
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(inventory_opt_cache_hit_total{job=\"$job\"}[1m])) / (sum(rate(inventory_opt_cache_hit_total{job=\"$job\"}[1m])) + sum(rate(inventory_opt_cache_miss_total{job=\"$job\"}[1m])))",
+     "legendFormat": "hit ratio",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(inventory_opt_catchup_total{job=\"$job\"}[1m]))",
+     "legendFormat": "catch-up/s",
+     "refId": "B"
+    }
+   ]
+  }
+ ]
 }
