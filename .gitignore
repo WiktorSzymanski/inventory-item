@@ -38,3 +38,12 @@ out/
 
 .claude
 .kotlin
+
+### Benchmark harness ###
+# reports/ (above) stays ignored: Grafana PDFs are large and regenerable.
+# bench-results/ is TRACKED — meta/dump/verdict/summary/profile JSON are the thesis
+# data and must be versioned alongside the code that produced them. Only the rendered
+# PDF and python bytecode are excluded.
+bench-results/**/report.pdf
+__pycache__/
+*.pyc
