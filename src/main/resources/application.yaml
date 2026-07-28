@@ -57,6 +57,7 @@ management:
         order.e2e.time: 1ms
       maximum-expected-value:
         projection.lag: 10m
+        order.e2e.time: 10m
 events_applied_count: true
 
 server:
