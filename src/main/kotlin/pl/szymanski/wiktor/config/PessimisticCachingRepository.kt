@@ -15,7 +15,7 @@ import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * ES-3-pesimistic copy-on-write repository.
+ * ES-4 copy-on-write repository.
  *
  * Identical caching machinery to the ES-3-optimistic variant — the ONLY difference is the lock: this
  * repository is built with Axon's default [org.axonframework.common.lock.PessimisticLockFactory]

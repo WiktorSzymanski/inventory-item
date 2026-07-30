@@ -22,7 +22,7 @@ services:
 
   api-es:
     image: inventory-reservation-es:latest
-    # ES-3-pesimistic is the SINGLE-NODE variant: one container, owning host :8080 directly.
+    # ES-4 is the SINGLE-NODE variant: one container, owning host :8080 directly.
     # The multi-replica topology merged from ES-3-pesimistic-scaling lives on, but is not
     # wired up here — see monitoring/nginx/nginx.conf and the note in .env for how to switch.
     #

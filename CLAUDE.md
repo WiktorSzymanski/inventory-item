@@ -5,12 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this repository is
 
 A Master's thesis benchmark comparing **Traditional Ownership** (`TO-1`..`TO-4`) against
-**Event Sourcing** (`ES-1`, `ES-2`, `ES-3` and its sub-variants) for the same inventory
-reservation domain. Each variant lives on its own branch and implements the same HTTP API,
-so the branches are meant to be benchmarked against each other under an identical workload.
+**Event Sourcing** (`ES-1`..`ES-4`) for the same inventory reservation domain. Each variant
+lives on its own branch and implements the same HTTP API, so the branches are meant to be
+benchmarked against each other under an identical workload.
 
-`main` has no `k6/` directory. The architecture below describes the **ES-3-\*** branches;
-`TO-*` branches implement the same API over a classic mutable schema with an outbox.
+`main` has no `k6/` directory. The architecture below describes **`ES-4`** (formerly
+`ES-3-pesimistic`); `TO-*` branches implement the same API over a classic mutable schema
+with an outbox.
 
 ## Commands
 
@@ -26,7 +27,7 @@ Single test class: `./gradlew test --tests "pl.szymanski.wiktor.ApplicationTest"
 Note `JAVA_HOME` in the environment may point at a missing JDK; use
 `JAVA_HOME=~/.jdks/corretto-21.0.10` for gradle if the build cannot find a toolchain.
 
-## Architecture (ES-3-pesimistic and siblings)
+## Architecture (ES-4)
 
 Kotlin 2.3 / Spring Boot 4.0.6, **Spring MVC on Tomcat** (blocking servlet stack — not
 WebFlux), **Axon Framework 4.11.2** with a **JDBC event store on PostgreSQL**. There is no

@@ -47,7 +47,7 @@ class AxonCustomizerConfig {
         }
     }
 
-    // ES-3-pesimistic: the former manual configureAggregate(InventoryItem) + StrongCache/NoCache wiring
+    // ES-4: the former manual configureAggregate(InventoryItem) + StrongCache/NoCache wiring
     // was removed. InventoryItem is now registered solely via @Aggregate(repository = "inventoryItemRepository"),
     // which resolves the previous @Aggregate + manual-config dual registration (in which the manual cache
     // configuration was silently ignored). See AxonConfig.inventoryItemRepository.

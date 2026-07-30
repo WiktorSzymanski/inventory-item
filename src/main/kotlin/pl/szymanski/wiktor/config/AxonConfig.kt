@@ -174,7 +174,7 @@ class AxonConfig {
         else
             NoSnapshotTriggerDefinition.INSTANCE
 
-    // ES-3-pesimistic: cached copy-on-write repository for the hot InventoryItem aggregate, locked with
+    // ES-4: cached copy-on-write repository for the hot InventoryItem aggregate, locked with
     // Axon's default PessimisticLockFactory (same cache as ES-3-optimistic, opposite concurrency model).
     // Referenced by @Aggregate(repository = "inventoryItemRepository") on InventoryItem — wiring the
     // repository through the annotation is what makes the cache actually take effect, since @Aggregate
