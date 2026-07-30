@@ -5,14 +5,11 @@ global:
 scrape_configs:
   - job_name: inventory-es
     metrics_path: /actuator/prometheus
-    # DNS service-discovery: resolves the `api-es` service name to every replica
-    # IP so each `--scale`d instance is scraped as its own target/series
-    # (instance label = <replica-ip>:8080).
-    dns_sd_configs:
-      - names: ['api-es']
-        type: A
-        port: 8080
-        refresh_interval: 5s
+    # Single-node variant: one static target, so the `instance` label stays the stable
+    # `api-es:8080` rather than a container IP that changes on every recreate.
+    # ES-3-pesimistic-scaling swaps this for dns_sd_configs to discover every replica.
+    static_configs:
+      - targets: ['api-es:8080']
 
   - job_name: postgres
     static_configs:

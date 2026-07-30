@@ -23,8 +23,8 @@ axon:
     events: jackson
     messages: jackson
   saga:
-    total-segments: 60              # fixed segment pool (divisible by 2/3/4/5/6)
-    replicas: ${API_REPLICAS:2}     # must equal `docker compose --scale api-es=N`; drives per-node claim = ceil(total/replicas)
+    total-segments: 60              # fixed segment pool, set once at token init (divisible by 2/3/4/5/6)
+    replicas: ${API_REPLICAS:1}     # must equal REPLICAS in .env; drives per-node claim = ceil(total/replicas)
   jdbc:
     pool:
       size: 150
