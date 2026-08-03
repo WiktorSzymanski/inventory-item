@@ -371,7 +371,7 @@ Reset it in `setUp` alongside the others:
 Extend the stub in `setUp` so the `shouldFail` decision also covers completion. Replace the `shouldFail` line with:
 
 ```kotlin
-            val shouldFail = (command is SagaReserveItemCommand && command.itemId == failingItemId) ||
+            val shouldFail = (command is SagaReserveItemCommand && command.id == failingItemId) ||
                 (command is CompleteOrderCommand && failComplete)
 ```
 
