@@ -62,19 +62,39 @@ targets, and the saga splits its 60 segments evenly (20/20/20, none unclaimed). 
 application logic is a different matter, and currently fails on both families.** Treat
 `REPLICAS=1` as the only measurement-grade configuration until these are fixed.
 
-- **ES: cross-node append conflicts strand orders permanently.** Two replicas load the same
-  `InventoryItem` and race to append at the same sequence number. Axon's JDBC event store
-  raises `EventStoreException("An event for aggregate [item-1] at sequence [123] was
-  already inserted")`, but `config/ConcurrencyRetryScheduler.kt:33` retries **only**
-  `ConcurrencyException`, so the saga's `SagaReserveItemCommand` fails and is never
-  retried. Measured on ES-2 at `REPLICAS=2`, RATE=30: 3537 of 10401 orders stuck `PENDING`
-  forever, backlog never drained. The aggregate lock is in-process only, so nothing
-  serialises the two writers. The likely fix is a `PersistenceExceptionResolver` /
-  `SQLStateResolver` that translates the duplicate-key into `ConcurrencyException` so the
-  existing retry path picks it up — untested, and it would change measured retry behaviour.
-- **TO: the outbox poller runs on every node.** Spring Modulith's
-  `republication-interval: PT30S` means orphaned `event_publication` rows may be
-  republished by more than one replica. Not investigated.
+**ES is not multi-node write-safe.** The only thing serialising writers to an
+`InventoryItem` is a JVM-local `LockFactory`, so a second JVM removes it: two replicas load
+the same aggregate at sequence N and both append at N+1, leaving the
+`(aggregate_identifier, sequence_number)` unique constraint as the backstop. Two independent
+defects turn that conflict into a permanently stuck order:
+
+1. **Conflicts are not classified as retryable.** `AxonConfig.eventStorageEngine` builds
+   `JdbcEventStorageEngine` with **no** `persistenceExceptionResolver`, so a Postgres `23505`
+   surfaces as a generic `EventStoreException` rather than `ConcurrencyException`, and
+   `ConcurrencyRetryScheduler.kt:33` — which matches only `ConcurrencyException` — never
+   retries. **`ES-4` already fixes this** with `.persistenceExceptionResolver(SQLStateResolver())`;
+   the fix was never backported to `ES-1`/`ES-2`/`ES-3`.
+2. **Command failure has no handler — on every ES branch.** `OrderReservationSaga.sendNextReservation()`
+   discards the future returned by `commandGateway.send(...)`. When the command ultimately
+   fails, no reservation event is appended, the `correlationId` association never fires
+   again, `SagaLifecycle.end()` is never reached, and the order stays `PENDING` **forever**.
+   This is why the outcome is permanent rather than merely slow, and why fixing (1) alone is
+   not sufficient — exhausted retries reach the same dead end. The compensation path's
+   `runCatching { commandGateway.send(...) }` is ineffective for the same reason: it catches
+   only synchronous dispatch errors.
+
+Measured on `ES-2` at `REPLICAS=2`, RATE=30, workload `distinct=6 lines/order=4`: **3537 of
+10401 orders stuck `PENDING`**, with the `saga_entry` count and the `EventStoreException`
+count both also exactly 3537 — one failed command, one parked saga, one stuck order. Backlog
+flat across three consecutive 30 s samples; zero pool timeouts, so unrelated to pool sizing.
+
+**TO degrades gracefully where ES parks.** `InventoryService.processOrder` is `@Retryable`
+on `OptimisticLockingFailureException` (4 attempts) and, on exhaustion, issues
+`FailOrderCommand` — so a lost race becomes a `FAILED` order, never a stuck one. TO-1/TO-2
+additionally claim each `event_publication` row with a database-level
+`UPDATE … WHERE completion_date IS NULL`, so only one replica delivers; TO-3/TO-4 have no
+such guard and rely on stock Modulith republication. None of it is load-tested at
+`REPLICAS>1`.
 
 Do not publish scale-out numbers for either family without resolving the above.
 
