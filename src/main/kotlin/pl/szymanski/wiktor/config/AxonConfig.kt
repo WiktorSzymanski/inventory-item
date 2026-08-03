@@ -14,6 +14,7 @@ import org.axonframework.eventsourcing.Snapshotter
 import org.axonframework.eventsourcing.eventstore.EventStorageEngine
 import org.axonframework.eventsourcing.eventstore.jdbc.EventSchema
 import org.axonframework.eventsourcing.eventstore.jdbc.JdbcEventStorageEngine
+import org.axonframework.eventsourcing.eventstore.jpa.SQLStateResolver
 import org.axonframework.modelling.saga.repository.jdbc.JdbcSagaStore
 import org.axonframework.modelling.saga.repository.jdbc.PostgresSagaSqlSchema
 import org.axonframework.modelling.saga.repository.jdbc.SagaSchema
@@ -130,6 +131,11 @@ class AxonConfig {
             .schema(eventSchema)
             .eventSerializer(eventSerializer)
             .snapshotSerializer(eventSerializer)
+            // Without this, a Postgres 23505 on (aggregate_identifier, sequence_number) surfaces as a
+            // generic EventStoreException and ConcurrencyRetryScheduler — which matches only
+            // ConcurrencyException — never retries it. Only reachable at REPLICAS>1, where the
+            // JVM-local LockFactory no longer serialises writers to the same aggregate.
+            .persistenceExceptionResolver(SQLStateResolver())
             .build()
         return TimedEventStorageEngine(jdbc, meterRegistry)
     }
