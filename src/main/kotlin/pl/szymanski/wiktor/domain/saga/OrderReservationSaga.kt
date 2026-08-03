@@ -6,6 +6,7 @@ import io.micrometer.core.instrument.Timer
 import org.axonframework.commandhandling.gateway.CommandGateway
 import org.axonframework.config.ProcessingGroup
 import org.axonframework.eventhandling.Timestamp
+import org.axonframework.modelling.saga.EndSaga
 import org.axonframework.modelling.saga.SagaEventHandler
 import org.axonframework.modelling.saga.SagaLifecycle
 import org.axonframework.modelling.saga.StartSaga
@@ -18,6 +19,7 @@ import java.time.Instant
 import pl.szymanski.wiktor.domain.InventoryReservationFailedEvent
 import pl.szymanski.wiktor.domain.InventoryReservedEvent
 import pl.szymanski.wiktor.domain.OrderCreatedEvent
+import pl.szymanski.wiktor.domain.OrderFailedEvent
 import pl.szymanski.wiktor.domain.OrderItem
 import pl.szymanski.wiktor.service.command.CompleteOrderCommand
 import pl.szymanski.wiktor.service.command.FailOrderCommand
@@ -105,6 +107,17 @@ class OrderReservationSaga {
         SagaLifecycle.end()
     }
 
+    // The only legal place to end a saga that was abandoned off-thread. Reached via
+    // abandon() -> FailOrderCommand -> OrderAggregate -> OrderFailedEvent -> this processor.
+    // The out-of-stock path never arrives here: it calls SagaLifecycle.end() inline, so by the
+    // time its OrderFailedEvent is read back the saga and its associations are already gone.
+    @EndSaga
+    @SagaEventHandler(associationProperty = "orderId")
+    fun on(event: OrderFailedEvent) {
+        log.warn("[SAGA] order failed outside the saga orderId={} reason={}", event.orderId, event.reason)
+        recordSagaEnd("command_failed")
+    }
+
     // Recorded where the saga's own lifecycle actually ends, which is strictly EARLIER
     // than the point es.events.processed{eventType=OrderCompletedEvent} fires: the
     // Complete/FailOrderCommand above is only *submitted* to commandExecutor, never
@@ -126,9 +139,52 @@ class OrderReservationSaga {
 
     private fun sendNextReservation() {
         val item = items[currentIndex]
+        // Snapshotted on the saga processor thread. Safe because reservations are strictly
+        // sequential — exactly one command is in flight per saga, and the only thing that mutates
+        // reservedItems is the success handler for the very command being dispatched here.
+        val orderIdCopy = orderId
+        val toRelease = reservedItems.toList()
         log.debug("[SAGA] reserving itemId={} ({}/{}) orderId={}", item.itemId, currentIndex + 1, items.size, orderId)
         commandExecutor.execute {
             commandGateway.send<Any?>(SagaReserveItemCommand(item.itemId, item.quantity, correlationId))
+                .whenComplete { _, ex -> if (ex != null) abandon(orderIdCopy, toRelease, "reserve", ex) }
         }
+    }
+
+    // Terminal disposition for a command that failed AFTER ConcurrencyRetryScheduler gave up.
+    // Runs on a commandExecutor pool thread, outside saga scope, so it must not touch
+    // SagaLifecycle: it sends FailOrderCommand instead and lets the resulting OrderFailedEvent
+    // come back to on(OrderFailedEvent) on the saga processor thread.
+    private fun abandon(orderId: String, toRelease: List<OrderItem>, stage: String, cause: Throwable) {
+        log.error("[SAGA] {} command failed orderId={} — failing order", stage, orderId, cause)
+        meterRegistry.counter("saga.command.failed", "stage", stage).increment()
+        releaseAll(orderId, toRelease)
+        sendFailOrder(orderId, "$stage command failed: ${cause.javaClass.simpleName}")
+    }
+
+    private fun releaseAll(orderId: String, toRelease: List<OrderItem>) {
+        toRelease.forEach { item ->
+            commandGateway.send<Any?>(ReleaseReservationCommand(item.itemId, item.quantity))
+                .whenComplete { _, ex ->
+                    if (ex != null) {
+                        // Reserved stock stays held. Counted rather than retried: a release that
+                        // cannot be applied has no second escape hatch either.
+                        log.error("[SAGA] compensation failed itemId={} orderId={}", item.itemId, orderId, ex)
+                        meterRegistry.counter("saga.command.failed", "stage", "release").increment()
+                    }
+                }
+        }
+    }
+
+    private fun sendFailOrder(orderId: String, reason: String) {
+        commandGateway.send<Any?>(FailOrderCommand(orderId, reason))
+            .whenComplete { _, ex ->
+                if (ex != null) {
+                    // Residual dead end: the order stays PENDING. There is no further escape hatch
+                    // that does not recurse, so this is made visible instead of handled.
+                    log.error("[SAGA] FailOrderCommand failed orderId={} — order remains PENDING", orderId, ex)
+                    meterRegistry.counter("saga.command.failed", "stage", "fail-order").increment()
+                }
+            }
     }
 }
