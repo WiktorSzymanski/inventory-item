@@ -42,9 +42,9 @@ services:
     # makes Compose remove middle replicas). Just:
     #   REPLICAS=4 docker compose up -d
     #
-    # NOTE: at REPLICAS>1 Spring Modulith's republication poller runs on EVERY node, so
-    # orphaned event_publication rows may be republished more than once. Scaling is wired
-    # up here but not domain-verified — see the Scaling section of CLAUDE.md.
+    # NOTE: at REPLICAS>1 Spring Modulith's event poller (polling-interval: PT1S) runs on
+    # EVERY node against the shared event_publication table, so the same incomplete row may
+    # be published more than once. Scaling is wired up here but NOT domain-verified.
     environment:
       DB_JDBC_URL:   "jdbc:postgresql://postgres-to:5432/inventory"
       DB_R2DBC_URL:  "r2dbc:postgresql://postgres-to:5432/inventory"
