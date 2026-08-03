@@ -27,7 +27,14 @@ axon:
     replicas: ${API_REPLICAS:1}     # must equal REPLICAS in .env; drives per-node claim = ceil(total/replicas)
   jdbc:
     pool:
-      size: 150
+      # Must comfortably exceed the saga per-node claim (ceil(total-segments/replicas) = 60
+      # at REPLICAS=1), because every saga worker holds a connection while it reads its
+      # associations, and the 64-thread saga dispatch executor competes for the same pool.
+      # At 150 the 60-thread claim exhausted it (active=150, waiting=97) and sagas that
+      # failed to dispatch never retried, stranding orders in PENDING forever.
+      # (docker-compose passes AXON_JDBC_POOL_SIZE, which Spring's relaxed binding maps
+      # onto this property and therefore overrides the value below.)
+      size: 300
   # Tighten gap tracking so tokens don't accumulate the permanent gaps left by rolled-back appends
   # (see AxonConfig.eventStorageEngine). Defaults would be 10000 / 60000. Kept identical to
   # ES-3-optimistic so the two variants differ only in the aggregate lock.

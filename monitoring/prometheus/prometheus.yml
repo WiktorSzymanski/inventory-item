@@ -5,11 +5,16 @@ global:
 scrape_configs:
   - job_name: inventory-es
     metrics_path: /actuator/prometheus
-    # Single-node variant: one static target, so the `instance` label stays the stable
-    # `api-es:8080` rather than a container IP that changes on every recreate.
-    # ES-3-pesimistic-scaling swaps this for dns_sd_configs to discover every replica.
-    static_configs:
-      - targets: ['api-es:8080']
+    # DNS discovery, not a static target: the api-es service is scaled with deploy.replicas,
+    # so the number of endpoints behind the name varies. At REPLICAS=1 this resolves to
+    # exactly one target, identical to the static config it replaces. The `instance` label
+    # becomes a container IP rather than `api-es:8080` — harmless, because every expression
+    # in queries.promql is sum()-wrapped.
+    dns_sd_configs:
+      - names: ['api-es']
+        type: A
+        port: 8080
+        refresh_interval: 5s
 
   - job_name: postgres
     static_configs:

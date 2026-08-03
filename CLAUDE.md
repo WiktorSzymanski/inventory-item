@@ -19,13 +19,60 @@ with an outbox.
 ./gradlew bootRun          # Start on port 8080
 ./gradlew test             # JUnit 5
 ./gradlew bootJar          # -> build/libs/app.jar
-docker-compose up          # postgres + api + prometheus + grafana + cadvisor
+docker compose up -d       # postgres + nginx + api + prometheus + grafana + cadvisor
 ```
 
 Single test class: `./gradlew test --tests "pl.szymanski.wiktor.ApplicationTest"`
 
 Note `JAVA_HOME` in the environment may point at a missing JDK; use
 `JAVA_HOME=~/.jdks/corretto-21.0.10` for gradle if the build cannot find a toolchain.
+
+## Scaling (identical on all 8 branches)
+
+Every branch runs its API behind an **nginx load balancer that owns host `:8080`**; the API
+service itself has no `container_name` and no published port, only `expose: 8080` and
+`deploy.replicas`. Scale with the single `REPLICAS` knob in `.env` (auto-loaded by compose,
+so the value is sticky):
+
+```bash
+REPLICAS=3 PG_MAX_CONNECTIONS=1300 docker compose up -d
+```
+
+- **Never also pass `--scale`.** Mixing `--scale` with `deploy.replicas` makes Compose
+  remove middle replicas.
+- `REPLICAS` drives *both* the container count and `API_REPLICAS`, which on ES branches
+  sets the saga per-node claim to `ceil(axon.saga.total-segments / replicas)`. If they
+  diverge, segments are left unclaimed and those orders are never processed.
+- `PG_MAX_CONNECTIONS` must rise with `REPLICAS` — ~350 connections per ES replica
+  (Hikari 50 + Axon 300). The default is `600`; add ~350 per additional replica.
+- Containers are named `<project>-api-es-N`, **not** `api-es`, even at `REPLICAS=1`. Use
+  `docker compose logs api-es` / `docker compose exec api-es` (service name), not
+  `docker logs api-es`. Any cadvisor query must match `name=~".*api-es.*"`.
+- Prometheus discovers the API through `dns_sd_configs`, so a replica count change needs no
+  config edit.
+
+### `REPLICAS>1` is wired up, but the domain is not multi-node safe yet
+
+The infrastructure is verified at `REPLICAS=3`: nginx spreads load, Prometheus finds all
+targets, and the saga splits its 60 segments evenly (20/20/20, none unclaimed). **The
+application logic is a different matter, and currently fails on both families.** Treat
+`REPLICAS=1` as the only measurement-grade configuration until these are fixed.
+
+- **ES: cross-node append conflicts strand orders permanently.** Two replicas load the same
+  `InventoryItem` and race to append at the same sequence number. Axon's JDBC event store
+  raises `EventStoreException("An event for aggregate [item-1] at sequence [123] was
+  already inserted")`, but `config/ConcurrencyRetryScheduler.kt:33` retries **only**
+  `ConcurrencyException`, so the saga's `SagaReserveItemCommand` fails and is never
+  retried. Measured on ES-2 at `REPLICAS=2`, RATE=30: 3537 of 10401 orders stuck `PENDING`
+  forever, backlog never drained. The aggregate lock is in-process only, so nothing
+  serialises the two writers. The likely fix is a `PersistenceExceptionResolver` /
+  `SQLStateResolver` that translates the duplicate-key into `ConcurrencyException` so the
+  existing retry path picks it up — untested, and it would change measured retry behaviour.
+- **TO: the outbox poller runs on every node.** Spring Modulith's
+  `republication-interval: PT30S` means orphaned `event_publication` rows may be
+  republished by more than one replica. Not investigated.
+
+Do not publish scale-out numbers for either family without resolving the above.
 
 ## Architecture (ES-4)
 
@@ -72,8 +119,20 @@ exception thrown anywhere in the app is `ItemAlreadyExistsException`, from `POST
 ### Config knobs that matter
 
 `src/main/resources/application.yaml`: `snapshot.event-count` (30), `cache.enabled`,
-`axon.saga.segments` (32), `axon.jdbc.pool.size` (150), and the Micrometer
-`distribution` block.
+`axon.saga.total-segments` (60), `axon.saga.replicas` (`${API_REPLICAS:1}`),
+`axon.jdbc.pool.size` (300), and the Micrometer `distribution` block.
+
+**`axon.saga.total-segments` is 60 on every ES branch** and must stay that way — it is the
+fixed segment pool that `ceil(total-segments / replicas)` divides, and 60 splits evenly for
+2/3/4/5/6 replicas. ES-1/2/3 previously used `segments: 32`, so single-node results
+produced before that change are not comparable to later ones. Changing it requires
+resetting the `order-saga` tokens (`TRUNCATE token_entry`, which `k6/bench/reset.sh` does).
+
+**`axon.jdbc.pool.size` must exceed the saga per-node claim.** At the old 150 with a
+60-thread claim the pool ran dry (`active=150, waiting=97`) and sagas that failed to
+dispatch were never retried, stranding orders in `PENDING` forever. Measured on an
+identical 3m steady run: 60 segments at pool 150 stranded 48 orders and never drained;
+at pool 300, zero stranded.
 
 **`order.e2e.time` histogram bounds must stay identical on every branch**
 (`minimum-expected-value: 1ms`, `maximum-expected-value: 10m`). Micrometer's default Timer
@@ -106,12 +165,22 @@ via `k6/bench/dump.py`. Verdicts are therefore computed *post-run* by
 measurement itself was broken (backlog never drained, scrape gap, API restarted mid-run,
 orders that never reached a terminal event), which is not the same as a slow system.
 
-Everything under `k6/` and `docker-compose.bench.yml` is **byte-identical on all 11 variant
-branches**; `bench.env` is the only per-branch file. Verify with:
+**The harness only exists on `ES-2` and `ES-4`.** `TO-1`..`TO-4`, `ES-1` and `ES-3` still
+carry the legacy `k6/run.sh` + `k6/reserve-load-test.js` and have no `bench.env`,
+`docker-compose.bench.yml` or `k6/bench/` — `common.sh` hard-fails there. Rolling the
+harness out to them is a separate job.
+
+On the branches that do have it, everything under `k6/` and `docker-compose.bench.yml` is
+**byte-identical**; `bench.env` is the only per-branch file. Verify against `ES-2` (the
+`harness-v1` ref older comments name does not exist in this repository):
 
 ```bash
-git diff --stat harness-v1 <branch> -- k6 docker-compose.bench.yml   # must be empty
+git diff --stat ES-2 <branch> -- k6 docker-compose.bench.yml   # must be empty
 ```
+
+`EXPECTED_REPLICAS` is **not** set in `bench.env`; `common.sh` derives it from `REPLICAS`
+in `.env`, the file compose actually acts on. `reset.sh` asserts the running container
+count against it before the measured run starts.
 
 ### Gotchas when editing the harness
 
@@ -121,8 +190,11 @@ git diff --stat harness-v1 <branch> -- k6 docker-compose.bench.yml   # must be e
   `sum(foo @ T)` is valid. Only the `hist` queries use `@`; everything else gets its
   evaluation instant from the API `time` parameter.
 - **Always `sum()`-wrap PromQL.** The `job` label differs per branch (`inventory-to` vs
-  `inventory-es`) and `ES-3-pesimistic-scaling` scrapes via `dns_sd_configs`, so
-  unaggregated expressions return one series per replica there.
+  `inventory-es`) and every branch now scrapes via `dns_sd_configs`, so unaggregated
+  expressions return one series per replica as soon as `REPLICAS>1`.
+- **`API_CONTAINER_RE` must stay unanchored** (`.*api-es.*`). The API service carries no
+  `container_name`, so cadvisor sees `<project>-api-es-N`; `queries.promql` matches it with
+  an anchored `name=~"$CRE"`, and a bare `api-es` would silently match nothing.
 - **`additionalBytesSize` only rides on `InventoryCreatedEvent`**, never on
   `InventoryReservedEvent`. It does not inflate the append path — it inflates snapshot rows
   and the per-command Jackson deep copy, i.e. it is a copy-on-write cost lever.
