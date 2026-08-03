@@ -55,10 +55,28 @@ REPLICAS=3 PG_MAX_CONNECTIONS=1000 docker compose up -d
   `docker logs api-es`. Any cadvisor query must match `name=~".*api-es.*"`.
 - Prometheus discovers the API through `dns_sd_configs`, so a replica count change needs no
   config edit.
-- **TO branches are infrastructurally scalable but not domain-verified at `REPLICAS>1`**:
-  Spring Modulith's republication poller runs on every node, so orphaned `event_publication`
-  rows may be republished more than once. Do not publish TO scale-out numbers without
-  checking this.
+### `REPLICAS>1` is wired up, but the domain is not multi-node safe yet
+
+The infrastructure is verified at `REPLICAS=3`: nginx spreads load, Prometheus finds all
+targets, and the saga splits its 60 segments evenly (20/20/20, none unclaimed). **The
+application logic is a different matter, and currently fails on both families.** Treat
+`REPLICAS=1` as the only measurement-grade configuration until these are fixed.
+
+- **ES: cross-node append conflicts strand orders permanently.** Two replicas load the same
+  `InventoryItem` and race to append at the same sequence number. Axon's JDBC event store
+  raises `EventStoreException("An event for aggregate [item-1] at sequence [123] was
+  already inserted")`, but `config/ConcurrencyRetryScheduler.kt:33` retries **only**
+  `ConcurrencyException`, so the saga's `SagaReserveItemCommand` fails and is never
+  retried. Measured on ES-2 at `REPLICAS=2`, RATE=30: 3537 of 10401 orders stuck `PENDING`
+  forever, backlog never drained. The aggregate lock is in-process only, so nothing
+  serialises the two writers. The likely fix is a `PersistenceExceptionResolver` /
+  `SQLStateResolver` that translates the duplicate-key into `ConcurrencyException` so the
+  existing retry path picks it up — untested, and it would change measured retry behaviour.
+- **TO: the outbox poller runs on every node.** Spring Modulith's
+  `republication-interval: PT30S` means orphaned `event_publication` rows may be
+  republished by more than one replica. Not investigated.
+
+Do not publish scale-out numbers for either family without resolving the above.
 
 ## Architecture (ES-\* branches)
 
