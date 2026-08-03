@@ -39,7 +39,7 @@ service itself has no `container_name` and no published port, only `expose: 8080
 so the value is sticky):
 
 ```bash
-REPLICAS=3 PG_MAX_CONNECTIONS=1000 docker compose up -d
+REPLICAS=3 PG_MAX_CONNECTIONS=1300 docker compose up -d
 ```
 
 - **Never also pass `--scale`.** Mixing `--scale` with `deploy.replicas` makes Compose
@@ -47,14 +47,14 @@ REPLICAS=3 PG_MAX_CONNECTIONS=1000 docker compose up -d
 - `REPLICAS` drives *both* the container count and `API_REPLICAS`, which on ES branches
   sets the saga per-node claim to `ceil(axon.saga.total-segments / replicas)`. If they
   diverge, segments are left unclaimed and those orders are never processed.
-- `PG_MAX_CONNECTIONS` must rise with `REPLICAS` — ~200 connections per ES replica
-  (Hikari 50 + Axon 150). The default `300` is the historical single-node value that all
-  existing results assume; `1000` covers ~4–5 replicas.
+- `PG_MAX_CONNECTIONS` must rise with `REPLICAS` — ~350 connections per ES replica
+  (Hikari 50 + Axon 300). The default is `600`; add ~350 per additional replica.
 - Containers are named `<project>-api-es-N`, **not** `api-es`, even at `REPLICAS=1`. Use
   `docker compose logs api-es` / `docker compose exec api-es` (service name), not
   `docker logs api-es`. Any cadvisor query must match `name=~".*api-es.*"`.
 - Prometheus discovers the API through `dns_sd_configs`, so a replica count change needs no
   config edit.
+
 ### `REPLICAS>1` is wired up, but the domain is not multi-node safe yet
 
 The infrastructure is verified at `REPLICAS=3`: nginx spreads load, Prometheus finds all
@@ -124,13 +124,19 @@ exception thrown anywhere in the app is `ItemAlreadyExistsException`, from `POST
 
 `src/main/resources/application.yaml`: `snapshot.event-count` (30), `cache.enabled`,
 `axon.saga.total-segments` (60), `axon.saga.replicas` (`${API_REPLICAS:1}`),
-`axon.jdbc.pool.size` (150), and the Micrometer `distribution` block.
+`axon.jdbc.pool.size` (300), and the Micrometer `distribution` block.
 
 **`axon.saga.total-segments` is 60 on every ES branch** and must stay that way — it is the
 fixed segment pool that `ceil(total-segments / replicas)` divides, and 60 splits evenly for
 2/3/4/5/6 replicas. ES-1/2/3 previously used `segments: 32`, so single-node results
 produced before that change are not comparable to later ones. Changing it requires
 resetting the `order-saga` tokens (`TRUNCATE token_entry`, which `k6/bench/reset.sh` does).
+
+**`axon.jdbc.pool.size` must exceed the saga per-node claim.** At the old 150 with a
+60-thread claim the pool ran dry (`active=150, waiting=97`) and sagas that failed to
+dispatch were never retried, stranding orders in `PENDING` forever. Measured on an
+identical 3m steady run: 60 segments at pool 150 stranded 48 orders and never drained;
+at pool 300, zero stranded.
 
 **`order.e2e.time` histogram bounds must stay identical on every branch**
 (`minimum-expected-value: 1ms`, `maximum-expected-value: 10m`). Micrometer's default Timer
