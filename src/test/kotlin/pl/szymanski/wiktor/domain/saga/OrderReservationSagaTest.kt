@@ -15,6 +15,7 @@ import pl.szymanski.wiktor.domain.InventoryReservedEvent
 import pl.szymanski.wiktor.domain.OrderCreatedEvent
 import pl.szymanski.wiktor.domain.OrderFailedEvent
 import pl.szymanski.wiktor.domain.OrderItem
+import pl.szymanski.wiktor.service.command.CompleteOrderCommand
 import pl.szymanski.wiktor.service.command.FailOrderCommand
 import pl.szymanski.wiktor.service.command.ReleaseReservationCommand
 import pl.szymanski.wiktor.service.command.SagaReserveItemCommand
@@ -33,6 +34,9 @@ class OrderReservationSagaTest {
     /** Reserve commands for this item id complete exceptionally; everything else succeeds. */
     private var failingItemId: String? = null
 
+    /** When true, CompleteOrderCommand completes exceptionally. */
+    private var failComplete: Boolean = false
+
     private val orderId = "ORDER-1"
     private val correlationId = UUID.randomUUID()
     private val items = listOf(OrderItem("ITEM-1", 2), OrderItem("ITEM-2", 3))
@@ -41,6 +45,7 @@ class OrderReservationSagaTest {
     fun setUp() {
         sent.clear()
         failingItemId = null
+        failComplete = false
 
         val captured = slot<Any>()
         every { gateway.send<Any?>(capture(captured)) } answers {
@@ -48,7 +53,8 @@ class OrderReservationSagaTest {
             sent.add(command)
             // NOTE: SagaReserveItemCommand's aggregate id property is `id`, not `itemId`.
             // Only OrderItem uses `itemId`.
-            val shouldFail = command is SagaReserveItemCommand && command.id == failingItemId
+            val shouldFail = (command is SagaReserveItemCommand && command.id == failingItemId) ||
+                (command is CompleteOrderCommand && failComplete)
             if (shouldFail) CompletableFuture.failedFuture<Any?>(RuntimeException("injected append failure"))
             else CompletableFuture.completedFuture<Any?>(null)
         }
@@ -104,5 +110,19 @@ class OrderReservationSagaTest {
         fixture.givenAPublished(OrderCreatedEvent(orderId, "user-1", items, correlationId))
             .whenPublishingA(OrderFailedEvent(orderId, "reserve command failed"))
             .expectActiveSagas(0)
+    }
+
+    @Test
+    fun `fails and releases the whole order when the completion command fails`() {
+        failComplete = true
+        val singleLine = listOf(OrderItem("ITEM-1", 2))
+
+        fixture.givenAPublished(OrderCreatedEvent(orderId, "user-1", singleLine, correlationId))
+            .whenPublishingA(InventoryReservedEvent("ITEM-1", correlationId, 2))
+
+        val releases = sent.filterIsInstance<ReleaseReservationCommand>()
+        assertEquals(1, releases.size, "the whole order should be released, got: $sent")
+        assertEquals("ITEM-1", releases.single().id)
+        assertEquals(1, sent.filterIsInstance<FailOrderCommand>().size)
     }
 }

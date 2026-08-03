@@ -81,9 +81,17 @@ class OrderReservationSaga {
             sendNextReservation()
         } else {
             log.info("[SAGA] all items reserved, completing orderId={}", orderId)
+            // reservedItems.add above already ran, so this snapshot is the WHOLE order, not a prefix.
+            val orderIdCopy = orderId
+            val toRelease = reservedItems.toList()
             commandExecutor.execute {
-                commandGateway.send<Any?>(CompleteOrderCommand(orderId))
+                commandGateway.send<Any?>(CompleteOrderCommand(orderIdCopy))
+                    .whenComplete { _, ex -> if (ex != null) abandon(orderIdCopy, toRelease, "complete", ex) }
             }
+            // Recorded as "completed" before the command's verdict is known. If it later fails,
+            // saga.command.failed{stage="complete"} is what makes that visible — the saga has
+            // already ended by then and cannot be re-tagged. OrderAggregate is uncontended
+            // (one writer per order), so this is an infrastructure-only path.
             recordSagaEnd("completed")
             SagaLifecycle.end()
         }
@@ -96,12 +104,8 @@ class OrderReservationSaga {
         val failReason = event.reason
         val orderIdCopy = orderId
         commandExecutor.execute {
-            toRelease.forEach { item ->
-                runCatching {
-                    commandGateway.send<Any?>(ReleaseReservationCommand(item.itemId, item.quantity))
-                }.onFailure { ex -> log.error("[SAGA] compensation failed itemId={} orderId={}", item.itemId, orderIdCopy, ex) }
-            }
-            commandGateway.send<Any?>(FailOrderCommand(orderIdCopy, failReason))
+            releaseAll(orderIdCopy, toRelease)
+            sendFailOrder(orderIdCopy, failReason)
         }
         recordSagaEnd("failed")
         SagaLifecycle.end()
