@@ -13,10 +13,10 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-    # ~200 connections per replica on the ES family (Hikari 50 + Axon 150). The default of
-    # 300 is what every single-node run has always used, so it must not change; raise it in
-    # .env alongside REPLICAS (1000 covers ~4-5 replicas).
-    command: postgres -c max_connections=${PG_MAX_CONNECTIONS:-300}
+    # ~350 connections per replica on the ES family (Hikari 50 + Axon 300). Raise this in
+    # .env in step with REPLICAS; 600 leaves headroom for one replica plus the exporter,
+    # and roughly 350 more is needed per additional replica.
+    command: postgres -c max_connections=${PG_MAX_CONNECTIONS:-600}
     volumes:
       - postgres-es-data:/var/lib/postgresql/data
 
@@ -35,7 +35,7 @@ services:
       DB_R2DBC_URL:        "r2dbc:postgresql://postgres-es:5432/inventory"
       DB_USER:             inventory
       DB_PASSWORD:         inventory
-      AXON_JDBC_POOL_SIZE: "${AXON_JDBC_POOL_SIZE:-150}"
+      AXON_JDBC_POOL_SIZE: "${AXON_JDBC_POOL_SIZE:-300}"
       # Drives the saga per-node claim = ceil(total-segments / replicas). MUST equal the
       # number of API containers actually running, or segments are left unclaimed.
       API_REPLICAS:        "${REPLICAS:-1}"
