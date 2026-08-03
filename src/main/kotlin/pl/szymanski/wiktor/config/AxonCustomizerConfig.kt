@@ -34,8 +34,13 @@ class AxonCustomizerConfig {
             TrackingEventProcessorConfiguration.forSingleThreadedProcessing()
                 .andBatchSize(100)
         }
+        // Per-node claim count = ceil(totalSegments / replicas), so each replica claims a fair,
+        // even share of the fixed segment pool. Only the claim count changes with replica count;
+        // totalSegments stays constant (no token reset needed when scaling up/down).
+        val sagaThreadsPerNode = (sagaProps.totalSegments + sagaProps.replicas - 1) / sagaProps.replicas
         configurer.registerTrackingEventProcessorConfiguration("order-saga") { _ ->
-            TrackingEventProcessorConfiguration.forParallelProcessing(sagaProps.segments)
+            TrackingEventProcessorConfiguration.forParallelProcessing(sagaThreadsPerNode)
+                .andInitialSegmentsCount(sagaProps.totalSegments)
                 .andInitialTrackingToken { source -> source.createTailToken() }
                 .andBatchSize(100)
         }

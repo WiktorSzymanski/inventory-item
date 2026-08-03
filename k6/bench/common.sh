@@ -13,6 +13,17 @@ else
     exit 1
 fi
 
+# .env is the SINGLE source of truth for the replica count: docker compose auto-loads it,
+# so whatever REPLICAS says there is what actually runs. Sourcing it here (rather than
+# duplicating the number in bench.env) removes the trap of two independent knobs for the
+# same physical quantity, where editing one silently invalidated the run.
+if [ -f "$REPO_ROOT/.env" ]; then
+    # shellcheck disable=SC1091
+    set -a; . "$REPO_ROOT/.env"; set +a
+fi
+EXPECTED_REPLICAS="${REPLICAS:-1}"
+export EXPECTED_REPLICAS
+
 : "${VARIANT:?bench.env must set VARIANT}"
 : "${API_SVC:?bench.env must set API_SVC}"
 : "${DB_SVC:?bench.env must set DB_SVC}"
@@ -31,10 +42,10 @@ dc() { "${DC_ARGS[@]}" "$@"; }
 PROM_URL="${PROM_URL:-http://localhost:9090}"
 REPORTER_URL="${REPORTER_URL:-http://localhost:8686}"
 HEALTH_URL="${HEALTH_URL:-http://localhost:8080/actuator/health}"
-# URL k6 uses from inside the compose network. The default is right for every branch
-# where the API is reached directly; ES-3-pesimistic-scaling overrides it in bench.env
-# to point at its load balancer.
-BENCH_BASE_URL="${BENCH_BASE_URL:-http://${API_SVC}:8080}"
+# URL k6 uses from inside the compose network. Every branch now fronts its API with the
+# same nginx load balancer, so the default is uniform; the API service is never addressed
+# directly, because at REPLICAS>1 it has no single address.
+BENCH_BASE_URL="${BENCH_BASE_URL:-http://nginx:8080}"
 export PROM_URL REPORTER_URL HEALTH_URL BENCH_BASE_URL
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }

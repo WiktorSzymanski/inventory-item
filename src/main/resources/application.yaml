@@ -23,7 +23,8 @@ axon:
     events: jackson
     messages: jackson
   saga:
-    segments: 32
+    total-segments: 60              # fixed segment pool, set once at token init (divides 2/3/4/5/6)
+    replicas: ${API_REPLICAS:1}     # must equal REPLICAS in .env; claim = ceil(total/replicas)
   jdbc:
     pool:
       size: 150
