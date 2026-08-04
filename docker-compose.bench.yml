@@ -1,0 +1,42 @@
+# Benchmark overlay. Byte-identical on all 11 variant branches — it only touches services
+# whose names are the same everywhere (prometheus, k6). BASE_URL deliberately stays in each
+# branch's own docker-compose.yml, because the API service name genuinely differs
+# (api-es / api-to / nginx) and the overlay must not know it.
+#
+# Usage:  docker compose -f docker-compose.yml -f docker-compose.bench.yml ...
+# k6/bench/common.sh wires this up automatically via $DC.
+
+services:
+  prometheus:
+    # A compose `command` list is REPLACED, not merged, so every flag has to be restated.
+    # That is convenient here: it also normalises the per-branch flag divergence (TO-1
+    # ships 3 flags, ES-3-pesimistic ships 4) down to one definition.
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+      - --web.enable-admin-api
+      # Required for k6's remote-write output. Without it k6 --out
+      # experimental-prometheus-rw fails with 404 on /api/v1/write.
+      - --web.enable-remote-write-receiver
+
+  k6:
+    # PINNED. `latest` drifting mid-thesis would silently change the load generator
+    # between variants, which invalidates every cross-variant comparison made across the
+    # drift. Recorded into meta.json as k6_version.
+    image: grafana/k6:1.1.0
+    # bench.sh passes the full argv (run, -e knobs, --out, --tag), so the image must not
+    # impose its own entrypoint script.
+    entrypoint: ["k6"]
+    volumes:
+      - ./bench-results:/bench-results
+    environment:
+      # k6 >= 2.0 stopped forwarding system env vars into __ENV by default. bench.sh
+      # passes every knob explicitly with -e so the harness is version-proof, but this
+      # keeps the legacy `docker compose up k6` path working if the image is ever bumped.
+      K6_INCLUDE_SYSTEM_ENV_VARS: "true"
+      K6_PROMETHEUS_RW_SERVER_URL: "http://prometheus:9090/api/v1/write"
+      K6_PROMETHEUS_RW_TREND_STATS: "p(50),p(95),p(99),max,count"
+      K6_PROMETHEUS_RW_PUSH_INTERVAL: "5s"
+      K6_PROMETHEUS_RW_STALE_MARKERS: "true"
