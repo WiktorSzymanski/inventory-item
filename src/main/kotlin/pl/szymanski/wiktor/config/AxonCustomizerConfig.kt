@@ -41,7 +41,10 @@ class AxonCustomizerConfig {
         configurer.registerTrackingEventProcessorConfiguration("order-saga") { _ ->
             TrackingEventProcessorConfiguration.forParallelProcessing(sagaThreadsPerNode)
                 .andInitialSegmentsCount(sagaProps.totalSegments)
-                .andInitialTrackingToken { source -> source.createTailToken() }
+                // Head, not tail: on a (re)init the saga starts from the END of the stream and only
+                // processes NEW orders. A token reset (e.g. changing total-segments) therefore does
+                // NOT replay the whole order history. createTailToken() would replay from the start.
+                .andInitialTrackingToken { source -> source.createHeadToken() }
                 .andBatchSize(100)
         }
     }
