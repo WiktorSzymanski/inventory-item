@@ -1,0 +1,88 @@
+# Query catalogue for dump.py.   Format:  <name> <TAB> <kind> <TAB> <expr>
+# Placeholders: $JOB $DB $CRE (api container regex) $RUNID $S (window start) $E (window end)
+#               $W (window width, seconds) $Q (quantile, hist kind only)
+#
+# Kinds:
+#   delta     evaluated at both window endpoints, subtracted client-side
+#   hist      bucket-vector difference between the endpoints, then histogram_quantile
+#   scalar    single instant query evaluated at the window END
+#   scalar_s  single instant query evaluated at the window START
+#   range     /api/v1/query_range at step=5s across the window
+#
+# Only `hist` uses the @ modifier, and only ever on a selector INSIDE an aggregation.
+# PromQL binds @ to vector/matrix selectors and subqueries — `sum(foo) @ T` is a parse
+# error, `sum(foo @ T)` is correct. Every other kind gets its evaluation instant from the
+# API's `time` parameter instead, which avoids the trap entirely.
+#
+# Why deltas of instant queries rather than increase() over a long range: the API is
+# restarted before every run, so every counter starts at 0 and "expr @ E - expr @ S" is
+# EXACT. increase() would apply edge extrapolation, which meaningfully distorts long
+# window totals.
+#
+# Why bucket-vector differences for histograms: subtracting the bucket vectors yields the
+# exact window-scoped histogram, and histogram_quantile over that is the true run-wide
+# percentile. Averaging histogram_quantile(rate(...[1m])) over time — the obvious thing —
+# is not a percentile of anything.
+#
+# Every expression is sum()-wrapped. The job label differs per branch (inventory-to vs
+# inventory-es) and ES-3-pesimistic-scaling scrapes via dns_sd_configs, so each metric has
+# N instance series there; unaggregated expressions would return N vectors.
+
+# ---------------------------------------------------------------- delta
+orders_accepted	delta	sum(http_server_requests_seconds_count{job="$JOB",uri="/inventory/orders",method="POST",status="202"})
+orders_non202	delta	sum(http_server_requests_seconds_count{job="$JOB",uri="/inventory/orders",method="POST",status!="202"})
+reads_total	delta	sum(http_server_requests_seconds_count{job="$JOB",uri=~"/inventory|/inventory/\\{itemId\\}",method="GET"})
+e2e_count	delta	sum by (outcome) (order_e2e_time_seconds_count{job="$JOB"})
+e2e_sum	delta	sum by (outcome) (order_e2e_time_seconds_sum{job="$JOB"})
+append_success	delta	sum(inventory_append_success_total{job="$JOB"})
+opt_retry	delta	sum(inventory_optimistic_retry_total{job="$JOB"})
+opt_exhausted	delta	sum(inventory_optimistic_exhausted_total{job="$JOB"})
+cache_hit	delta	sum(inventory_opt_cache_hit_total{job="$JOB"})
+cache_miss	delta	sum(inventory_opt_cache_miss_total{job="$JOB"})
+catchup	delta	sum(inventory_opt_catchup_total{job="$JOB"})
+exceptions	delta	sum by (type) (inventory_exception_total{job="$JOB"})
+events_processed	delta	sum by (eventType) (es_events_processed_total{job="$JOB"})
+
+# ---------------------------------------------------------------- hist
+e2e	hist	histogram_quantile($Q, (sum by (le,outcome) (order_e2e_time_seconds_bucket{job="$JOB"} @ $E) - sum by (le,outcome) (order_e2e_time_seconds_bucket{job="$JOB"} @ $S)) or sum by (le,outcome) (order_e2e_time_seconds_bucket{job="$JOB"} @ $E))
+http_order	hist	histogram_quantile($Q, (sum by (le) (http_server_requests_seconds_bucket{job="$JOB",uri="/inventory/orders",method="POST"} @ $E) - sum by (le) (http_server_requests_seconds_bucket{job="$JOB",uri="/inventory/orders",method="POST"} @ $S)) or sum by (le) (http_server_requests_seconds_bucket{job="$JOB",uri="/inventory/orders",method="POST"} @ $E))
+projection_lag	hist	histogram_quantile($Q, (sum by (le) (projection_lag_seconds_bucket{job="$JOB"} @ $E) - sum by (le) (projection_lag_seconds_bucket{job="$JOB"} @ $S)) or sum by (le) (projection_lag_seconds_bucket{job="$JOB"} @ $E))
+order_proj_lag	hist	histogram_quantile($Q, (sum by (le) (order_projection_lag_seconds_bucket{job="$JOB"} @ $E) - sum by (le) (order_projection_lag_seconds_bucket{job="$JOB"} @ $S)) or sum by (le) (order_projection_lag_seconds_bucket{job="$JOB"} @ $E))
+state_load	hist	histogram_quantile($Q, (sum by (le,phase) (state_load_time_seconds_bucket{job="$JOB"} @ $E) - sum by (le,phase) (state_load_time_seconds_bucket{job="$JOB"} @ $S)) or sum by (le,phase) (state_load_time_seconds_bucket{job="$JOB"} @ $E))
+state_persist	hist	histogram_quantile($Q, (sum by (le,source) (state_persist_time_seconds_bucket{job="$JOB"} @ $E) - sum by (le,source) (state_persist_time_seconds_bucket{job="$JOB"} @ $S)) or sum by (le,source) (state_persist_time_seconds_bucket{job="$JOB"} @ $E))
+publish_lag	hist	histogram_quantile($Q, (sum by (le,eventType) (publish_lag_seconds_bucket{job="$JOB"} @ $E) - sum by (le,eventType) (publish_lag_seconds_bucket{job="$JOB"} @ $S)) or sum by (le,eventType) (publish_lag_seconds_bucket{job="$JOB"} @ $E))
+
+# ---------------------------------------------------------------- scalar
+cpu_avg	scalar	avg_over_time(avg(process_cpu_usage{job="$JOB"})[${W}s:5s])
+cpu_max	scalar	max_over_time(avg(process_cpu_usage{job="$JOB"})[${W}s:5s])
+sys_cpu_avg	scalar	avg_over_time(avg(system_cpu_usage{job="$JOB"})[${W}s:5s])
+heap_max_bytes	scalar	max_over_time((sum(jvm_memory_used_bytes{job="$JOB",area="heap"}))[${W}s:5s])
+heap_end_bytes	scalar	sum(jvm_memory_used_bytes{job="$JOB",area="heap"})
+db_size_start	scalar_s	sum(pg_database_size_bytes{datname="$DB"})
+db_size_end	scalar	sum(pg_database_size_bytes{datname="$DB"})
+container_cpu	scalar	sum(rate(container_cpu_usage_seconds_total{name=~"$CRE"}[1m]))
+container_rss	scalar	sum(container_memory_working_set_bytes{name=~"$CRE"})
+
+# In-flight orders: admitted (202) minus terminal (e2e recorded). The single best
+# saturation indicator, and it needs no SLO guess — a queue that grows monotonically
+# during a constant-rate plateau IS saturation, by definition.
+inflight_start	scalar_s	(sum(http_server_requests_seconds_count{job="$JOB",uri="/inventory/orders",method="POST",status="202"}) or vector(0)) - (sum(order_e2e_time_seconds_count{job="$JOB"}) or vector(0))
+inflight_end	scalar	(sum(http_server_requests_seconds_count{job="$JOB",uri="/inventory/orders",method="POST",status="202"}) or vector(0)) - (sum(order_e2e_time_seconds_count{job="$JOB"}) or vector(0))
+inflight_max	scalar	max_over_time(((sum(http_server_requests_seconds_count{job="$JOB",uri="/inventory/orders",method="POST",status="202"}) or vector(0)) - (sum(order_e2e_time_seconds_count{job="$JOB"}) or vector(0)))[${W}s:5s])
+
+# ---- validity guards, consumed by evaluate.py --------------------------------
+scrape_up_min	scalar	min_over_time((min(up{job="$JOB"}))[${W}s:5s])
+api_resets	scalar	max(resets(process_uptime_seconds{job="$JOB"}[${W}s]))
+target_count	scalar	count(up{job="$JOB"} == 1)
+
+# ---------------------------------------------------------------- range
+rate_accepted	range	sum(rate(http_server_requests_seconds_count{job="$JOB",uri="/inventory/orders",method="POST",status="202"}[30s]))
+rate_terminal	range	sum(rate(es_events_processed_total{job="$JOB",eventType=~"OrderCompletedEvent|OrderFailedEvent"}[30s]))
+e2e_p95_1m	range	histogram_quantile(0.95, sum by (le) (rate(order_e2e_time_seconds_bucket{job="$JOB"}[1m])))
+inflight	range	(sum(http_server_requests_seconds_count{job="$JOB",uri="/inventory/orders",method="POST",status="202"}) or vector(0)) - (sum(order_e2e_time_seconds_count{job="$JOB"}) or vector(0))
+cpu	range	avg(process_cpu_usage{job="$JOB"})
+heap	range	sum(jvm_memory_used_bytes{job="$JOB",area="heap"})
+db_size	range	sum(pg_database_size_bytes{datname="$DB"})
+conflict_rate	range	sum(rate(inventory_optimistic_retry_total{job="$JOB"}[30s]))
+k6_offered	range	sum(rate(k6_iterations_total{testid="$RUNID"}[30s]))
+k6_dropped	range	sum(rate(k6_dropped_iterations_total{testid="$RUNID"}[30s]))
