@@ -46,10 +46,13 @@ events_processed	delta	sum by (eventType) (es_events_processed_total{job="$JOB"}
 # Saga terminal outcomes. `outcome` splits contention-driven rejections (command_failed)
 # from genuine out-of-stock ones (failed), which is the only way to read a REPLICAS>1 run
 # as a contention study rather than a stock result. `stage` localises which dispatch site
-# gave up: reserve | complete | release | fail-order. fail-order is the residual dead end —
-# any non-zero value there means orders are still stranded PENDING, so it is the one series
-# whose absence actually matters. Both are absent on TO-*, which is fine: dump.py records
-# a missing query as null rather than failing the run.
+# gave up: reserve | complete | release | fail-order | fail-order-ignored | abandon-rejected.
+# The last three are the ones that can leave an order non-terminal, so their absence is what
+# actually matters: fail-order means the terminal command itself failed, fail-order-ignored
+# means the aggregate refused it because the order was no longer PENDING (so no
+# OrderFailedEvent exists and the saga never ends), and abandon-rejected means the saga pool
+# refused the disposition and it had to run inline. Both series are absent on TO-*, which is
+# fine: dump.py records a missing query as null rather than failing the run.
 saga_completed	delta	sum by (outcome) (saga_completed_total{job="$JOB"})
 saga_cmd_failed	delta	sum by (stage) (saga_command_failed_total{job="$JOB"})
 
