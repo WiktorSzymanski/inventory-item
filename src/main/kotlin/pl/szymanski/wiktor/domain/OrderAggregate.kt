@@ -34,10 +34,18 @@ class OrderAggregate {
         AggregateLifecycle.apply(OrderCompletedEvent(command.orderId))
     }
 
+    /**
+     * Returns whether the event was actually applied. The saga needs to tell "the order is now
+     * FAILED" apart from "the order was already terminal, so I did nothing": in the second case
+     * no OrderFailedEvent is produced, so the saga's @EndSaga handler never fires and its
+     * saga_entry row would leak. The future completes normally either way, so without this the
+     * two are indistinguishable at the call site.
+     */
     @CommandHandler
-    fun handle(command: FailOrderCommand) {
-        if (status != OrderStatus.PENDING) return
+    fun handle(command: FailOrderCommand): Boolean {
+        if (status != OrderStatus.PENDING) return false
         AggregateLifecycle.apply(OrderFailedEvent(command.orderId, command.reason))
+        return true
     }
 
     @EventSourcingHandler fun on(event: OrderCreatedEvent)   { orderId = event.orderId; items = event.items; status = OrderStatus.PENDING }
