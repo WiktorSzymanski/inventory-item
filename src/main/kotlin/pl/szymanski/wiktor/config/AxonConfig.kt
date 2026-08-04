@@ -10,6 +10,7 @@ import org.axonframework.eventhandling.tokenstore.jdbc.TokenSchema
 import org.axonframework.eventsourcing.eventstore.EventStorageEngine
 import org.axonframework.eventsourcing.eventstore.jdbc.EventSchema
 import org.axonframework.eventsourcing.eventstore.jdbc.JdbcEventStorageEngine
+import org.axonframework.eventsourcing.eventstore.jpa.SQLStateResolver
 import org.axonframework.modelling.saga.repository.jdbc.JdbcSagaStore
 import org.axonframework.modelling.saga.repository.jdbc.PostgresSagaSqlSchema
 import org.axonframework.modelling.saga.repository.jdbc.SagaSchema
@@ -124,6 +125,7 @@ class AxonConfig {
             .schema(eventSchema)
             .eventSerializer(eventSerializer)
             .snapshotSerializer(eventSerializer)
+            .persistenceExceptionResolver(SQLStateResolver())
             .build()
         return TimedEventStorageEngine(jdbc, meterRegistry)
     }
