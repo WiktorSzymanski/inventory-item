@@ -85,8 +85,8 @@ services:
     environment:
       BASE_URL:  "http://nginx:8080"
 #      BASE_URL:  "http://host.docker.internal:8080"
-#      VUS:       "${VUS:-50}"
-      DURATION:  "${DURATION:-5m}"
+      VUS:       "${VUS:-50}"
+      DURATION:  "${DURATION:-10m}"
     entrypoint: ["/bin/sh", "/scripts/run.sh"]
     depends_on:
       - grafana-reporter
