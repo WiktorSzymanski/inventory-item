@@ -127,19 +127,26 @@ such guard and rely on stock Modulith republication. None of it is load-tested a
 Do not publish either family's scale-out numbers as throughput results: on ES the extra
 rejections are contention, and TO's multi-node path has never been load-tested at all.
 
-### Known gap on `ES-1`: no `order.e2e.time` histogram configuration
+### Known gap on `ES-1`: `order.e2e.time` is never recorded at all
 
-Unrelated to the multi-node work and deliberately left out of its scope. This branch's
-`src/main/resources/application.yaml` has **no** `order.e2e.time` entry anywhere in the
-Micrometer `distribution` block — no `percentiles-histogram: true`, no
-`minimum-expected-value`, no `maximum-expected-value`. Every other branch sets
-`minimum-expected-value: 1ms` and `maximum-expected-value: 10m` for it.
+Unrelated to the multi-node work and deliberately left out of its scope. **`ES-1` does not
+emit `order.e2e.time`** — `git grep -i e2e -- src` returns nothing on this branch.
+`OrderProjectionUpdater` has no `e2eTimer` / `recordE2e` / `readCreatedAt`, and it never
+writes the `created_at` column the measurement would be taken against; `application.yaml`
+correspondingly has no `order.e2e.time` entry in the Micrometer `distribution` block.
 
-The consequence is the classic trap: Micrometer's default Timer maximum is 30 s, so every
-sample above 30 s collapses into the `+Inf` bucket and `histogram_quantile` reports ~30 s —
-which makes a saturated `ES-1` look *faster* than a healthy branch. **Treat any `ES-1`
-end-to-end latency number as suspect until those bounds are added**, and do not put `ES-1`
-latency into a TO-vs-ES table without fixing this first.
+So the symptom is an **absent** series, not a mis-bucketed one: `order_e2e_time_*` never
+appears in `/actuator/prometheus` and any PromQL over it returns empty. Adding the
+`minimum-expected-value: 1ms` / `maximum-expected-value: 10m` bounds alone would change
+nothing. Closing the gap means porting `OrderProjectionUpdater`'s `created_at` write and its
+two `recordE2e(...)` calls from `ES-2` *and then* pinning the bounds.
+
+**`ES-1` therefore has no end-to-end latency measurement**, and cannot appear in a TO-vs-ES
+latency table until that is ported. (Do not confuse this with the related trap the bounds
+themselves guard against: where the timer *does* exist but its bounds are unset, Micrometer's
+default 30 s Timer maximum collapses every larger sample into `+Inf` and
+`histogram_quantile` reports ~30 s, making a saturated branch look *faster* than a healthy
+one. That is the failure mode on other branches; here the metric simply is not there.)
 
 ## Architecture
 
