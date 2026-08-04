@@ -124,7 +124,11 @@ rejection rate is an artefact of lost write races rather than of stock. Read mul
 runs as a contention study, not as a throughput result. On any single-node run
 `saga_completed_total{outcome="command_failed"}` should be zero — the JVM-local
 `LockFactory` (Axon's default is pessimistic) prevents the `23505` entirely there. A non-zero
-value falsifies that assumption and means the baseline needs re-examining.
+value falsifies that assumption and means the baseline needs re-examining. `evaluate.py`
+enforces this as the `saga_command_failed_single_node` validity check, which is skipped
+whenever `EXPECTED_REPLICAS > 1` — above 1 the count is the contention signal itself.
+The underlying series come from the `saga_completed` and `saga_cmd_failed` deltas and the
+`saga_lifetime` histogram in `queries.promql`, so they land in `dump.json` on every run.
 
 **TO is unchanged by this work.** `InventoryService.processOrder` is `@Retryable`
 on `OptimisticLockingFailureException` (4 attempts) and, on exhaustion, issues
