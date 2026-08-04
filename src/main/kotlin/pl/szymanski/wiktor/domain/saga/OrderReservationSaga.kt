@@ -223,7 +223,25 @@ class OrderReservationSaga {
     private fun sendFailOrder(orderId: String, reason: String) {
         try {
             commandGateway.send<Any?>(FailOrderCommand(orderId, reason))
-                .whenComplete { _, ex -> if (ex != null) failOrderFailed(orderId, ex) }
+                .whenComplete { applied, ex ->
+                    when {
+                        ex != null -> failOrderFailed(orderId, ex)
+                        // The command succeeded but the aggregate ignored it, because the order
+                        // was no longer PENDING. No OrderFailedEvent exists, so @EndSaga will not
+                        // fire and this saga_entry row will sit there forever. Unreachable today
+                        // — the saga is the only sender, the completion path has already ended
+                        // its own saga, and the reserve path cannot run on a terminal order — but
+                        // a second sender (a timeout reaper, an admin endpoint) makes it live
+                        // immediately, and it would present exactly like the original defect.
+                        applied == false -> {
+                            log.error(
+                                "[SAGA] FailOrderCommand ignored orderId={} — order was already terminal, " +
+                                    "saga will not be ended by an OrderFailedEvent", orderId,
+                            )
+                            meterRegistry.counter("saga.command.failed", "stage", "fail-order-ignored").increment()
+                        }
+                    }
+                }
         } catch (e: Exception) {
             failOrderFailed(orderId, e)
         }

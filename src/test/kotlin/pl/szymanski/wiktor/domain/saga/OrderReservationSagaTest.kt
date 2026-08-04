@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import pl.szymanski.wiktor.domain.InventoryReservationFailedEvent
 import pl.szymanski.wiktor.domain.InventoryReservedEvent
 import pl.szymanski.wiktor.domain.OrderCreatedEvent
 import pl.szymanski.wiktor.domain.OrderFailedEvent
@@ -40,6 +41,12 @@ class OrderReservationSagaTest {
     /** Commands of this type throw out of `send` itself, before any future exists. */
     private var syncThrowFor: Class<*>? = null
 
+    /**
+     * What OrderAggregate.handle(FailOrderCommand) returns: true when it applied the event,
+     * false when the order was already terminal and it did nothing.
+     */
+    private var failOrderApplied: Boolean = true
+
     /** Held so tests can assert the metric names and tag values, not just the commands. */
     private val meters = SimpleMeterRegistry()
 
@@ -53,6 +60,7 @@ class OrderReservationSagaTest {
         failingItemId = null
         failComplete = false
         syncThrowFor = null
+        failOrderApplied = true
         meters.clear()
 
         val captured = slot<Any>()
@@ -66,8 +74,12 @@ class OrderReservationSagaTest {
             // Only OrderItem uses `itemId`.
             val shouldFail = (command is SagaReserveItemCommand && command.id == failingItemId) ||
                 (command is CompleteOrderCommand && failComplete)
-            if (shouldFail) CompletableFuture.failedFuture<Any?>(RuntimeException("injected append failure"))
-            else CompletableFuture.completedFuture<Any?>(null)
+            when {
+                shouldFail -> CompletableFuture.failedFuture<Any?>(RuntimeException("injected append failure"))
+                // Mirrors the aggregate's real return value, which the saga now inspects.
+                command is FailOrderCommand -> CompletableFuture.completedFuture<Any?>(failOrderApplied)
+                else -> CompletableFuture.completedFuture<Any?>(null)
+            }
         }
 
         fixture = SagaTestFixture(OrderReservationSaga::class.java)
@@ -176,6 +188,54 @@ class OrderReservationSagaTest {
         assertEquals(1.0, counter("reserve"))
     }
 
+    @Test
+    fun `the out-of-stock path's own OrderFailedEvent does not re-enter the saga`() {
+        // The out-of-stock branch calls SagaLifecycle.end() inline, so by the time its
+        // FailOrderCommand's OrderFailedEvent is read back, the saga and its orderId
+        // association are already gone. If that inline end() were ever removed, the event
+        // would land on @EndSaga and double-count the lifecycle under a second outcome.
+        fixture.givenAPublished(OrderCreatedEvent(orderId, "user-1", items, correlationId))
+            .andThenAPublished(InventoryReservedEvent("ITEM-1", correlationId, 2))
+            .whenPublishingA(InventoryReservationFailedEvent("ITEM-2", correlationId, "insufficient stock"))
+            .expectActiveSagas(0)
+
+        assertEquals(1.0, outcome("failed"), "out-of-stock must be tagged failed")
+        assertEquals(0.0, outcome("command_failed"), "out-of-stock is not a command failure")
+        val releasesAfterRejection = sent.filterIsInstance<ReleaseReservationCommand>().size
+
+        // Replaying the event the saga itself caused must change nothing.
+        fixture.whenPublishingA(OrderFailedEvent(orderId, "insufficient stock"))
+            .expectActiveSagas(0)
+
+        assertEquals(1.0, outcome("failed"), "the lifecycle must not be recorded twice")
+        assertEquals(0.0, outcome("command_failed"), "@EndSaga must not fire for an already-ended saga")
+        assertEquals(
+            releasesAfterRejection,
+            sent.filterIsInstance<ReleaseReservationCommand>().size,
+            "compensation must not run a second time, got: $sent",
+        )
+    }
+
+    @Test
+    fun `counts a FailOrderCommand the aggregate ignored because the order was already terminal`() {
+        // The future completes normally, so without inspecting the result this is
+        // indistinguishable from success — while no OrderFailedEvent exists, @EndSaga never
+        // fires, and the saga_entry row leaks. Unreachable today; a second sender of
+        // FailOrderCommand would make it live.
+        failingItemId = "ITEM-1"
+        failOrderApplied = false
+
+        fixture.givenNoPriorActivity()
+            .whenPublishingA(OrderCreatedEvent(orderId, "user-1", items, correlationId))
+
+        assertEquals(1, sent.filterIsInstance<FailOrderCommand>().size)
+        assertEquals(1.0, counter("fail-order-ignored"), "an ignored FailOrderCommand must be visible")
+        assertEquals(0.0, counter("fail-order"), "it did not fail — it was ignored; the two are different")
+    }
+
     private fun counter(stage: String): Double =
         meters.counter("saga.command.failed", "stage", stage).count()
+
+    private fun outcome(name: String): Double =
+        meters.counter("saga.completed", "outcome", name).count()
 }
