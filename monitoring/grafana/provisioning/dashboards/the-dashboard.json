@@ -19,9 +19,41 @@
   "timezone": "browser",
   "title": "Metrics to compare",
   "uid": "the-dashboard",
-  "version": 1,
+  "version": 2,
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "instance",
+        "label": "Replica",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(up{job=\"inventory-es\"}, instance)",
+        "query": {
+          "qryType": 1,
+          "query": "label_values(up{job=\"inventory-es\"}, instance)",
+          "refId": "variable"
+        },
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 2,
+        "sort": 1,
+        "hide": 0,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": []
+      }
+    ]
   },
   "panels": [
     {
@@ -77,15 +109,15 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(http_server_requests_seconds_count{uri=~\"/inventory.*\"}[1m])) by (uri, method)",
-          "legendFormat": "{{method}} {{uri}}",
+          "expr": "sum(rate(http_server_requests_seconds_count{uri=~\"/inventory.*\",instance=~\"$instance\"}[1m])) by (uri, method, instance)",
+          "legendFormat": "{{method}} {{uri}} · {{instance}}",
           "refId": "A"
         }
       ]
     },
     {
       "id": 1,
-      "title": "Request Latency \u2014 p50 / p80 / p95",
+      "title": "Request Latency — p50 / p80 / p95",
       "description": "Select one or more endpoints from the dropdown above. All three percentiles are always shown; click legend entries to hide individual series.",
       "type": "timeseries",
       "gridPos": {
@@ -137,7 +169,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum(rate(http_server_requests_seconds_bucket{uri=~\"/inventory.*\"}[1m])) by (le, uri, method))",
+          "expr": "histogram_quantile(0.50, sum(rate(http_server_requests_seconds_bucket{uri=~\"/inventory.*\",instance=~\"$instance\"}[1m])) by (le, uri, method))",
           "legendFormat": "{{method}} {{uri}} p50",
           "refId": "A"
         },
@@ -146,7 +178,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.80, sum(rate(http_server_requests_seconds_bucket{uri=~\"/inventory.*\"}[1m])) by (le, uri, method))",
+          "expr": "histogram_quantile(0.80, sum(rate(http_server_requests_seconds_bucket{uri=~\"/inventory.*\",instance=~\"$instance\"}[1m])) by (le, uri, method))",
           "legendFormat": "{{method}} {{uri}} p80",
           "refId": "B"
         },
@@ -155,7 +187,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{uri=~\"/inventory.*\"}[1m])) by (le, uri, method))",
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{uri=~\"/inventory.*\",instance=~\"$instance\"}[1m])) by (le, uri, method))",
           "legendFormat": "{{method}} {{uri}} p95",
           "refId": "C"
         }
@@ -214,8 +246,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "process_cpu_usage{job=\"inventory-es\"}",
-          "legendFormat": "process",
+          "expr": "process_cpu_usage{job=\"inventory-es\",instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} process",
           "refId": "A"
         },
         {
@@ -223,8 +255,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "system_cpu_usage{job=\"inventory-es\"}",
-          "legendFormat": "system",
+          "expr": "system_cpu_usage{job=\"inventory-es\",instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} system",
           "refId": "B"
         }
       ]
@@ -280,8 +312,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(jvm_memory_used_bytes{job=\"inventory-es\",area=\"heap\"})",
-          "legendFormat": "heap used",
+          "expr": "sum by (instance) (jvm_memory_used_bytes{job=\"inventory-es\",area=\"heap\",instance=~\"$instance\"})",
+          "legendFormat": "{{instance}} heap",
           "refId": "A"
         },
         {
@@ -289,8 +321,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(jvm_memory_max_bytes{job=\"inventory-es\",area=\"heap\"})",
-          "legendFormat": "heap max",
+          "expr": "sum by (instance) (jvm_memory_max_bytes{job=\"inventory-es\",area=\"heap\",instance=~\"$instance\"})",
+          "legendFormat": "{{instance}} heap",
           "refId": "B"
         },
         {
@@ -298,8 +330,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(jvm_memory_used_bytes{job=\"inventory-es\",area=\"nonheap\"})",
-          "legendFormat": "non-heap used",
+          "expr": "sum by (instance) (jvm_memory_used_bytes{job=\"inventory-es\",area=\"nonheap\",instance=~\"$instance\"})",
+          "legendFormat": "{{instance}} nonheap",
           "refId": "C"
         }
       ]
@@ -356,7 +388,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum(rate(publish_lag_seconds_bucket[1m])) by (le, eventType))",
+          "expr": "histogram_quantile(0.50, sum(rate(publish_lag_seconds_bucket{instance=~\"$instance\"}[1m])) by (le, eventType))",
           "legendFormat": "p50 {{eventType}}",
           "refId": "A"
         },
@@ -365,7 +397,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(publish_lag_seconds_bucket[1m])) by (le, eventType))",
+          "expr": "histogram_quantile(0.95, sum(rate(publish_lag_seconds_bucket{instance=~\"$instance\"}[1m])) by (le, eventType))",
           "legendFormat": "p95 {{eventType}}",
           "refId": "B"
         },
@@ -374,7 +406,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum(rate(publish_lag_seconds_bucket[1m])) by (le, eventType))",
+          "expr": "histogram_quantile(0.99, sum(rate(publish_lag_seconds_bucket{instance=~\"$instance\"}[1m])) by (le, eventType))",
           "legendFormat": "p99 {{eventType}}",
           "refId": "C"
         }
@@ -432,7 +464,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum(rate(projection_lag_seconds_bucket[1m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(projection_lag_seconds_bucket{instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p50",
           "refId": "A"
         },
@@ -441,7 +473,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(projection_lag_seconds_bucket[1m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(projection_lag_seconds_bucket{instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p95",
           "refId": "B"
         },
@@ -450,7 +482,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum(rate(projection_lag_seconds_bucket[1m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(projection_lag_seconds_bucket{instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -508,7 +540,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"snapshot\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"snapshot\",instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p50 snapshot",
           "refId": "A"
         },
@@ -517,7 +549,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"snapshot\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"snapshot\",instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p95 snapshot",
           "refId": "B"
         },
@@ -526,7 +558,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"snapshot\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"snapshot\",instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p99 snapshot",
           "refId": "C"
         },
@@ -535,7 +567,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"events\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"events\",instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p50 events",
           "refId": "D"
         },
@@ -544,7 +576,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"events\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"events\",instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p95 events",
           "refId": "E"
         },
@@ -553,7 +585,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"events\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"events\",instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p99 events",
           "refId": "F"
         },
@@ -562,7 +594,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"replay\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"replay\",instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p50 replay",
           "refId": "G"
         },
@@ -571,7 +603,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"replay\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"replay\",instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p95 replay",
           "refId": "H"
         },
@@ -580,7 +612,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"replay\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"replay\",instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p99 replay",
           "refId": "I"
         },
@@ -589,7 +621,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"total\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(state_load_time_seconds_bucket{phase=\"total\",instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p50 total",
           "refId": "J"
         },
@@ -598,7 +630,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"total\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{phase=\"total\",instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p95 total",
           "refId": "K"
         },
@@ -607,7 +639,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"total\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(state_load_time_seconds_bucket{phase=\"total\",instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p99 total",
           "refId": "L"
         }
@@ -665,7 +697,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum(rate(state_persist_time_seconds_bucket{source=\"db_write\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(state_persist_time_seconds_bucket{source=\"db_write\",instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p50",
           "refId": "A"
         },
@@ -674,7 +706,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(state_persist_time_seconds_bucket{source=\"db_write\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(state_persist_time_seconds_bucket{source=\"db_write\",instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p95",
           "refId": "B"
         },
@@ -683,7 +715,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum(rate(state_persist_time_seconds_bucket{source=\"db_write\"}[1m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(state_persist_time_seconds_bucket{source=\"db_write\",instance=~\"$instance\"}[1m])) by (le))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -691,7 +723,7 @@
     },
     {
       "id": 10,
-      "title": "POST /inventory/reserve \u2014 Response Counts by Status",
+      "title": "POST /inventory/reserve — Response Counts by Status",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
@@ -742,7 +774,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(http_server_requests_seconds_count{method=\"POST\",uri=\"/inventory/reserve\"}[1m])) by (status)",
+          "expr": "sum(rate(http_server_requests_seconds_count{method=\"POST\",uri=\"/inventory/reserve\",instance=~\"$instance\"}[1m])) by (status)",
           "legendFormat": "HTTP {{status}}",
           "refId": "A"
         }
@@ -750,7 +782,7 @@
     },
     {
       "id": 9,
-      "title": "Optimistic Locking \u2014 Append Success vs Conflict",
+      "title": "Optimistic Locking — Append Success vs Conflict",
       "description": "Rate of successful event appends vs ConcurrencyException conflicts (each conflict triggers a retry via ConcurrencyRetryScheduler; exhausted = all retries consumed and command failed).",
       "type": "timeseries",
       "gridPos": {
@@ -848,8 +880,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(inventory_append_success_total[1m])",
-          "legendFormat": "success",
+          "expr": "rate(inventory_reserve_applied_total{instance=~\"$instance\"}[1m])",
+          "legendFormat": "success · {{instance}}",
           "refId": "A"
         },
         {
@@ -857,7 +889,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(inventory_optimistic_retry_total[1m])",
+          "expr": "rate(inventory_optimistic_retry_total{instance=~\"$instance\"}[1m])",
           "legendFormat": "conflict (retry)",
           "refId": "B"
         },
@@ -866,7 +898,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(inventory_optimistic_exhausted_total[1m])",
+          "expr": "rate(inventory_optimistic_exhausted_total{instance=~\"$instance\"}[1m])",
           "legendFormat": "exhausted",
           "refId": "C"
         }
@@ -926,7 +958,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (type) (rate(inventory_exception_total[1m]))",
+          "expr": "sum by (type) (rate(inventory_exception_total{instance=~\"$instance\"}[1m]))",
           "legendFormat": "{{type}}",
           "refId": "A"
         }
@@ -934,8 +966,8 @@
     },
     {
       "id": 12,
-      "title": "Saga Outcome \u2014 Completed vs Failed & Success Rate",
-      "description": "Rate of completed sagas (all items reserved \u2192 OrderCompletedEvent) vs failed sagas (insufficient stock \u2192 OrderFailedEvent), plus the rolling success rate on the right axis.",
+      "title": "Saga Outcome — Completed vs Failed & Success Rate",
+      "description": "Rate of completed sagas (all items reserved → OrderCompletedEvent) vs failed sagas (insufficient stock → OrderFailedEvent), plus the rolling success rate on the right axis.",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
@@ -1056,7 +1088,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(es_events_processed_total{eventType=\"OrderCompletedEvent\"}[1m])",
+          "expr": "rate(es_events_processed_total{eventType=\"OrderCompletedEvent\",instance=~\"$instance\"}[1m])",
           "legendFormat": "completed/s",
           "refId": "A"
         },
@@ -1065,7 +1097,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(es_events_processed_total{eventType=\"OrderFailedEvent\"}[1m])",
+          "expr": "rate(es_events_processed_total{eventType=\"OrderFailedEvent\",instance=~\"$instance\"}[1m])",
           "legendFormat": "failed/s",
           "refId": "B"
         },
@@ -1074,7 +1106,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(es_events_processed_total{eventType=\"OrderCompletedEvent\"}[1m]) / (rate(es_events_processed_total{eventType=\"OrderCompletedEvent\"}[1m]) + rate(es_events_processed_total{eventType=\"OrderFailedEvent\"}[1m]))",
+          "expr": "rate(es_events_processed_total{eventType=\"OrderCompletedEvent\",instance=~\"$instance\"}[1m]) / (rate(es_events_processed_total{eventType=\"OrderCompletedEvent\",instance=~\"$instance\"}[1m]) + rate(es_events_processed_total{eventType=\"OrderFailedEvent\",instance=~\"$instance\"}[1m]))",
           "legendFormat": "success rate",
           "refId": "C"
         }
@@ -1198,7 +1230,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum(rate(order_e2e_time_seconds_bucket[1m])) by (le, outcome))",
+          "expr": "histogram_quantile(0.50, sum(rate(order_e2e_time_seconds_bucket{instance=~\"$instance\"}[1m])) by (le, outcome))",
           "legendFormat": "{{outcome}} p50",
           "refId": "A"
         },
@@ -1207,7 +1239,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(order_e2e_time_seconds_bucket[1m])) by (le, outcome))",
+          "expr": "histogram_quantile(0.95, sum(rate(order_e2e_time_seconds_bucket{instance=~\"$instance\"}[1m])) by (le, outcome))",
           "legendFormat": "{{outcome}} p95",
           "refId": "B"
         },
@@ -1216,7 +1248,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum(rate(order_e2e_time_seconds_bucket[1m])) by (le, outcome))",
+          "expr": "histogram_quantile(0.99, sum(rate(order_e2e_time_seconds_bucket{instance=~\"$instance\"}[1m])) by (le, outcome))",
           "legendFormat": "{{outcome}} p99",
           "refId": "C"
         }
