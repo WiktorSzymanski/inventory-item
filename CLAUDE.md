@@ -121,6 +121,15 @@ when the resulting `OrderFailedEvent` arrives. The order still ends up `FAILED`/
 `outcome="completed"`. `saga_command_failed_total{stage="complete"}` is the only signal for
 that path — read it alongside the outcome split, never instead of it.
 
+The `stage` tag has six values: `reserve`, `complete`, `release`, `fail-order`,
+`fail-order-ignored` and `abandon-rejected`. The last three are the ones that can leave an
+order non-terminal, so a non-zero value there is a different class of problem from the first
+three: `fail-order` means the terminal command itself failed; `fail-order-ignored` means the
+aggregate refused it because the order was no longer `PENDING`, so no `OrderFailedEvent`
+exists and the saga never ends; `abandon-rejected` means the saga pool refused the
+disposition and it ran inline. `python3 k6/bench/compare.py --cols saga <run-dirs>` tabulates
+all of them alongside the contention-vs-stock split.
+
 **`REPLICAS=1` is still the measurement-grade configuration**, because at `REPLICAS>1` the
 rejection rate is an artefact of lost write races rather than of stock. Read multi-replica
 runs as a contention study, not as a throughput result. On any single-node run
@@ -169,7 +178,12 @@ KurrentDB and no R2DBC on any current branch.
   order's items **strictly sequentially**, so an N-line order costs N saga round trips.
   Compensates with `ReleaseReservationCommand` for each already-reserved line on failure.
   Dispatches on a separate 64-thread executor so the processor thread never blocks on
-  aggregate locks.
+  aggregate locks. Every `commandGateway.send` has a failure disposition: a command that
+  fails for good reaches `abandon()`, which releases what was already reserved and sends
+  `FailOrderCommand`; the resulting `OrderFailedEvent` comes back to an `@EndSaga` handler.
+  That indirection is required — `SagaLifecycle` resolves the current saga from a ThreadLocal
+  bound to the processor's unit of work, so it cannot be touched from a pool thread. Emits
+  `saga.completed{outcome}`, `saga.lifetime{outcome}` and `saga.command.failed{stage}`.
 - **`config/PessimisticCachingRepository.kt`** — copy-on-write cache in front of the
   event-sourcing repository. Strong-reference `ConcurrentHashMap`, **never evicted**; a
   cache hit skips stream replay entirely. Every load deep-copies the aggregate via Jackson.
