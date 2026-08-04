@@ -1,6 +1,7 @@
 package pl.szymanski.wiktor.integration
 
 import org.axonframework.commandhandling.CommandBus
+import org.axonframework.commandhandling.gateway.CommandGateway
 import org.axonframework.messaging.MessageHandlerInterceptor
 import org.axonframework.modelling.command.ConcurrencyException
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -19,6 +20,7 @@ import pl.szymanski.wiktor.controller.CreateItemRequest
 import pl.szymanski.wiktor.controller.CreateOrderRequest
 import pl.szymanski.wiktor.controller.CreateOrderResponse
 import pl.szymanski.wiktor.controller.OrderItemRequest
+import pl.szymanski.wiktor.service.command.FailOrderCommand
 import pl.szymanski.wiktor.service.command.SagaReserveItemCommand
 import org.springframework.web.client.RestTemplate
 import javax.sql.DataSource
@@ -82,6 +84,7 @@ class SagaCommandFailureIT {
     // separate spring-boot-restclient-test module), so this drives the random port directly.
     @LocalServerPort private var port: Int = 0
     @Autowired private lateinit var dataSource: DataSource
+    @Autowired private lateinit var commandGateway: CommandGateway
 
     private val rest = RestTemplate()
     private fun url(path: String) = "http://localhost:$port$path"
@@ -109,6 +112,28 @@ class SagaCommandFailureIT {
             jdbc.queryForObject("SELECT count(*) FROM saga_entry", Long::class.java)?.takeIf { it == 0L }
         }
         assertEquals(0L, sagaRows, "the abandoned saga was never ended")
+    }
+
+    @Test
+    fun `Axon propagates the FailOrderCommand result, so an ignored command is distinguishable`() {
+        // The saga's `applied == false` branch is what stops an already-terminal order from
+        // leaking its saga_entry row silently. Every unit test around it mocks the gateway, so
+        // only this can prove the aggregate's Boolean actually survives the command bus rather
+        // than arriving as null or Unit — if it did, that branch would be dead code and the
+        // failure it guards would present exactly like the original defect.
+        val itemId = "ITEM-FAIL-RESULT"
+        rest.postForEntity(url("/inventory"), CreateItemRequest(itemId, 10, 0), Void::class.java)
+        val orderId = rest.postForEntity(
+            url("/inventory/orders"),
+            CreateOrderRequest("user-1", listOf(OrderItemRequest(itemId, 1))),
+            CreateOrderResponse::class.java,
+        ).body!!.orderId
+
+        val first = commandGateway.sendAndWait<Any?>(FailOrderCommand(orderId, "first"))
+        assertEquals(true, first, "a PENDING order must report that the event was applied")
+
+        val second = commandGateway.sendAndWait<Any?>(FailOrderCommand(orderId, "second"))
+        assertEquals(false, second, "an already-terminal order must report that it did nothing")
     }
 
     /** Polls [supplier] until it returns non-null or [timeoutMs] elapses. */

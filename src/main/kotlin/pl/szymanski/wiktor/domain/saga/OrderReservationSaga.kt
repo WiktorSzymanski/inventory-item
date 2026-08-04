@@ -28,6 +28,7 @@ import pl.szymanski.wiktor.service.command.SagaReserveItemCommand
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executor
+import java.util.concurrent.RejectedExecutionException
 
 @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
 @Saga
@@ -192,9 +193,21 @@ class OrderReservationSaga {
         // their attempts against the 500ms backoff cap, and exhaust in turn — a contention spike
         // amplifying itself into a rejection cascade. The pool this resubmits to is the one
         // already sized for blocking command dispatch.
-        commandExecutor.execute {
+        val disposition = {
             releaseAll(orderId, toRelease)
             sendFailOrder(orderId, "$stage command failed: ${cause.javaClass.simpleName}")
+        }
+        try {
+            commandExecutor.execute(disposition)
+        } catch (e: RejectedExecutionException) {
+            // abandon() is called from a whenComplete callback whose own future is discarded, so
+            // an exception escaping here would be swallowed entirely and the order would stay
+            // PENDING with no counter and no log — the very signature this saga exists to remove.
+            // Running inline is strictly better than losing the disposition: the thread this
+            // falls back to is the one that was going to run it before 5d011f1 moved it off.
+            log.warn("[SAGA] saga pool rejected the terminal disposition orderId={} — running inline", orderId, e)
+            meterRegistry.counter("saga.command.failed", "stage", "abandon-rejected").increment()
+            disposition()
         }
     }
 
