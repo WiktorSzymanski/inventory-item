@@ -79,6 +79,14 @@ class PessimisticCachingRepository<T : Any>(
     private val hitCounter = meterRegistry.counter("inventory.opt.cache.hit")
     private val missCounter = meterRegistry.counter("inventory.opt.cache.miss")
     private val catchupCounter = meterRegistry.counter("inventory.opt.catchup")
+    // catchUp is the ONLY repair path for a stale cache entry: this cache is never evicted, and
+    // after the first load there is never another miss to force a cold replay. A failure is
+    // therefore not cosmetic — every subsequent command on that aggregate targets an already-taken
+    // sequence number and is guaranteed to exhaust its retries and REJECT, until some later
+    // rollback happens to repair it. Those rejections then land in
+    // saga_completed{outcome="command_failed"} and read as contention, which is exactly the number
+    // the multi-replica story rests on. Counted so the two are separable.
+    private val catchupFailed = meterRegistry.counter("inventory.opt.catchup.failed")
     private val catchupEvents = DistributionSummary.builder("inventory.opt.catchup.events").register(meterRegistry)
 
     override fun doLoadWithLock(aggregateIdentifier: String, expectedVersion: Long?): EventSourcedAggregate<T> {
@@ -159,7 +167,11 @@ class PessimisticCachingRepository<T : Any>(
             }
         } catch (e: Exception) {
             // Non-destructive: leave the cache as-is; the committing command's afterCommit keeps it fresh.
-            log.debug("[PES] delta catch-up skipped for {} (base={}): {}", id, baseSequence, e.message)
+            // WARN, not DEBUG: the root logger is at INFO, so a DEBUG line here was never emitted and
+            // this failure was completely silent. See the counter's declaration for why it matters.
+            catchupFailed.increment()
+            log.warn("[PES] delta catch-up FAILED for {} (base={}) — cache may now be stale, " +
+                "commands on this aggregate will conflict until a later rollback repairs it", id, baseSequence, e)
         }
     }
 

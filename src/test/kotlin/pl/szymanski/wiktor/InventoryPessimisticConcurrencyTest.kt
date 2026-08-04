@@ -3,6 +3,7 @@ package pl.szymanski.wiktor
 import io.micrometer.core.instrument.MeterRegistry
 import org.assertj.core.api.Assertions.assertThat
 import org.axonframework.commandhandling.gateway.CommandGateway
+import org.axonframework.eventhandling.GenericDomainEventMessage
 import org.axonframework.eventsourcing.eventstore.EventStore
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -115,6 +116,45 @@ class InventoryPessimisticConcurrencyTest {
             "[PES-IT] stock=$initialStock attempts=$concurrentReserves reserved=$reserved failed=$failed " +
                 "rejected=${rejected.get()} head=$head retries=$retries cacheSeq=${inventoryItemRepository.cachedSequence(itemId)}",
         )
+    }
+
+    /**
+     * The cache is never evicted and, after the first load, never misses — so [catchUp] on rollback
+     * is the ONLY path that can repair a stale entry. This drives the real sequence: another writer
+     * appends behind our back, our next command collides, the rollback runs catchUp, and the retry
+     * succeeds against the advanced state. Without catchUp the retry would target the same taken
+     * sequence number forever and the command would exhaust and REJECT.
+     */
+    @Test
+    fun `catchUp repairs the cache after a foreign append, so the retry succeeds`() {
+        val itemId = UUID.randomUUID().toString()
+        gateway.sendAndWait<Any?>(CreateItemCommand(id = itemId, availableQty = 100))
+        gateway.sendAndWait<Any?>(SagaReserveItemCommand(id = itemId, quantity = 1))
+        val seqBefore = inventoryItemRepository.cachedSequence(itemId)
+        assertThat(seqBefore).`as`("cache seeded by the first reserve").isEqualTo(1L)
+
+        val catchupsBefore = meterRegistry.get("inventory.opt.catchup").counter().count()
+        val failedBefore = meterRegistry.get("inventory.opt.catchup.failed").counter().count()
+
+        // Simulate a second node: append straight to the store at the sequence our cached aggregate
+        // will target next, leaving the cache one event behind the truth.
+        eventStore.publish(
+            GenericDomainEventMessage(
+                "InventoryItem", itemId, seqBefore!! + 1,
+                InventoryReservedEvent(itemId, UUID.randomUUID(), 1),
+            ),
+        )
+
+        // Collides at seqBefore+1, rolls back, catchUp pulls in the foreign event, retry lands at +2.
+        gateway.sendAndWait<Any?>(SagaReserveItemCommand(id = itemId, quantity = 1))
+
+        val catchups = meterRegistry.get("inventory.opt.catchup").counter().count() - catchupsBefore
+        val failures = meterRegistry.get("inventory.opt.catchup.failed").counter().count() - failedBefore
+        assertThat(failures).`as`("catchUp must not have thrown").isEqualTo(0.0)
+        assertThat(catchups).`as`("catchUp ran and advanced the cache").isGreaterThanOrEqualTo(1.0)
+        assertThat(inventoryItemRepository.cachedSequence(itemId))
+            .`as`("cache advanced past the foreign append and the retry")
+            .isEqualTo(seqBefore + 2)
     }
 
     /** The snapshotter runs asynchronously, so poll rather than sleep a fixed amount. */

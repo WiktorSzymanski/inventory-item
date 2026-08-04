@@ -37,7 +37,17 @@ axon:
       size: 300
   # Tighten gap tracking so tokens don't accumulate the permanent gaps left by rolled-back appends
   # (see AxonConfig.eventStorageEngine). Defaults would be 10000 / 60000. Kept identical to
-  # ES-3-optimistic so the two variants differ only in the aggregate lock.
+  # ES-3 so the two variants differ only in the aggregate lock.
+  #
+  # max-gap-offset is a CORRECTNESS knob, not just a token-size one. GapAwareTrackingToken drops
+  # every gap more than this many indices behind the token, so an event whose row commits after
+  # the token has advanced that far past it is skipped by every tracking processor permanently.
+  # At REPLICAS=1 rolled-back appends are rare. At REPLICAS>1 they are not: the reference ES-2
+  # run burnt ~8717 global_index values in 180s, and each one is a permanent gap because appends
+  # autocommit on their own connection. 500 indices at that rate is a ~1.4s window, shrinking
+  # under a capacity staircase. Exposure is still small — index assignment and commit happen in
+  # one autocommitted statement — and the reference run measured completion_ratio_inverse=0.0,
+  # so these values stand. Revisit them before any run appreciably faster than that one.
   eventstore:
     max-gap-offset: 500
     gap-timeout-ms: 5000

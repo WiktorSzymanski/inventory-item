@@ -197,7 +197,20 @@ exception thrown anywhere in the app is `ItemAlreadyExistsException`, from `POST
 
 `src/main/resources/application.yaml`: `snapshot.event-count` (30), `cache.enabled`,
 `axon.saga.total-segments` (60), `axon.saga.replicas` (`${API_REPLICAS:1}`),
-`axon.jdbc.pool.size` (300), and the Micrometer `distribution` block.
+`axon.jdbc.pool.size` (300), `axon.eventstore.*` (below), and the Micrometer
+`distribution` block.
+
+**`axon.eventstore.max-gap-offset` (500) is a correctness knob, not a tuning one.** It exists
+on `ES-3`/`ES-4` only; `ES-1`/`ES-2` run Axon's defaults (10000 / 60000).
+`GapAwareTrackingToken` discards every gap more than `max-gap-offset` indices behind the
+token, so an event whose row commits after the token has advanced that far past it is skipped
+by every tracking processor **permanently**. Rolled-back appends leave permanent gaps because
+`global_index` is a `BIGSERIAL` and appends autocommit on their own connection — and at
+`REPLICAS>1` they are no longer rare: the reference `ES-2` run burnt ~8717 index values in
+180 s, which makes 500 indices a ~1.4 s window. The exposure is still small (index assignment
+and commit are in one autocommitted statement) and that run measured
+`completion_ratio_inverse=0.0`, so the value stands — but revisit it before any run
+appreciably faster, and treat a non-zero `completion_ratio_inverse` as a reason to suspect it.
 
 **`axon.saga.total-segments` is 60 on every ES branch** and must stay that way — it is the
 fixed segment pool that `ceil(total-segments / replicas)` divides, and 60 splits evenly for
