@@ -129,26 +129,23 @@ such guard and rely on stock Modulith republication. None of it is load-tested a
 Do not publish either family's scale-out numbers as throughput results: on ES the extra
 rejections are contention, and TO's multi-node path has never been load-tested at all.
 
-### Known gap on `ES-1`: `order.e2e.time` is never recorded at all
+### `order.e2e.time` on `ES-1`: ported 2026-08-04, so pre-dating runs have none
 
-Unrelated to the multi-node work and deliberately left out of its scope. **`ES-1` does not
-emit `order.e2e.time`** — `git grep -i e2e -- src` returns nothing on this branch.
-`OrderProjectionUpdater` has no `e2eTimer` / `recordE2e` / `readCreatedAt`, and it never
-writes the `created_at` column the measurement would be taken against; `application.yaml`
-correspondingly has no `order.e2e.time` entry in the Micrometer `distribution` block.
+`ES-1` used not to emit `order.e2e.time` at all — `OrderProjectionUpdater` had no `e2eTimer` /
+`recordE2e` / `readCreatedAt` and never wrote `created_at` from the event timestamp, and
+`application.yaml` had no entry for it. The symptom was an *absent* series, not a mis-bucketed
+one: `order_e2e_time_*` simply never appeared in `/actuator/prometheus`.
 
-So the symptom is an **absent** series, not a mis-bucketed one: `order_e2e_time_*` never
-appears in `/actuator/prometheus` and any PromQL over it returns empty. Adding the
-`minimum-expected-value: 1ms` / `maximum-expected-value: 10m` bounds alone would change
-nothing. Closing the gap means porting `OrderProjectionUpdater`'s `created_at` write and its
-two `recordE2e(...)` calls from `ES-2` *and then* pinning the bounds.
+Both halves are now in place — the projection code is byte-identical to `ES-2`'s, and the
+bounds are pinned. **`bench-results/` directories produced before this change contain no
+`order.e2e.time` data and cannot be put in a TO-vs-ES latency table**; re-run `ES-1` if you
+need its end-to-end numbers.
 
-**`ES-1` therefore has no end-to-end latency measurement**, and cannot appear in a TO-vs-ES
-latency table until that is ported. (Do not confuse this with the related trap the bounds
-themselves guard against: where the timer *does* exist but its bounds are unset, Micrometer's
-default 30 s Timer maximum collapses every larger sample into `+Inf` and
-`histogram_quantile` reports ~30 s, making a saturated branch look *faster* than a healthy
-one. That is the failure mode on other branches; here the metric simply is not there.)
+`created_at` is written from the event's own `@Timestamp`, not `now()`, so e2e is measured
+against admission time and stays correct on replay. The bounds matter for the reason they
+matter everywhere: Micrometer's default Timer maximum is 30 s, and without an explicit
+`maximum-expected-value` every larger sample collapses into `+Inf` and `histogram_quantile`
+reports ~30 s — making a saturated branch look *faster* than a healthy one.
 
 ## Architecture
 

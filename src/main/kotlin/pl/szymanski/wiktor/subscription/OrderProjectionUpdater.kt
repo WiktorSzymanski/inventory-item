@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional
 import pl.szymanski.wiktor.domain.OrderCompletedEvent
 import pl.szymanski.wiktor.domain.OrderCreatedEvent
 import pl.szymanski.wiktor.domain.OrderFailedEvent
+import java.sql.Timestamp as SqlTimestamp
 import java.time.Duration
 import java.time.Instant
 
@@ -31,13 +32,25 @@ class OrderProjectionUpdater(
         .maximumExpectedValue(Duration.ofMinutes(10))
         .register(meterRegistry)
 
+    // Admission-to-terminal latency, computed purely from event-store @Timestamp values
+    // (OrderCreatedEvent -> OrderCompleted/FailedEvent), so it is replay-safe and excludes
+    // projection lag. Metric name and `outcome` tag mirror the TO branches' order.e2e.time.
+    private fun e2eTimer(outcome: String): Timer =
+        Timer.builder("order.e2e.time")
+            .tag("outcome", outcome)
+            .publishPercentileHistogram(true)
+            .maximumExpectedValue(Duration.ofMinutes(10))
+            .register(meterRegistry)
+
     @EventHandler
     @Transactional("axonSpringTransactionManager")
     fun on(event: OrderCreatedEvent, @Timestamp timestamp: Instant) {
         val itemsJson = event.items.joinToString(",", "{", "}") { "\"${it.itemId}\":${it.quantity}" }
+        // created_at is set from the event's own timestamp (not now()) so e2e is measured against
+        // admission time and stays correct on replay.
         jdbcTemplate.update(
-            "INSERT INTO orders (order_id, user_id, status, items) VALUES (:orderId, :userId, 'PENDING', :items::jsonb) ON CONFLICT DO NOTHING",
-            mapOf("orderId" to event.orderId, "userId" to event.userId, "items" to itemsJson)
+            "INSERT INTO orders (order_id, user_id, status, items, created_at) VALUES (:orderId, :userId, 'PENDING', :items::jsonb, :createdAt) ON CONFLICT DO NOTHING",
+            mapOf("orderId" to event.orderId, "userId" to event.userId, "items" to itemsJson, "createdAt" to SqlTimestamp.from(timestamp))
         )
         recordLag(timestamp, "OrderCreatedEvent")
     }
@@ -49,6 +62,7 @@ class OrderProjectionUpdater(
             "UPDATE orders SET status = 'CONFIRMED' WHERE order_id = :orderId",
             mapOf("orderId" to event.orderId)
         )
+        recordE2e("confirmed", readCreatedAt(event.orderId), timestamp, event.orderId)
         recordLag(timestamp, "OrderCompletedEvent")
     }
 
@@ -59,7 +73,25 @@ class OrderProjectionUpdater(
             "UPDATE orders SET status = 'REJECTED', failure_reason = :reason WHERE order_id = :orderId",
             mapOf("orderId" to event.orderId, "reason" to event.reason)
         )
+        recordE2e("rejected", readCreatedAt(event.orderId), timestamp, event.orderId)
         recordLag(timestamp, "OrderFailedEvent")
+    }
+
+    private fun readCreatedAt(orderId: String): Instant? =
+        jdbcTemplate.queryForList(
+            "SELECT created_at FROM orders WHERE order_id = :orderId",
+            mapOf("orderId" to orderId),
+            SqlTimestamp::class.java
+        ).firstOrNull()?.toInstant()
+
+    private fun recordE2e(outcome: String, createdAt: Instant?, terminalTs: Instant, orderId: String) {
+        if (createdAt == null) {
+            log.warn("[E2E] missing created_at orderId={} outcome={}, skipping order.e2e.time", orderId, outcome)
+            return
+        }
+        val e2e = Duration.between(createdAt, terminalTs)
+        e2eTimer(outcome).record(e2e)
+        log.info("[E2E] orderId={} outcome={} e2e={}ms", orderId, outcome, e2e.toMillis())
     }
 
     private fun recordLag(timestamp: Instant, eventType: String) {
