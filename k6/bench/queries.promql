@@ -43,6 +43,16 @@ catchup	delta	sum(inventory_opt_catchup_total{job="$JOB"})
 exceptions	delta	sum by (type) (inventory_exception_total{job="$JOB"})
 events_processed	delta	sum by (eventType) (es_events_processed_total{job="$JOB"})
 
+# Saga terminal outcomes. `outcome` splits contention-driven rejections (command_failed)
+# from genuine out-of-stock ones (failed), which is the only way to read a REPLICAS>1 run
+# as a contention study rather than a stock result. `stage` localises which dispatch site
+# gave up: reserve | complete | release | fail-order. fail-order is the residual dead end —
+# any non-zero value there means orders are still stranded PENDING, so it is the one series
+# whose absence actually matters. Both are absent on TO-*, which is fine: dump.py records
+# a missing query as null rather than failing the run.
+saga_completed	delta	sum by (outcome) (saga_completed_total{job="$JOB"})
+saga_cmd_failed	delta	sum by (stage) (saga_command_failed_total{job="$JOB"})
+
 # ---------------------------------------------------------------- hist
 e2e	hist	histogram_quantile($Q, (sum by (le,outcome) (order_e2e_time_seconds_bucket{job="$JOB"} @ $E) - sum by (le,outcome) (order_e2e_time_seconds_bucket{job="$JOB"} @ $S)) or sum by (le,outcome) (order_e2e_time_seconds_bucket{job="$JOB"} @ $E))
 http_order	hist	histogram_quantile($Q, (sum by (le) (http_server_requests_seconds_bucket{job="$JOB",uri="/inventory/orders",method="POST"} @ $E) - sum by (le) (http_server_requests_seconds_bucket{job="$JOB",uri="/inventory/orders",method="POST"} @ $S)) or sum by (le) (http_server_requests_seconds_bucket{job="$JOB",uri="/inventory/orders",method="POST"} @ $E))
@@ -51,6 +61,10 @@ order_proj_lag	hist	histogram_quantile($Q, (sum by (le) (order_projection_lag_se
 state_load	hist	histogram_quantile($Q, (sum by (le,phase) (state_load_time_seconds_bucket{job="$JOB"} @ $E) - sum by (le,phase) (state_load_time_seconds_bucket{job="$JOB"} @ $S)) or sum by (le,phase) (state_load_time_seconds_bucket{job="$JOB"} @ $E))
 state_persist	hist	histogram_quantile($Q, (sum by (le,source) (state_persist_time_seconds_bucket{job="$JOB"} @ $E) - sum by (le,source) (state_persist_time_seconds_bucket{job="$JOB"} @ $S)) or sum by (le,source) (state_persist_time_seconds_bucket{job="$JOB"} @ $E))
 publish_lag	hist	histogram_quantile($Q, (sum by (le,eventType) (publish_lag_seconds_bucket{job="$JOB"} @ $E) - sum by (le,eventType) (publish_lag_seconds_bucket{job="$JOB"} @ $S)) or sum by (le,eventType) (publish_lag_seconds_bucket{job="$JOB"} @ $E))
+# Saga lifetime ends EARLIER than order_e2e_time: the saga ends when it submits the final
+# command, before the aggregate appends and the projection catches up. The gap between the
+# two is therefore the command+aggregate+projection cost downstream of the saga.
+saga_lifetime	hist	histogram_quantile($Q, (sum by (le,outcome) (saga_lifetime_seconds_bucket{job="$JOB"} @ $E) - sum by (le,outcome) (saga_lifetime_seconds_bucket{job="$JOB"} @ $S)) or sum by (le,outcome) (saga_lifetime_seconds_bucket{job="$JOB"} @ $E))
 
 # ---------------------------------------------------------------- scalar
 cpu_avg	scalar	avg_over_time(avg(process_cpu_usage{job="$JOB"})[${W}s:5s])
