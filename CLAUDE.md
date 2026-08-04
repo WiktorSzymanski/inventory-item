@@ -5,12 +5,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-./gradlew bootRun          # Start server on port 8080
-./gradlew test             # Run all tests (JUnit 5)
-./gradlew build            # Full build
-./gradlew bootJar          # Build executable JAR → build/libs/app.jar
-docker-compose up          # Start postgres + KurrentDB + api containers
+./gradlew bootRun          # Start on port 8080
+./gradlew test             # JUnit 5
+./gradlew bootJar          # -> build/libs/app.jar
+docker compose up -d       # postgres + nginx + api + prometheus + grafana + cadvisor
 ```
+
+Note `JAVA_HOME` in the environment may point at a missing JDK; use
+`JAVA_HOME=~/.jdks/corretto-21.0.10` for gradle if the build cannot find a toolchain.
 
 Run a single test class: `./gradlew test --tests "pl.szymanski.wiktor.ApplicationTest"`
 
@@ -150,28 +152,65 @@ one. That is the failure mode on other branches; here the metric simply is not t
 
 ## Architecture
 
-Kotlin 2.3 / Spring Boot 3.5 REST API on Netty via Spring WebFlux. **Event Sourcing** implementation: KurrentDB is the source of truth (append-only event log per aggregate); PostgreSQL holds a projection (read model) updated by a KurrentDB persistent subscription.
+Kotlin 2.3 / Spring Boot 4.0.6, **Spring MVC on Tomcat** (blocking servlet stack — not
+WebFlux), **Axon Framework 4.11.2** with a **JDBC event store on PostgreSQL**. There is no
+KurrentDB, no R2DBC and no coroutine code on this branch.
 
-- **`controller/InventoryController.kt`** — `@RestController`; `GET /inventory`, `GET /inventory/{itemId}`, `POST /inventory`, `POST /inventory/reserve`
-- **`service/InventoryService.kt`** — retry loop (5 attempts, exponential backoff with jitter); catches `WrongExpectedVersionException` for optimistic concurrency
-- **`service/command/CreateItemCommandHandler.kt`** — appends `InventoryCreatedEvent` to KurrentDB with `StreamState.noStream()` (throws `ItemAlreadyExistsException` on conflict)
-- **`service/command/ReserveItemCommandHandler.kt`** — loads aggregate by replaying KurrentDB stream, appends `InventoryReservedEvent` with exact stream revision
-- **`repository/EventStoreRepository.kt`** — `loadAggregate(itemId)` reads and replays KurrentDB stream; `appendEvent(...)` appends with expected revision
-- **`repository/InventoryRepository.kt`** / **`InventoryProjection.kt`** — R2DBC read model; `inventory_state` table is the PostgreSQL projection
-- **`subscription/InventoryProjectionSubscriber.kt`** — `ApplicationRunner`; creates and subscribes to a KurrentDB persistent subscription group (`inventory-projection-group`) on `$all`; updates the PostgreSQL projection on each event
-- **`config/KurrentDbConfig.kt`** — `KurrentDBClient` and `KurrentDBPersistentSubscriptionsClient` beans
-- **`config/KurrentDbProperties.kt`** — `@ConfigurationProperties("kurrentdb")` for `connectionString`
+`ES-1` is the **uncached baseline** of the ES family: no aggregate cache and no snapshot
+trigger, so every command replays its aggregate's stream from event 0. `ES-3`/`ES-4` add
+caching and snapshotting on top of the same domain, which is the comparison they exist for.
 
-Config lives in `src/main/resources/application.yaml`. Flyway migrations in `classpath:db/migration`. Env overrides: `DB_JDBC_URL`, `DB_R2DBC_URL`, `DB_USER`, `DB_PASSWORD`, `KURRENTDB_URL`.
+- **`controller/InventoryController.kt`** — `GET /inventory`, `GET /inventory/{itemId}`,
+  `POST /inventory`, `POST /inventory/orders`, `GET /inventory/orders/{orderId}`.
+  There is no `POST /inventory/reserve`; standalone reservation was removed.
+- **`service/InventoryService.kt`** — thin dispatch layer over `CommandGateway`; it holds no
+  retry loop of its own (retries live in `config/ConcurrencyRetryScheduler.kt`).
+- **`domain/InventoryItem.kt`** — aggregate. `CreateItemCommand`, `SagaReserveItemCommand`
+  (emits `InventoryReservedEvent` or, on insufficient stock, a *persisted*
+  `InventoryReservationFailedEvent` — not an exception), `ReleaseReservationCommand`.
+  A bare `@Aggregate`: no `snapshotTriggerDefinition`, so snapshots are never taken even
+  though `AxonConfig` configures a `snapshot_event_entry` table and serializer.
+- **`domain/OrderAggregate.kt`** — `CreateOrderCommand` / `CompleteOrderCommand` /
+  `FailOrderCommand`. Its `OrderStatus` enum is `PENDING/COMPLETED/FAILED`.
+- **`domain/saga/OrderReservationSaga.kt`** — started by `OrderCreatedEvent`. Reserves the
+  order's items **strictly sequentially**, so an N-line order costs N saga round trips.
+  Compensates with `ReleaseReservationCommand` for each already-reserved line on failure.
+  Dispatches on a separate 64-thread executor so the processor thread never blocks on
+  aggregate locks.
+- **`config/AxonConfig.kt`** — `JdbcEventStorageEngine` over the `domain_event_entry` /
+  `snapshot_event_entry` tables, wrapped by `TimedEventStorageEngine`.
+- **`config/ConcurrencyRetryScheduler.kt`** — retries `ConcurrencyException` only;
+  5 attempts, `25ms * 2^n` capped at 500 ms.
+- **`repository/`** — Spring Data JDBC `CrudRepository` read models: `InventoryProjection`
+  (`inventory_state`) and `OrderProjection` (`orders`).
+- **`subscription/`** — `InventoryProjectionUpdater`, `OrderProjectionUpdater` (tracking
+  event processors writing the read models), `MockKafkaPublisher`.
 
-KurrentDB UI: `http://localhost:2113`. API docs: Swagger UI at `/swagger-ui.html`.
+Config lives in `src/main/resources/application.yaml`. Flyway migrations in
+`classpath:db/migration`. Env overrides: `DB_JDBC_URL`, `DB_USER`, `DB_PASSWORD`,
+`API_REPLICAS`, `AXON_JDBC_POOL_SIZE`.
 
-### Stream naming
+Swagger UI at `/swagger-ui.html` · Grafana `http://localhost:3000` ·
+Prometheus `http://localhost:9090`.
 
-One KurrentDB stream per aggregate: `inventory-{itemId}`. Events: `InventoryCreatedEvent` (revision 0), `InventoryReservedEvent` (revision ≥ 1).
+### Two traps that have caused real bugs
 
-### Coroutine rules
+**Order status values differ between the aggregate and the projection.** The aggregate uses
+`PENDING/COMPLETED/FAILED`; `OrderProjectionUpdater` writes `PENDING/CONFIRMED/REJECTED`,
+and `GET /inventory/orders/{orderId}` returns the *projection* values. `TO-*` writes
+`COMPLETED`. Anything that must work on both families should key off `PENDING` — the one
+value both schemas share and both default to.
 
-- Never use `runBlocking` or `.block()` in controllers, services, or repositories.
-- All blocking KurrentDB calls (CompletableFuture `.get()`) must be inside `withContext(Dispatchers.IO)`.
-- `runBlocking` is allowed in `InventoryProjectionSubscriber.handleEvent()` because the KurrentDB subscription listener callback runs on a non-coroutine thread.
+**`POST /inventory/orders` returns 202 Accepted.** It persists only `OrderCreatedEvent`;
+the reservation is asynchronous. A 202 says nothing about stock availability, and the HTTP
+response time is admission latency only. Out-of-stock surfaces as `status=REJECTED` on the
+order projection, never as an HTTP error. The only exception thrown anywhere in the app is
+`ItemAlreadyExistsException`, from `POST /inventory`.
+
+### No benchmark harness on this branch
+
+`ES-1` still carries the legacy `k6/run.sh` + `k6/reserve-load-test.js`. It has no
+`bench.env`, no `docker-compose.bench.yml` and no `k6/bench/`, and `common.sh` hard-fails
+here — so **there is no `bench.sh` to run on `ES-1`**. The harness exists only on `ES-2` and
+`ES-4`. An untracked `k6/bench/` left behind by a branch switch is not the harness; `git
+status` shows it as `??`.
