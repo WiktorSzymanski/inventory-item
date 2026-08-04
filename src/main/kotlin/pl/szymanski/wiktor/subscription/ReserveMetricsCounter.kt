@@ -14,8 +14,15 @@ import pl.szymanski.wiktor.domain.InventoryReservedEvent
  * event synchronously on the replica that PUBLISHED it — i.e. the one whose command handler
  * appended it. Unlike the `inventory-projection` tracking processor (single owner, so
  * `inventory.append.success` only ever increments on one replica), this shows the true
- * per-replica append distribution. Subscribing processors don't replay history and only run
- * when the append actually commits, so conflict-rollbacks are never counted.
+ * per-replica append distribution. Subscribing processors don't replay history.
+ *
+ * A lost write race is never counted, but not for the reason it might appear: subscribers run at
+ * PREPARE_COMMIT — after the INSERT, still BEFORE the COMMIT — and a 23505 is raised by
+ * appendEvents, which runs earlier still. So the conflict aborts before this handler is reached.
+ * A rollback occurring between the INSERT and the COMMIT would leave this incremented for an
+ * event that does not exist: over-count only, and rare. Note also that it counts
+ * InventoryReservedEvent alone, so on the saga's compensation path it overstates net reserved
+ * stock by the number of released lines.
  */
 @Component
 @ProcessingGroup("reserve-metrics")

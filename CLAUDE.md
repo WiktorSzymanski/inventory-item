@@ -5,14 +5,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-./gradlew bootRun          # Start server on port 8080
-./gradlew test             # Run all tests (JUnit 5)
-./gradlew build            # Full build
-./gradlew bootJar          # Build executable JAR → build/libs/app.jar
-docker-compose up          # Start postgres + KurrentDB + api containers
+./gradlew bootRun          # Start on port 8080
+./gradlew test             # JUnit 5
+./gradlew bootJar          # -> build/libs/app.jar
+docker compose up -d       # postgres + nginx + api + prometheus + grafana + cadvisor
 ```
 
-Run a single test class: `./gradlew test --tests "pl.szymanski.wiktor.ApplicationTest"`
+Single test class: `./gradlew test --tests "pl.szymanski.wiktor.ApplicationTest"`
+
+Note `JAVA_HOME` in the environment may point at a missing JDK; use
+`JAVA_HOME=~/.jdks/corretto-21.0.10` for gradle if the build cannot find a toolchain.
 
 ## Scaling (identical on all 8 branches)
 
@@ -109,6 +111,14 @@ when the resulting `OrderFailedEvent` arrives. The order still ends up `FAILED`/
 `outcome="completed"`. `saga_command_failed_total{stage="complete"}` is the only signal for
 that path — read it alongside the outcome split, never instead of it.
 
+The `stage` tag has six values: `reserve`, `complete`, `release`, `fail-order`,
+`fail-order-ignored` and `abandon-rejected`. The last three are the ones that can leave an
+order non-terminal, so a non-zero value there is a different class of problem from the first
+three: `fail-order` means the terminal command itself failed; `fail-order-ignored` means the
+aggregate refused it because the order was no longer `PENDING`, so no `OrderFailedEvent`
+exists and the saga never ends; `abandon-rejected` means the saga pool refused the
+disposition and it ran inline.
+
 **`REPLICAS=1` is still the measurement-grade configuration**, because at `REPLICAS>1` the
 rejection rate is an artefact of lost write races rather than of stock. Read multi-replica
 runs as a contention study, not as a throughput result. On any single-node run
@@ -137,28 +147,116 @@ rejections are contention, and TO's multi-node path has never been load-tested a
 
 ## Architecture
 
-Kotlin 2.3 / Spring Boot 3.5 REST API on Netty via Spring WebFlux. **Event Sourcing** implementation: KurrentDB is the source of truth (append-only event log per aggregate); PostgreSQL holds a projection (read model) updated by a KurrentDB persistent subscription.
+Kotlin 2.3 / Spring Boot 4.0.6, **Spring MVC on Tomcat** (blocking servlet stack — not
+WebFlux), **Axon Framework 4.11.2** with a **JDBC event store on PostgreSQL**. There is no
+KurrentDB, no R2DBC and no coroutine code on this branch.
 
-- **`controller/InventoryController.kt`** — `@RestController`; `GET /inventory`, `GET /inventory/{itemId}`, `POST /inventory`, `POST /inventory/reserve`
-- **`service/InventoryService.kt`** — retry loop (5 attempts, exponential backoff with jitter); catches `WrongExpectedVersionException` for optimistic concurrency
-- **`service/command/CreateItemCommandHandler.kt`** — appends `InventoryCreatedEvent` to KurrentDB with `StreamState.noStream()` (throws `ItemAlreadyExistsException` on conflict)
-- **`service/command/ReserveItemCommandHandler.kt`** — loads aggregate by replaying KurrentDB stream, appends `InventoryReservedEvent` with exact stream revision
-- **`repository/EventStoreRepository.kt`** — `loadAggregate(itemId)` reads and replays KurrentDB stream; `appendEvent(...)` appends with expected revision
-- **`repository/InventoryRepository.kt`** / **`InventoryProjection.kt`** — R2DBC read model; `inventory_state` table is the PostgreSQL projection
-- **`subscription/InventoryProjectionSubscriber.kt`** — `ApplicationRunner`; creates and subscribes to a KurrentDB persistent subscription group (`inventory-projection-group`) on `$all`; updates the PostgreSQL projection on each event
-- **`config/KurrentDbConfig.kt`** — `KurrentDBClient` and `KurrentDBPersistentSubscriptionsClient` beans
-- **`config/KurrentDbProperties.kt`** — `@ConfigurationProperties("kurrentdb")` for `connectionString`
+`ES-3` is the **optimistic-lock, cached** variant: it keeps Axon's default optimistic
+concurrency on `InventoryItem` and puts a `WeakReferenceCache` in front of the
+event-sourcing repository. `ES-4` is the same domain under a `PessimisticLockFactory` with a
+custom copy-on-write cache; that pair is the lock comparison the thesis draws.
 
-Config lives in `src/main/resources/application.yaml`. Flyway migrations in `classpath:db/migration`. Env overrides: `DB_JDBC_URL`, `DB_R2DBC_URL`, `DB_USER`, `DB_PASSWORD`, `KURRENTDB_URL`.
+- **`controller/InventoryController.kt`** — `GET /inventory`, `GET /inventory/{itemId}`,
+  `POST /inventory`, `POST /inventory/orders`, `GET /inventory/orders/{orderId}`.
+  There is no `POST /inventory/reserve`; standalone reservation was removed.
+- **`domain/InventoryItem.kt`** — aggregate. `CreateItemCommand`, `SagaReserveItemCommand`
+  (emits `InventoryReservedEvent` or, on insufficient stock, a *persisted*
+  `InventoryReservationFailedEvent` — not an exception), `ReleaseReservationCommand`.
+  Registered **once**, via `@Aggregate(snapshotTriggerDefinition = ..., cache = ...)`. Do not
+  add a second `configureAggregate(InventoryItem)` — that produced two registrations whose
+  command handlers were resolved last-wins, making the cache depend on Spring init order.
+- **`domain/OrderAggregate.kt`** — `CreateOrderCommand` / `CompleteOrderCommand` /
+  `FailOrderCommand`. Its `OrderStatus` enum is `PENDING/COMPLETED/FAILED`.
+- **`domain/saga/OrderReservationSaga.kt`** — started by `OrderCreatedEvent`. Reserves the
+  order's items **strictly sequentially**, so an N-line order costs N saga round trips.
+  Compensates with `ReleaseReservationCommand` for each already-reserved line on failure.
+  Dispatches on a separate 64-thread executor so the processor thread never blocks on
+  aggregate locks. Every `commandGateway.send` has a failure disposition: a command that
+  fails for good reaches `abandon()`, which releases what was already reserved and sends
+  `FailOrderCommand`; the resulting `OrderFailedEvent` comes back to an `@EndSaga` handler.
+  That indirection is required — `SagaLifecycle` resolves the current saga from a ThreadLocal
+  bound to the processor's unit of work, so it cannot be touched from a pool thread. Emits
+  `saga.completed{outcome}`, `saga.lifetime{outcome}` and `saga.command.failed{stage}`.
+- **`config/AxonCustomizerConfig.kt`** — processor topology, the saga's per-node segment
+  claim, and the `inventoryItemCache` bean.
+- **`config/ConcurrencyRetryScheduler.kt`** — retries `ConcurrencyException` only;
+  5 attempts, `25ms * 2^n` capped at 500 ms.
+- **`subscription/`** — `InventoryProjectionUpdater`, `OrderProjectionUpdater` (tracking
+  event processors writing the read models), `MockKafkaPublisher`, and `ReserveMetricsCounter`
+  (see below).
 
-KurrentDB UI: `http://localhost:2113`. API docs: Swagger UI at `/swagger-ui.html`.
+Config lives in `src/main/resources/application.yaml`. Flyway migrations in
+`classpath:db/migration`. Env overrides: `DB_JDBC_URL`, `DB_USER`, `DB_PASSWORD`,
+`API_REPLICAS`, `AXON_JDBC_POOL_SIZE`.
 
-### Stream naming
+Swagger UI at `/swagger-ui.html` · Grafana `http://localhost:3000` ·
+Prometheus `http://localhost:9090`.
 
-One KurrentDB stream per aggregate: `inventory-{itemId}`. Events: `InventoryCreatedEvent` (revision 0), `InventoryReservedEvent` (revision ≥ 1).
+### `reserve-metrics` is a SUBSCRIBING processor, and that has consequences
 
-### Coroutine rules
+`ReserveMetricsCounter` runs synchronously on the thread that published the event, inside the
+command's unit of work at `PREPARE_COMMIT` — i.e. *after* the INSERT and *before* COMMIT,
+while the aggregate lock is still held. Two things follow.
 
-- Never use `runBlocking` or `.block()` in controllers, services, or repositories.
-- All blocking KurrentDB calls (CompletableFuture `.get()`) must be inside `withContext(Dispatchers.IO)`.
-- `runBlocking` is allowed in `InventoryProjectionSubscriber.handleEvent()` because the KurrentDB subscription listener callback runs on a non-coroutine thread.
+**It can only over-count, never under-count a conflict.** A `23505` is raised by
+`appendEvents`, which runs before subscribers, so a lost write race never increments it. But
+any rollback between the INSERT and the COMMIT leaves the counter incremented for an event
+that does not exist. Rare, and in the harmless direction. It also counts
+`InventoryReservedEvent` only, so on the compensation path it overstates net reserved stock
+by the number of released lines.
+
+**It widens the reserve command's failure surface, and that surface is now terminal.** An
+exception thrown *inside* the `@EventHandler` is swallowed by Axon's default
+`LoggingErrorHandler`, so the command still succeeds. But a failure at the *processor* level
+propagates out of `prepareCommit`, rolls back the command, and now reaches the saga's
+`abandon()` path — a `REJECTED` order. Today the handler body is one `Counter.increment()`,
+so this is structural. **Do not put real work (a DB write, an HTTP call) in this processing
+group**: it would become a live rejection source at `REPLICAS=1`, where the Scaling section
+above says `saga_completed_total{outcome="command_failed"}` must be zero.
+
+### Two traps that have caused real bugs
+
+**Order status values differ between the aggregate and the projection.** The aggregate uses
+`PENDING/COMPLETED/FAILED`; `OrderProjectionUpdater` writes `PENDING/CONFIRMED/REJECTED`,
+and `GET /inventory/orders/{orderId}` returns the *projection* values. `TO-*` writes
+`COMPLETED`. Anything that must work on both families should key off `PENDING` — the one
+value both schemas share and both default to.
+
+**`POST /inventory/orders` returns 202 Accepted.** It persists only `OrderCreatedEvent`;
+the reservation is asynchronous. A 202 says nothing about stock availability, and the HTTP
+response time is admission latency only. Out-of-stock surfaces as `status=REJECTED` on the
+order projection, never as an HTTP error. The only exception thrown anywhere in the app is
+`ItemAlreadyExistsException`, from `POST /inventory`.
+
+### Config knobs that matter
+
+`snapshot.event-count` (30), `cache.enabled`, `axon.saga.total-segments` (60),
+`axon.saga.replicas` (`${API_REPLICAS:1}`), `axon.jdbc.pool.size` (300),
+`axon.eventstore.*`, and the Micrometer `distribution` block.
+
+**`axon.saga.total-segments` is 60 on every ES branch** and must stay that way — it is the
+fixed segment pool that `ceil(total-segments / replicas)` divides, and 60 splits evenly for
+2/3/4/5/6 replicas. Changing it requires resetting the `order-saga` tokens
+(`TRUNCATE token_entry`).
+
+**`axon.jdbc.pool.size` must exceed the saga per-node claim.** At the old 150 with a
+60-thread claim the pool ran dry (`active=150, waiting=97`) and sagas that failed to
+dispatch were never retried, stranding orders in `PENDING` forever.
+
+**`order.e2e.time` histogram bounds must stay identical on every branch**
+(`minimum-expected-value: 1ms`, `maximum-expected-value: 10m`). Micrometer's default Timer
+max is 30 s; when a branch omits these, every sample above 30 s collapses into `+Inf` and
+`histogram_quantile` reports ~30 s, making a saturated variant look *faster* than a healthy
+one.
+
+### No benchmark harness on this branch
+
+`ES-3` still carries the legacy `k6/run.sh` + `k6/reserve-load-test.js`. It has no
+`bench.env`, no `docker-compose.bench.yml` and no `k6/bench/`, and `common.sh` hard-fails
+here — so **there is no `bench.sh` to run on `ES-3`**. The harness exists only on `ES-2` and
+`ES-4`. An untracked `k6/bench/` left behind by a branch switch is not the harness; `git
+status` shows it as `??`.
+
+Because of that, the `saga_completed{outcome}` / `saga_command_failed{stage}` split that the
+Scaling section calls the primary diagnostic is not collected automatically here — on `ES-3`
+it is reachable only from `/actuator/prometheus` or Grafana.
