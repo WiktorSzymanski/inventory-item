@@ -118,6 +118,14 @@ runs as a contention study, not as a throughput result. On any single-node run
 `LockFactory` (Axon's default is pessimistic) prevents the `23505` entirely there. A non-zero
 value falsifies that assumption and means the baseline needs re-examining.
 
+**Single-node cost is not quite unchanged.** The `@SagaEventHandler` on `OrderFailedEvent`
+adds an `association_value_entry` lookup on the saga processor for *every* rejected order,
+where before there was no handler and so no lookup. Negligible on a mostly-confirmed
+workload; on a `DISTINCT_ITEMS=1` contention sweep, where most orders are `REJECTED`, it is
+one extra indexed SELECT per order on the saga processor's critical path. All four ES
+branches took the same change, so ES-vs-ES stays comparable — but if pre-fix and post-fix ES
+numbers ever share a table, say so.
+
 **TO is unchanged by this work.** `InventoryService.processOrder` is `@Retryable`
 on `OptimisticLockingFailureException` (4 attempts) and, on exhaustion, issues
 `FailOrderCommand` — so a lost race becomes a `FAILED` order there too. TO-1/TO-2
