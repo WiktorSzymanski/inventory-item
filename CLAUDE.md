@@ -132,6 +132,14 @@ whenever `EXPECTED_REPLICAS > 1` — above 1 the count is the contention signal 
 The underlying series come from the `saga_completed` and `saga_cmd_failed` deltas and the
 `saga_lifetime` histogram in `queries.promql`, so they land in `dump.json` on every run.
 
+**Single-node cost is not quite unchanged.** The `@SagaEventHandler` on `OrderFailedEvent`
+adds an `association_value_entry` lookup on the saga processor for *every* rejected order,
+where before there was no handler and so no lookup. Negligible on a mostly-confirmed
+workload; on a `DISTINCT_ITEMS=1` contention sweep, where most orders are `REJECTED`, it is
+one extra indexed SELECT per order on the saga processor's critical path. All four ES
+branches took the same change, so ES-vs-ES stays comparable — but if pre-fix and post-fix ES
+numbers ever share a table, say so.
+
 **TO is unchanged by this work.** `InventoryService.processOrder` is `@Retryable`
 on `OptimisticLockingFailureException` (4 attempts) and, on exhaustion, issues
 `FailOrderCommand` — so a lost race becomes a `FAILED` order there too. TO-1/TO-2
