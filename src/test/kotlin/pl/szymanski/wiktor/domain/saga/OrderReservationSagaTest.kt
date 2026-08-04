@@ -37,6 +37,12 @@ class OrderReservationSagaTest {
     /** When true, CompleteOrderCommand completes exceptionally. */
     private var failComplete: Boolean = false
 
+    /** Commands of this type throw out of `send` itself, before any future exists. */
+    private var syncThrowFor: Class<*>? = null
+
+    /** Held so tests can assert the metric names and tag values, not just the commands. */
+    private val meters = SimpleMeterRegistry()
+
     private val orderId = "ORDER-1"
     private val correlationId = UUID.randomUUID()
     private val items = listOf(OrderItem("ITEM-1", 2), OrderItem("ITEM-2", 3))
@@ -46,11 +52,16 @@ class OrderReservationSagaTest {
         sent.clear()
         failingItemId = null
         failComplete = false
+        syncThrowFor = null
+        meters.clear()
 
         val captured = slot<Any>()
         every { gateway.send<Any?>(capture(captured)) } answers {
             val command = captured.captured
             sent.add(command)
+            if (syncThrowFor?.isInstance(command) == true) {
+                throw IllegalStateException("injected synchronous dispatch failure")
+            }
             // NOTE: SagaReserveItemCommand's aggregate id property is `id`, not `itemId`.
             // Only OrderItem uses `itemId`.
             val shouldFail = (command is SagaReserveItemCommand && command.id == failingItemId) ||
@@ -66,7 +77,7 @@ class OrderReservationSagaTest {
     private fun inject(saga: Any) {
         setField(saga, "commandGateway", gateway)
         setField(saga, "commandExecutor", Executor { it.run() })
-        setField(saga, "meterRegistry", SimpleMeterRegistry())
+        setField(saga, "meterRegistry", meters)
     }
 
     private fun setField(target: Any, name: String, value: Any) {
@@ -110,6 +121,14 @@ class OrderReservationSagaTest {
         fixture.givenAPublished(OrderCreatedEvent(orderId, "user-1", items, correlationId))
             .whenPublishingA(OrderFailedEvent(orderId, "reserve command failed"))
             .expectActiveSagas(0)
+
+        // Only this path can produce the tag: it needs the FailOrderCommand's OrderFailedEvent to
+        // round-trip back through the processor, which a mocked gateway never does on its own.
+        assertEquals(
+            1.0,
+            meters.counter("saga.completed", "outcome", "command_failed").count(),
+            "the terminal path must be tagged outcome=command_failed",
+        )
     }
 
     @Test
@@ -125,4 +144,38 @@ class OrderReservationSagaTest {
         assertEquals("ITEM-1", releases.single().id)
         assertEquals(1, sent.filterIsInstance<FailOrderCommand>().size)
     }
+
+    @Test
+    fun `still fails the order when compensation throws synchronously out of send`() {
+        // releaseAll runs BEFORE sendFailOrder inside abandon(). If a synchronous throw escapes
+        // it, the terminal disposition is skipped and the order is stranded PENDING with no
+        // counter and no log — the original defect, reintroduced through a narrower door.
+        failingItemId = "ITEM-2"
+        syncThrowFor = ReleaseReservationCommand::class.java
+
+        fixture.givenAPublished(OrderCreatedEvent(orderId, "user-1", items, correlationId))
+            .whenPublishingA(InventoryReservedEvent("ITEM-1", correlationId, 2))
+
+        assertEquals(
+            1,
+            sent.filterIsInstance<FailOrderCommand>().size,
+            "a failed release must not prevent FailOrderCommand, got: $sent",
+        )
+        assertEquals(1.0, counter("release"), "the synchronous failure must be counted like an async one")
+    }
+
+    @Test
+    fun `records the command-failure metric under the documented name and stage tags`() {
+        // CLAUDE.md requires these names identical across all eight variant branches, and a typo
+        // would otherwise pass every other test in this class.
+        failingItemId = "ITEM-1"
+
+        fixture.givenNoPriorActivity()
+            .whenPublishingA(OrderCreatedEvent(orderId, "user-1", items, correlationId))
+
+        assertEquals(1.0, counter("reserve"))
+    }
+
+    private fun counter(stage: String): Double =
+        meters.counter("saga.command.failed", "stage", stage).count()
 }

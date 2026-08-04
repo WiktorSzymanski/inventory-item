@@ -26,6 +26,7 @@ import pl.szymanski.wiktor.service.command.FailOrderCommand
 import pl.szymanski.wiktor.service.command.ReleaseReservationCommand
 import pl.szymanski.wiktor.service.command.SagaReserveItemCommand
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executor
 
 @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
@@ -85,8 +86,9 @@ class OrderReservationSaga {
             val orderIdCopy = orderId
             val toRelease = reservedItems.toList()
             commandExecutor.execute {
-                commandGateway.send<Any?>(CompleteOrderCommand(orderIdCopy))
-                    .whenComplete { _, ex -> if (ex != null) abandon(orderIdCopy, toRelease, "complete", ex) }
+                dispatchOrAbandon(orderIdCopy, toRelease, "complete") {
+                    commandGateway.send<Any?>(CompleteOrderCommand(orderIdCopy))
+                }
             }
             // Recorded as "completed" before the command's verdict is known. If it later fails,
             // saga.command.failed{stage="complete"} is what makes that visible — the saga has
@@ -147,11 +149,32 @@ class OrderReservationSaga {
         // sequential — exactly one command is in flight per saga, and the only thing that mutates
         // reservedItems is the success handler for the very command being dispatched here.
         val orderIdCopy = orderId
+        val correlationIdCopy = correlationId
         val toRelease = reservedItems.toList()
         log.debug("[SAGA] reserving itemId={} ({}/{}) orderId={}", item.itemId, currentIndex + 1, items.size, orderId)
         commandExecutor.execute {
-            commandGateway.send<Any?>(SagaReserveItemCommand(item.itemId, item.quantity, correlationId))
-                .whenComplete { _, ex -> if (ex != null) abandon(orderIdCopy, toRelease, "reserve", ex) }
+            dispatchOrAbandon(orderIdCopy, toRelease, "reserve") {
+                commandGateway.send<Any?>(SagaReserveItemCommand(item.itemId, item.quantity, correlationIdCopy))
+            }
+        }
+    }
+
+    // `commandGateway.send` can fail two ways, and both must reach the same disposition:
+    // asynchronously (the usual case — retries exhausted) or SYNCHRONOUSLY, before a future
+    // exists at all, from a dispatch interceptor or a payload that will not serialize. A
+    // synchronous throw here would otherwise escape into the executor's uncaught handler,
+    // append no event, and leave the order PENDING forever — the exact failure this saga
+    // exists to eliminate, and invisible because the executor discards it.
+    private fun dispatchOrAbandon(
+        orderId: String,
+        toRelease: List<OrderItem>,
+        stage: String,
+        send: () -> CompletableFuture<*>,
+    ) {
+        try {
+            send().whenComplete { _, ex -> if (ex != null) abandon(orderId, toRelease, stage, ex) }
+        } catch (e: Exception) {
+            abandon(orderId, toRelease, stage, e)
         }
     }
 
@@ -166,29 +189,41 @@ class OrderReservationSaga {
         sendFailOrder(orderId, "$stage command failed: ${cause.javaClass.simpleName}")
     }
 
+    // Total by construction: this must never throw at its caller. abandon() calls it BEFORE
+    // sendFailOrder, so an escaping exception here would skip the terminal disposition entirely
+    // and strand the order in PENDING — with no counter and no log, because abandon() itself
+    // runs inside a whenComplete callback whose result future is discarded.
     private fun releaseAll(orderId: String, toRelease: List<OrderItem>) {
         toRelease.forEach { item ->
-            commandGateway.send<Any?>(ReleaseReservationCommand(item.itemId, item.quantity))
-                .whenComplete { _, ex ->
-                    if (ex != null) {
-                        // Reserved stock stays held. Counted rather than retried: a release that
-                        // cannot be applied has no second escape hatch either.
-                        log.error("[SAGA] compensation failed itemId={} orderId={}", item.itemId, orderId, ex)
-                        meterRegistry.counter("saga.command.failed", "stage", "release").increment()
-                    }
-                }
+            try {
+                commandGateway.send<Any?>(ReleaseReservationCommand(item.itemId, item.quantity))
+                    .whenComplete { _, ex -> if (ex != null) releaseFailed(item, orderId, ex) }
+            } catch (e: Exception) {
+                releaseFailed(item, orderId, e)
+            }
         }
     }
 
+    private fun releaseFailed(item: OrderItem, orderId: String, cause: Throwable) {
+        // Reserved stock stays held. Counted rather than retried: a release that cannot be
+        // applied has no second escape hatch either.
+        log.error("[SAGA] compensation failed itemId={} orderId={}", item.itemId, orderId, cause)
+        meterRegistry.counter("saga.command.failed", "stage", "release").increment()
+    }
+
     private fun sendFailOrder(orderId: String, reason: String) {
-        commandGateway.send<Any?>(FailOrderCommand(orderId, reason))
-            .whenComplete { _, ex ->
-                if (ex != null) {
-                    // Residual dead end: the order stays PENDING. There is no further escape hatch
-                    // that does not recurse, so this is made visible instead of handled.
-                    log.error("[SAGA] FailOrderCommand failed orderId={} — order remains PENDING", orderId, ex)
-                    meterRegistry.counter("saga.command.failed", "stage", "fail-order").increment()
-                }
-            }
+        try {
+            commandGateway.send<Any?>(FailOrderCommand(orderId, reason))
+                .whenComplete { _, ex -> if (ex != null) failOrderFailed(orderId, ex) }
+        } catch (e: Exception) {
+            failOrderFailed(orderId, e)
+        }
+    }
+
+    private fun failOrderFailed(orderId: String, cause: Throwable) {
+        // Residual dead end: the order stays PENDING. There is no further escape hatch
+        // that does not recurse, so this is made visible instead of handled.
+        log.error("[SAGA] FailOrderCommand failed orderId={} — order remains PENDING", orderId, cause)
+        meterRegistry.counter("saga.command.failed", "stage", "fail-order").increment()
     }
 }
