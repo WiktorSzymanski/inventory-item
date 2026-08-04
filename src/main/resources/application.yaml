@@ -66,6 +66,7 @@ management:
         state_persist_time: true
         inventory.optimistic.retry.duration: true
         order.e2e.time: true
+        saga.lifetime: true
       # order.e2e.time bounds are pinned explicitly — and must stay identical on every
       # variant branch. Micrometer's default Timer max is 30s; TO-* only ever set
       # maximum-expected-value for publish.lag, so their order.e2e.time histogram clamped
@@ -73,9 +74,11 @@ management:
       # saturated run — making TO look faster than ES purely as a bucketing artefact.
       minimum-expected-value:
         order.e2e.time: 1ms
+        saga.lifetime: 1ms
       maximum-expected-value:
         projection.lag: 10m
         order.e2e.time: 10m
+        saga.lifetime: 10m
 events_applied_count: true
 
 server:
