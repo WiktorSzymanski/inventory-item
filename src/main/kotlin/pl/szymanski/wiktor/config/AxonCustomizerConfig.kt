@@ -1,17 +1,14 @@
 package pl.szymanski.wiktor.config
 
+import org.axonframework.common.caching.Cache
 import org.axonframework.common.caching.NoCache
 import org.axonframework.common.caching.WeakReferenceCache
-import org.axonframework.config.AggregateConfigurer
-import org.axonframework.config.Configurer
 import org.axonframework.config.EventProcessingConfigurer
 import org.axonframework.eventhandling.TrackingEventProcessorConfiguration
-import org.axonframework.eventsourcing.SnapshotTriggerDefinition
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.boot.context.properties.EnableConfigurationProperties
+import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
-import pl.szymanski.wiktor.domain.InventoryItem
 
 @Configuration
 @EnableConfigurationProperties(CacheProperties::class, SagaProcessorProperties::class)
@@ -54,18 +51,12 @@ class AxonCustomizerConfig {
         }
     }
 
-    @Autowired
-    fun configureInventoryItemCache(
-        configurer: Configurer,
-        cacheProperties: CacheProperties,
-        @Qualifier("inventorySnapshotTrigger") snapshotTrigger: SnapshotTriggerDefinition,
-    ) {
-        val cache: org.axonframework.common.caching.Cache =
-            if (cacheProperties.enabled) WeakReferenceCache() else NoCache.INSTANCE
-        configurer.configureAggregate(
-            AggregateConfigurer.defaultConfiguration(InventoryItem::class.java)
-                .configureCache { cache }
-                .configureSnapshotTrigger { snapshotTrigger }
-        )
-    }
+    /**
+     * Referenced by name from [pl.szymanski.wiktor.domain.InventoryItem]'s `@Aggregate(cache = ...)`.
+     * WeakReferenceCache means entries can be collected at any time, so ES-3's hit rate is a
+     * function of GC pressure as well as workload — measure it before drawing cache conclusions.
+     */
+    @Bean("inventoryItemCache")
+    fun inventoryItemCache(cacheProperties: CacheProperties): Cache =
+        if (cacheProperties.enabled) WeakReferenceCache() else NoCache.INSTANCE
 }

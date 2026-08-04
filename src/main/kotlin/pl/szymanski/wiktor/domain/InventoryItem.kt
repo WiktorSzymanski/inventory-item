@@ -12,7 +12,12 @@ import pl.szymanski.wiktor.service.command.SagaReserveItemCommand
 
 // ES-2: Jackson cannot access private Kotlin fields by default — field visibility lets it serialize all aggregate state into the snapshot
 @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
-@Aggregate(snapshotTriggerDefinition = "inventorySnapshotTrigger")
+// cache + snapshotTrigger are declared HERE rather than via a second manual
+// configureAggregate(...): that produced two registrations for the same aggregate, whose
+// command handlers both subscribed and were resolved by last-wins, leaving the effective
+// cache dependent on Spring init order and Configuration.repository() pointing at the
+// UNCACHED one. ES-3 is the cached variant — that must not be an accident of ordering.
+@Aggregate(snapshotTriggerDefinition = "inventorySnapshotTrigger", cache = "inventoryItemCache")
 class InventoryItem {
 
     @AggregateIdentifier
