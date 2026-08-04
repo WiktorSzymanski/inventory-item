@@ -185,8 +185,17 @@ class OrderReservationSaga {
     private fun abandon(orderId: String, toRelease: List<OrderItem>, stage: String, cause: Throwable) {
         log.error("[SAGA] {} command failed orderId={} — failing order", stage, orderId, cause)
         meterRegistry.counter("saga.command.failed", "stage", stage).increment()
-        releaseAll(orderId, toRelease)
-        sendFailOrder(orderId, "$stage command failed: ${cause.javaClass.simpleName}")
+        // Handed back to the 64-thread saga pool rather than run inline. When retries are what
+        // exhausted, Axon's RetryingCallback completes the future on the 4-thread retryExecutor,
+        // and compensating an N-line order there means N sequential aggregate loads + appends on
+        // 1 of only 4 threads. Retries for every OTHER in-flight command queue behind that, burn
+        // their attempts against the 500ms backoff cap, and exhaust in turn — a contention spike
+        // amplifying itself into a rejection cascade. The pool this resubmits to is the one
+        // already sized for blocking command dispatch.
+        commandExecutor.execute {
+            releaseAll(orderId, toRelease)
+            sendFailOrder(orderId, "$stage command failed: ${cause.javaClass.simpleName}")
+        }
     }
 
     // Total by construction: this must never throw at its caller. abandon() calls it BEFORE
