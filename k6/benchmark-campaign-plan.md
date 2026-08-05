@@ -98,11 +98,19 @@ Nothing in §4 is worth running until these hold. Of 23 previous runs, exactly o
 Exactly one genuinely broken system run in the set. The rest is hygiene, and hygiene is
 cheap to fix.
 
-**V1. Commit gate.** No batch starts with anything modified under `src/`. The batch runner
-asserts `git status --porcelain -- src/` is empty and aborts before the first reset. Note
-that `bench.sh` scopes `git_dirty` to `src/` only, so untracked `bench-results/` and
-unrelated working-tree changes do not trip it — but uncommitted application source does,
-and correctly so, because such a run is unreproducible.
+**V1. Stop overriding the commit gate.** The gate already exists: `bench.sh:69-71` refuses to
+run when `git status --porcelain -- src/` is non-empty, and has done since the harness's
+first commit. Every one of the seven `git_clean` failures was produced by explicitly setting
+`ALLOW_DIRTY=1` to get past it. The fix is therefore procedural, not new code:
+
+- The batch runner must never set `ALLOW_DIRTY`, and must abort if it is already set in the
+  environment — an inherited `ALLOW_DIRTY=1` would silently invalidate an entire night.
+- `ALLOW_DIRTY=1` is legitimate for harness debugging and illegitimate for anything whose
+  output enters the thesis.
+
+Note that `git_dirty` is scoped to `src/` only, so untracked `bench-results/` and unrelated
+working-tree changes do not trip it — but uncommitted application source does, and rightly
+so, because such a run is unreproducible.
 
 **V2. Track results.** `bench-results/` is currently untracked *and* absent from
 `.gitignore`. Commit it after each night, so every table in the thesis cites a run ID that
@@ -124,14 +132,40 @@ Acceptance, on all eight branches:
 git diff --stat ES-2 <branch> -- k6 docker-compose.bench.yml   # must be empty
 ```
 
-**V4a. Audit metric parity while porting.** On every branch verify that
-`src/main/resources/application.yaml` carries `order.e2e.time` with
-`minimum-expected-value: 1ms` and `maximum-expected-value: 10m`. Micrometer's default Timer
-maximum is 30 s; a branch missing these collapses every sample above 30 s into `+Inf`, so
-`histogram_quantile` reports ~30 s and a *saturated* variant looks faster than a healthy
-one. This has already silently invalidated a full set of TO-vs-ES latency comparisons once.
-Also confirm `axon.saga.total-segments` is 60 on all four ES branches and that
-`.persistenceExceptionResolver(SQLStateResolver())` is present.
+**V4a. Fix the `order.e2e.time` histogram bounds on all four TO branches.** Audited
+2026-08-05 across all eight branches:
+
+| branch | `order.e2e.time` histogram | `minimum-expected-value` | `maximum-expected-value` | `total-segments` | `SQLStateResolver` |
+|---|---|---|---|---|---|
+| TO-1 … TO-4 | `true` | **MISSING** | **MISSING** | n/a | n/a |
+| ES-1 … ES-4 | `true` | `1ms` | `10m` | 60 | present |
+
+The ES family is uniform and needs no configuration work — the ES-1/ES-3 port is purely
+harness files. **The TO family is broken.** All four TO branches enable the
+`order.e2e.time` histogram but declare `maximum-expected-value` for `publish.lag` only, so
+`order.e2e.time` falls back to Micrometer's 30 s Timer default: every sample above 30 s
+collapses into `+Inf` and `histogram_quantile` reports ~30 s. A saturated TO variant would
+therefore appear *faster* than a healthy ES one — the precise artefact that invalidated an
+earlier round of comparisons.
+
+Add to each TO branch's `src/main/resources/application.yaml`, under
+`management.metrics.distribution`:
+
+```yaml
+      minimum-expected-value:
+        order.e2e.time: 1ms
+      maximum-expected-value:
+        publish.lag: 10m
+        order.e2e.time: 10m
+```
+
+This is a `src/` change on four branches and therefore blocks V1 — it must be committed on
+each branch before any TO run.
+
+**The existing TO-3 capacity curve in §1.1 is unaffected.** Its highest observed p95 is
+404 ms and p99 439 ms, far below the 30 s clamp, so the rate ladder derived from it stands.
+The fix matters for the campaign because §4.1's 200 rps rung and §4.2's staircase to 300 rps
+drive TO into saturation, where the clamp would bite.
 
 **V5. Pin the environment.** `REPLICAS=1` and `PG_MAX_CONNECTIONS=600` in `.env` for every
 measurement night. No browser, IDE, or gradle daemon during a batch: the host is an
@@ -373,14 +407,20 @@ tooling work, not harness work.
 `backlog_drained` and in-flight growth. Saturated cells appear in tables with their latency
 and the flag. They are never silently dropped.
 
-**Two derived metrics to add to `dump.py`.** Both are headline TO-vs-ES numbers, both come
-from series already collected in `queries.promql`, and neither has been computed yet:
+**Resource cost per order.** Two headline TO-vs-ES numbers — the direct cost of ES appending
+events forever and replaying them, versus TO mutating rows in place.
 
-- **Bytes of storage per order** = `(db_size_end − db_size_start) / orders_accepted`. The
-  direct cost of ES appending events forever versus TO mutating rows in place. `db_size_start`
-  and `db_size_end` already exist as `pg_database_size_bytes` scalars.
-- **CPU-seconds per order** = `container_cpu / achieved_rps`, from
-  `container_cpu_usage_seconds_total`.
+- **Bytes of storage per order** — **already implemented.** `dump.py`'s `derive()` computes
+  `db_bytes_per_order` from the `db_size_start`/`db_size_end` `pg_database_size_bytes`
+  scalars, and `compare.py` renders it as `B/order` in the `resource` column group. No work
+  required; it simply has never been read off a valid run.
+- **CPU-seconds per order** — **missing, and needs a new query, not just a division.** The
+  existing `container_cpu` scalar is `sum(rate(container_cpu_usage_seconds_total[1m]))`
+  sampled at the window's end instant: a momentary rate, not a window total, so dividing it
+  by `achieved_rps` would charge the whole run at whatever the last minute happened to cost.
+  Add a `delta`-kind query over `sum(container_cpu_usage_seconds_total{name=~"$CRE"})` —
+  which gives exact CPU-seconds consumed across the window via the existing delta machinery
+  — and derive `cpu_seconds_per_order` from it and `orders_accepted`.
 
 **Verdicts.** `evaluate.py` returns `PASS` / `FAIL` / `INVALID`. `INVALID` means the
 measurement was broken and the run is excluded and re-run; `FAIL` means the system missed an
@@ -417,11 +457,15 @@ F1 and F2 carry the argument. Everything else supports them.
 
 ## 9. Work required before Night 1
 
-1. V1 commit gate in the batch runner.
+1. **V4a fix the `order.e2e.time` bounds on TO-1..TO-4.** Blocking: without it every
+   TO-vs-ES latency number in the thesis is a bucketing artefact at saturation.
 2. V2 track `bench-results/`.
 3. V3 fix `image_fresh`.
-4. V4 port harness to ES-1 and ES-3; V4a metric-parity audit on all 8 branches.
-5. V6 batch runner.
+4. V4 port the harness to ES-1 and ES-3 (harness files only — their config is already correct).
+5. V6 batch runner, including the V1 `ALLOW_DIRTY` refusal.
 6. `compare.py --aggregate` (§6).
-7. Two derived metrics in `dump.py` (§6).
+7. `cpu_seconds_per_order` in `queries.promql` + `dump.py` + `compare.py` (§6).
 8. V7 rehearsal, both families `PASS`.
+
+`db_bytes_per_order` is not on this list: §6 records that it is already implemented.
+Neither is a commit gate: §3 V1 records that `bench.sh` already has one.
