@@ -42,3 +42,4 @@ CLAUDE.md
 # generated load-test artifacts and local notes
 reports/
 think-about-it.md
+__pycache__/
