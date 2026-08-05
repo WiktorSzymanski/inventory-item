@@ -33,6 +33,9 @@ dependencies {
     implementation("tools.jackson.module:jackson-module-kotlin:3.0.4")
     implementation("org.axonframework:axon-spring-boot-starter:4.11.2")
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
+    // Backs PessimisticCachingRepository's confirmed-state cache. Version comes from the
+    // Spring Boot BOM above, so it stays in step with whatever Boot is tested against.
+    implementation("com.github.ben-manes.caffeine:caffeine")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test") {
         exclude(group = "org.junit.vintage", module = "junit-vintage-engine")

@@ -15,7 +15,14 @@ import org.axonframework.eventsourcing.EventCountSnapshotTriggerDefinition
 import org.axonframework.eventsourcing.NoSnapshotTriggerDefinition
 import org.axonframework.eventsourcing.SnapshotTriggerDefinition
 import org.axonframework.eventsourcing.Snapshotter
+import org.axonframework.eventsourcing.SnapshotterSpanFactory
 import org.axonframework.eventsourcing.eventstore.EventStorageEngine
+import org.axonframework.messaging.annotation.HandlerDefinition
+import org.axonframework.messaging.annotation.ParameterResolverFactory
+import org.axonframework.modelling.command.Repository
+import org.axonframework.modelling.command.RepositoryProvider
+import org.axonframework.spring.eventsourcing.SpringAggregateSnapshotter
+import org.springframework.beans.factory.ObjectProvider
 import org.axonframework.eventsourcing.eventstore.jdbc.EventSchema
 import org.axonframework.eventsourcing.eventstore.jdbc.JdbcEventStorageEngine
 import org.axonframework.eventsourcing.eventstore.jpa.SQLStateResolver
@@ -164,6 +171,45 @@ class AxonConfig {
         return TimedEventStorageEngine(jdbc, meterRegistry)
     }
 
+    /**
+     * Replaces Axon's auto-configured snapshotter (`AxonAutoConfiguration.aggregateSnapshotter`,
+     * which backs off via `@ConditionalOnMissingBean(Snapshotter.class)` as soon as this bean
+     * exists) with one that builds InventoryItem snapshots from cached confirmed state — see
+     * [CacheFedSnapshotter]. Collaborators are exactly the ones the auto-configuration passed, so
+     * the fallback replay path behaves identically to stock.
+     *
+     * [ConfirmedStateSource] arrives as an [ObjectProvider] to break the bean cycle
+     * `aggregateSnapshotter -> inventoryItemRepository -> inventorySnapshotTrigger ->
+     * aggregateSnapshotter`; it is resolved per snapshot task, not at construction.
+     */
+    @Bean
+    fun aggregateSnapshotter(
+        configuration: org.axonframework.config.Configuration,
+        handlerDefinition: HandlerDefinition,
+        parameterResolverFactory: ParameterResolverFactory,
+        eventStore: EventStore,
+        axonTransactionManager: TransactionManager,
+        spanFactory: SnapshotterSpanFactory,
+        stateSource: ObjectProvider<ConfirmedStateSource>,
+        meterRegistry: MeterRegistry,
+    ): Snapshotter = CacheFedSnapshotter(
+        builder = SpringAggregateSnapshotter.builder()
+            // Spelled out rather than `configuration::repository`: RepositoryProvider's method is
+            // itself generic, which a Kotlin method reference cannot SAM-convert.
+            .repositoryProvider(object : RepositoryProvider {
+                override fun <A : Any> repositoryFor(aggregateType: Class<A>): Repository<A> =
+                    configuration.repository(aggregateType)
+            })
+            .transactionManager(axonTransactionManager)
+            .eventStore(eventStore)
+            .parameterResolverFactory(parameterResolverFactory)
+            .handlerDefinition(handlerDefinition)
+            .spanFactory(spanFactory) as SpringAggregateSnapshotter.Builder,
+        eventStore = eventStore,
+        stateSource = stateSource,
+        meterRegistry = meterRegistry,
+    )
+
     @Bean
     fun inventorySnapshotTrigger(
         snapshotter: Snapshotter,
@@ -196,8 +242,9 @@ class AxonConfig {
             // aggregate are serialised in-JVM, so conflicting appends never reach the event store.
             .lockFactory(PessimisticLockFactory.usingDefaults())
         log.info(
-            "InventoryItem -> PessimisticCachingRepository (PessimisticLockFactory, copy-on-write, cache.enabled={})",
-            cacheProperties.enabled,
+            "InventoryItem -> PessimisticCachingRepository (PessimisticLockFactory, copy-on-write, " +
+                "cache.enabled={}, ttl={}, maxSize={})",
+            cacheProperties.enabled, cacheProperties.ttl, cacheProperties.maximumSize,
         )
         return PessimisticCachingRepository(
             builder = builder,
@@ -206,7 +253,7 @@ class AxonConfig {
             snapshotTriggerDefinition = snapshotTrigger,
             objectMapper = axonObjectMapper,
             meterRegistry = meterRegistry,
-            cacheEnabled = cacheProperties.enabled,
+            cacheProperties = cacheProperties,
         )
     }
 

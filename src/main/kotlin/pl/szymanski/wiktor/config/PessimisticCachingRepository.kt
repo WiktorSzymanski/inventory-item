@@ -1,7 +1,10 @@
 package pl.szymanski.wiktor.config
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.github.benmanes.caffeine.cache.Cache
+import com.github.benmanes.caffeine.cache.Caffeine
 import io.micrometer.core.instrument.DistributionSummary
+import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.MeterRegistry
 import org.axonframework.eventsourcing.EventSourcedAggregate
 import org.axonframework.eventsourcing.EventSourcingRepository
@@ -12,7 +15,6 @@ import org.axonframework.eventsourcing.eventstore.EventStore
 import org.axonframework.messaging.unitofwork.CurrentUnitOfWork
 import org.slf4j.LoggerFactory
 import java.util.concurrent.Callable
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * ES-4 copy-on-write repository.
@@ -23,11 +25,24 @@ import java.util.concurrent.ConcurrentHashMap
  * and never race for the same sequence number. The two branches are therefore a clean A/B of the
  * concurrency strategy alone.
  *
- * Holds only CONFIRMED (persisted) aggregate state at a known sequence number in a strong-reference,
- * never-evicted cache. Each command still works on its OWN deep copy of that state: with the lock in
- * place this is no longer required for correctness, but it keeps the cache immune to a rolled-back
- * command's partial mutations, so a rollback needs no cache invalidation (unlike Axon's stock
- * `CachingEventSourcingRepository`, which shares one instance and must evict it on failure).
+ * Holds only CONFIRMED (persisted) aggregate state at a known sequence number in a Caffeine cache
+ * bounded by an idle TTL and a maximum size ([CacheProperties]). Each command still works on its OWN
+ * deep copy of that state: with the lock in place this is no longer required for correctness, but it
+ * keeps the cache immune to a rolled-back command's partial mutations, so a rollback needs no cache
+ * invalidation (unlike Axon's stock `CachingEventSourcingRepository`, which shares one instance and
+ * must evict it on failure).
+ *
+ * **Eviction is a performance event, never a correctness one.** The cache is a pure accelerator over
+ * the event store: an evicted entry is simply a miss, and the miss path is `super.doLoadWithLock`,
+ * which reads the authoritative store under the same lock. The cached [SnapshotTrigger] is lost with
+ * the entry, but that too is benign — `EventSourcedAggregate.initializeState` replays through
+ * `publish`, which calls `SnapshotTrigger.eventHandled` for every replayed event, so the event
+ * counter is rebuilt from the tail rather than restarting from zero.
+ *
+ * The TTL is `expireAfterAccess`, so an aggregate under continuous load is never evicted. On a
+ * benchmark hot set of a handful of items nothing ever goes idle and the cache behaves exactly as
+ * the previous never-evicted `ConcurrentHashMap` did; the bounds exist to stop aggregates that go
+ * cold from pinning heap forever.
  *
  * Lock/cache interplay: [org.axonframework.modelling.command.LockingRepository] obtains the lock
  * before [doLoadWithLock] and releases it in the UnitOfWork CLEANUP phase — i.e. after AFTER_COMMIT.
@@ -54,8 +69,10 @@ class PessimisticCachingRepository<T : Any>(
     private val snapshotTriggerDefinition: SnapshotTriggerDefinition,
     private val objectMapper: ObjectMapper,
     meterRegistry: MeterRegistry,
-    private val cacheEnabled: Boolean,
-) : EventSourcingRepository<T>(builder) {
+    cacheProperties: CacheProperties,
+) : EventSourcingRepository<T>(builder), ConfirmedStateSource {
+
+    private val cacheEnabled = cacheProperties.enabled
 
     /**
      * [trigger] is cached alongside the state for the same reason Axon's [AggregateCacheEntry] keeps
@@ -71,26 +88,45 @@ class PessimisticCachingRepository<T : Any>(
         val trigger: SnapshotTrigger,
     )
 
-    /** Repository-level strong-reference cache of confirmed state. Never evicted (bounded aggregate set). */
-    private val confirmed = ConcurrentHashMap<String, Confirmed<T>>()
-
     // Metric names are deliberately identical to the ES-3-optimistic branch so the same dashboard and
     // report queries compare both variants without renaming anything.
     private val hitCounter = meterRegistry.counter("inventory.opt.cache.hit")
     private val missCounter = meterRegistry.counter("inventory.opt.cache.miss")
     private val catchupCounter = meterRegistry.counter("inventory.opt.catchup")
-    // catchUp is the ONLY repair path for a stale cache entry: this cache is never evicted, and
-    // after the first load there is never another miss to force a cold replay. A failure is
-    // therefore not cosmetic — every subsequent command on that aggregate targets an already-taken
-    // sequence number and is guaranteed to exhaust its retries and REJECT, until some later
-    // rollback happens to repair it. Those rejections then land in
+    // catchUp repairs a cache entry that a foreign node moved past. It is no longer the ONLY repair
+    // path — an idle entry now expires and the next load cold-replays from the store — but it is the
+    // only one that fires while an aggregate is hot, which is exactly when it matters. A failure is
+    // therefore not cosmetic: every subsequent command on that aggregate targets an already-taken
+    // sequence number and exhausts its retries into a REJECT, until either a later rollback repairs
+    // the entry or it goes idle long enough to expire. Those rejections land in
     // saga_completed{outcome="command_failed"} and read as contention, which is exactly the number
     // the multi-replica story rests on. Counted so the two are separable.
     private val catchupFailed = meterRegistry.counter("inventory.opt.catchup.failed")
     private val catchupEvents = DistributionSummary.builder("inventory.opt.catchup.events").register(meterRegistry)
+    // Deliberately NOT CaffeineCacheMetrics: its `cache.*` meter names have collided with the
+    // hand-rolled hit/miss counters above in the past, and queries.promql is byte-shared with ES-2.
+    private val evictedCounter = meterRegistry.counter("inventory.opt.cache.evicted")
+
+    /**
+     * Repository-level cache of confirmed state, bounded by an idle TTL and a maximum size.
+     *
+     * `expireAfterAccess` (not `expireAfterWrite`): a hot aggregate is never evicted, so the bounds
+     * only reclaim aggregates that have gone cold. Eviction costs one cold replay — see the class
+     * docs for why it can never cost correctness.
+     */
+    private val confirmed: Cache<String, Confirmed<T>> = Caffeine.newBuilder()
+        .expireAfterAccess(cacheProperties.ttl)
+        .maximumSize(cacheProperties.maximumSize)
+        .evictionListener<String, Confirmed<T>> { _, _, _ -> evictedCounter.increment() }
+        .build()
+
+    init {
+        Gauge.builder("inventory.opt.cache.size") { confirmed.estimatedSize().toDouble() }
+            .register(meterRegistry)
+    }
 
     override fun doLoadWithLock(aggregateIdentifier: String, expectedVersion: Long?): EventSourcedAggregate<T> {
-        val cached = if (cacheEnabled) confirmed[aggregateIdentifier] else null
+        val cached = if (cacheEnabled) confirmed.getIfPresent(aggregateIdentifier) else null
         if (cached == null) {
             missCounter.increment()
             val aggregate = super.doLoadWithLock(aggregateIdentifier, expectedVersion)
@@ -133,7 +169,9 @@ class PessimisticCachingRepository<T : Any>(
         val newSequence = aggregate.version() ?: return
         // Carry the live trigger (already counting this command's events) into the new entry.
         val entry = Confirmed(deepCopy(aggregate.aggregateRoot), newSequence, aggregate.isDeleted, aggregate.snapshotTrigger)
-        confirmed.merge(id, entry) { old, candidate -> if (candidate.sequence > old.sequence) candidate else old }
+        // asMap() gives ConcurrentMap semantics over the Caffeine cache, so the monotonic guard is
+        // as atomic here as it was on the ConcurrentHashMap this replaced.
+        confirmed.asMap().merge(id, entry) { old, candidate -> if (candidate.sequence > old.sequence) candidate else old }
     }
 
     /**
@@ -143,11 +181,13 @@ class PessimisticCachingRepository<T : Any>(
      * On a single node with the pessimistic lock this finds nothing — no other command could have
      * appended while this one held the lock. It matters only when a second node writes to the same
      * aggregate. Strictly best-effort and NON-destructive: on any failure the cache is left untouched
-     * (never evicted) so we never fall back into the snapshot+tail replay path this cache exists to avoid.
+     * (never invalidated) so we never fall back into the snapshot+tail replay path this cache exists
+     * to avoid. An absent entry — expired, or never loaded — needs no repair: the next load misses and
+     * cold-replays from the store, which is authoritative.
      */
     private fun catchUp(id: String, baseSequence: Long) {
         try {
-            val current = confirmed[id] ?: return
+            val current = confirmed.getIfPresent(id) ?: return
             val delta = eventStore.readEvents(id, current.sequence + 1)
             if (!delta.hasNext()) return
             // Throwaway trigger: this replay is a cache repair, not command execution — it must not
@@ -161,7 +201,7 @@ class PessimisticCachingRepository<T : Any>(
             if (newSequence > current.sequence) {
                 // Keep the live trigger; only the state moved forward.
                 val entry = Confirmed(deepCopy(aggregate.aggregateRoot), newSequence, aggregate.isDeleted, current.trigger)
-                confirmed.merge(id, entry) { old, candidate -> if (candidate.sequence > old.sequence) candidate else old }
+                confirmed.asMap().merge(id, entry) { old, candidate -> if (candidate.sequence > old.sequence) candidate else old }
                 catchupCounter.increment()
                 catchupEvents.record((newSequence - current.sequence).toDouble())
             }
@@ -178,7 +218,25 @@ class PessimisticCachingRepository<T : Any>(
     private fun deepCopy(root: T): T = objectMapper.convertValue(root, aggregateType)
 
     /** Testing/observability: current confirmed sequence held for an aggregate, or null if uncached. */
-    fun cachedSequence(id: String): Long? = confirmed[id]?.sequence
+    fun cachedSequence(id: String): Long? = confirmed.getIfPresent(id)?.sequence
+
+    /** Testing: drop an entry so the next load takes the cold-replay path. */
+    fun evict(id: String) = confirmed.invalidate(id)
+
+    // --- ConfirmedStateSource: read side used by CacheFedSnapshotter ------------------------------
+
+    override val cachedAggregateType: Class<*> get() = aggregateType
+
+    override val aggregateTypeName: String get() = aggregateModel().type()
+
+    /**
+     * The cached root is returned by reference, deliberately un-copied. Deep-copying it here would
+     * reintroduce exactly the fat Jackson round trip the cache-fed snapshot path exists to remove,
+     * and it is unnecessary: the cache never hands this instance to a command (every hit copies it
+     * first, and [advance] stores a fresh copy), so it is immutable in practice.
+     */
+    override fun confirmedState(id: String): ConfirmedState? =
+        confirmed.getIfPresent(id)?.let { ConfirmedState(it.root, it.sequence, it.deleted) }
 
     companion object {
         private val log = LoggerFactory.getLogger(PessimisticCachingRepository::class.java)

@@ -40,6 +40,12 @@ services:
       # Drives the saga per-node claim = ceil(total-segments / replicas). MUST equal the
       # number of API containers actually running, or segments are left unclaimed.
       API_REPLICAS:        "${REPLICAS:-1}"
+      # Bounds on PessimisticCachingRepository's confirmed-state cache. TTL is an IDLE timeout,
+      # so a hot aggregate is never evicted and these do not affect a benchmark hot set — they
+      # stop cold aggregates from pinning heap. An eviction costs one cold replay, never
+      # correctness. Raising CACHE_TTL cannot make results better, only memory worse.
+      CACHE_TTL:           "${CACHE_TTL:-10m}"
+      CACHE_MAXIMUM_SIZE:  "${CACHE_MAXIMUM_SIZE:-10000}"
     expose:
       - "8080"
     deploy:

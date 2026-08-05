@@ -185,12 +185,74 @@ KurrentDB and no R2DBC on any current branch.
   bound to the processor's unit of work, so it cannot be touched from a pool thread. Emits
   `saga.completed{outcome}`, `saga.lifetime{outcome}` and `saga.command.failed{stage}`.
 - **`config/PessimisticCachingRepository.kt`** — copy-on-write cache in front of the
-  event-sourcing repository. Strong-reference `ConcurrentHashMap`, **never evicted**; a
-  cache hit skips stream replay entirely. Every load deep-copies the aggregate via Jackson.
+  event-sourcing repository. **Caffeine**, bounded by `cache.ttl` (`expireAfterAccess`, 10m)
+  and `cache.maximum-size` (10000); a cache hit skips stream replay entirely. Every load
+  deep-copies the aggregate via Jackson. Also implements `ConfirmedStateSource`, the read side
+  `CacheFedSnapshotter` uses.
+  **Eviction is a performance event, never a correctness one.** The cache is a pure accelerator
+  over the event store: an evicted entry is just a miss, and the miss path is
+  `super.doLoadWithLock`, which reads the authoritative store under the same lock. The cached
+  `SnapshotTrigger` dies with the entry, but that is benign too — `initializeState` replays
+  through `publish`, which calls `eventHandled` per replayed event, so the snapshot counter is
+  rebuilt from the tail instead of restarting at zero.
+  The TTL is an *idle* timeout, so an aggregate under continuous load is never evicted: on a
+  benchmark hot set of a handful of items nothing expires and behaviour is identical to the old
+  never-evicted `ConcurrentHashMap`. The bounds exist to stop cold aggregates pinning heap.
+  Expect `inventory_opt_cache_evicted_total` = 0 on any normal run; a non-zero value means the
+  hot set outgrew `cache.maximum-size` and misses are now being paid.
+- **`config/CacheFedSnapshotter.kt`** — builds `InventoryItem` snapshots from cached confirmed
+  state instead of replaying the store. See the section below.
 - **`config/ConcurrencyRetryScheduler.kt`** — retries `ConcurrencyException` only;
   5 attempts, `25ms * 2^n` capped at 500 ms.
 - **`subscription/`** — `InventoryProjectionUpdater`, `OrderProjectionUpdater` (tracking
   event processors writing the read models), `MockKafkaPublisher`.
+
+### Snapshots are built from the cache, not from a replay (ES-4 only)
+
+Snapshotting is a **separate path from command execution** and it used to ignore the cache
+entirely. `EventCountSnapshotTriggerDefinition` counts every applied event on the cached trigger;
+every 30th it fires, and `AbstractSnapshotTrigger.prepareSnapshotScheduling` registers the work on
+**`onPrepareCommit`**. Axon's auto-configured `SpringAggregateSnapshotter` sets no executor, so it
+inherits `DirectExecutor.INSTANCE`. The stock task then does `eventStore.readEvents(id)` — the fat
+snapshot row plus the whole tail — deserialises it, replays it through the
+`@EventSourcingHandler`s, serialises the result and stores it. All of that ran **synchronously on
+the command thread, before commit, while the pessimistic aggregate lock was still held**, so every
+30th command on a hot item blocked every other command on that item. `additionalBytes` lives on
+the aggregate root, so the row being read and written is the fat one.
+
+`CacheFedSnapshotter` serialises the cached root instead. Eliminated per snapshot: the fat
+snapshot-row read, the tail reads, the deserialise and the replay; what remains is the serialise
+and one INSERT. It hooks `AbstractSnapshotter.createSnapshotterTask` — the one `protected` seam —
+so the `snapshotsInProgress` de-duplication, tracing spans, transaction wrapper and silent-failure
+handling all still apply, and only the store-reading part is replaced. On a cache miss, a type
+mismatch, or `cache.enabled=false` it falls back to the stock replay task.
+
+- **The type guard is required, not defensive.** `inventorySnapshotTrigger` is the only
+  `SnapshotTriggerDefinition` bean, so Axon applies it to `OrderAggregate` too and those snapshots
+  arrive at the same snapshotter. They must never be served from the `InventoryItem` cache.
+- **The snapshot lands at sequence N-1, not N.** The trigger fires at `onPrepareCommit` while
+  `advance` runs at `afterCommit`, so the cache still holds the previous sequence. That state is
+  committed *by construction* — which makes this safer than making the stock replay asynchronous
+  would have been, since an async `readEvents` would race the in-flight commit for the same result
+  with no such guarantee. Costs one extra event on the next cold replay and nothing else.
+- **`AggregateSnapshotter`'s "replaces more than one event" guard is dropped**, because evaluating
+  it needs the very read being eliminated. Harmless at threshold 30.
+- **Metrics:** `inventory_opt_snapshot_duration_seconds{source="cache"|"replay"}`. The `_count`
+  suffix is the per-source snapshot count; no separate counter is registered. Not in
+  `queries.promql` — that file is byte-shared with ES-2 and this change is ES-4-only, so read
+  these from `/actuator/prometheus` or the Prometheus UI. The existing `state_load_time{phase}`
+  series already captures the win with no harness edit: after warmup its sample **count** should
+  drop sharply, because the snapshotter's replay was most of what it was measuring.
+- **The failure mode is silent and the benchmark cannot catch it.** A wrong aggregate type name or
+  sequence yields an unusable snapshot, and a cache that rarely evicts almost never performs the
+  cold load that would read it back. `InventoryPessimisticConcurrencyTest.a cache-fed snapshot
+  restores correct state on a cold load` is the guard: it forces the cold load and asserts
+  behaviourally (a reserve that must be refused on the restored quantity). Keep it.
+
+**This makes ES-4's write path differ from ES-1/ES-2/ES-3**, which all still pay the synchronous
+replay. It is a property *of the copy-on-write cache* rather than generic Axon tuning, which is
+why it is defensible as an ES-4-only change — the other branches have no confirmed-state cache to
+read from. But any table sharing ES-3 and ES-4 snapshot or write-path numbers must say so.
 
 ### Two traps that have caused real bugs
 
@@ -210,6 +272,7 @@ exception thrown anywhere in the app is `ItemAlreadyExistsException`, from `POST
 ### Config knobs that matter
 
 `src/main/resources/application.yaml`: `snapshot.event-count` (30), `cache.enabled`,
+`cache.ttl` (10m, `CACHE_TTL`) and `cache.maximum-size` (10000, `CACHE_MAXIMUM_SIZE`),
 `axon.saga.total-segments` (60), `axon.saga.replicas` (`${API_REPLICAS:1}`),
 `axon.jdbc.pool.size` (300), `axon.eventstore.*` (below), and the Micrometer
 `distribution` block.

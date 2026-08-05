@@ -157,7 +157,104 @@ class InventoryPessimisticConcurrencyTest {
             .isEqualTo(seqBefore + 2)
     }
 
-    /** The snapshotter runs asynchronously, so poll rather than sleep a fixed amount. */
+    /**
+     * The one test that can catch a broken [pl.szymanski.wiktor.config.CacheFedSnapshotter].
+     *
+     * That snapshotter hand-builds the snapshot message from cached state instead of replaying the
+     * store, so a wrong aggregate type name or sequence produces a snapshot that is silently
+     * unusable — and nothing notices, because a cache that rarely evicts almost never performs the
+     * cold load that would read it back. The benchmark cannot catch this. This test forces the cold
+     * load and asserts the restored state is right.
+     *
+     * The stock check is behavioural on purpose: with 20 units left, reserving 25 must be REFUSED.
+     * If the snapshot restored a wrong quantity, that reserve would succeed instead.
+     */
+    @Test
+    fun `a cache-fed snapshot restores correct state on a cold load`() {
+        val itemId = UUID.randomUUID().toString()
+        gateway.sendAndWait<Any?>(CreateItemCommand(id = itemId, availableQty = 100))
+        // 40 events, comfortably past the snapshot threshold of 30.
+        repeat(40) { gateway.sendAndWait<Any?>(SagaReserveItemCommand(id = itemId, quantity = 2)) }
+        assertThat(awaitSnapshot(itemId)).`as`("a snapshot was written").isTrue()
+
+        // The snapshot came from the cache, not from a store replay — this is what proves the new
+        // path actually ran rather than silently falling back to the stock snapshotter.
+        val fromCache = meterRegistry.get("inventory.opt.snapshot.duration").tag("source", "cache").timer().count()
+        assertThat(fromCache).`as`("snapshot built from cached state").isGreaterThanOrEqualTo(1L)
+
+        // The single-argument overload starts at the newest snapshot. A head above sequence 0 proves
+        // the snapshot is readable and is what a cold load would actually start from.
+        assertThat(eventStore.readEvents(itemId).peek()!!.sequenceNumber)
+            .`as`("cold reads start from the snapshot, not from sequence 0").isGreaterThan(0L)
+
+        // Force the cold path: drop the entry so the next load replays snapshot + tail.
+        val missesBefore = meterRegistry.get("inventory.opt.cache.miss").counter().count()
+        inventoryItemRepository.evict(itemId)
+        assertThat(inventoryItemRepository.cachedSequence(itemId)).`as`("entry dropped").isNull()
+
+        // 100 - (40 * 2) = 20 left, so this must be refused. It is persisted as an event, not thrown.
+        gateway.sendAndWait<Any?>(SagaReserveItemCommand(id = itemId, quantity = 25))
+
+        var reserved = 0
+        var failed = 0
+        var head = -1L
+        val stream = eventStore.readEvents(itemId, 0L)
+        while (stream.hasNext()) {
+            val event = stream.next()
+            head = event.sequenceNumber
+            when (event.payload) {
+                is InventoryReservedEvent -> reserved++
+                is InventoryReservationFailedEvent -> failed++
+            }
+        }
+
+        assertThat(meterRegistry.get("inventory.opt.cache.miss").counter().count() - missesBefore)
+            .`as`("the load took the cold-replay path").isGreaterThanOrEqualTo(1.0)
+        assertThat(reserved).`as`("the 25-unit reserve was refused").isEqualTo(40)
+        assertThat(failed).`as`("insufficient stock recorded — snapshot restored the right quantity").isEqualTo(1)
+        assertThat(inventoryItemRepository.cachedSequence(itemId))
+            .`as`("the miss re-seeded the cache at the store head").isEqualTo(head)
+    }
+
+    /**
+     * Eviction must cost a replay, never correctness: the cache is a pure accelerator over the event
+     * store, so a dropped entry is just a miss that reloads authoritative state under the same lock.
+     */
+    @Test
+    fun `an evicted entry reloads from the store and keeps reserving correctly`() {
+        val itemId = UUID.randomUUID().toString()
+        gateway.sendAndWait<Any?>(CreateItemCommand(id = itemId, availableQty = 10))
+        gateway.sendAndWait<Any?>(SagaReserveItemCommand(id = itemId, quantity = 4))
+        val seqBefore = inventoryItemRepository.cachedSequence(itemId)
+
+        inventoryItemRepository.evict(itemId)
+        assertThat(inventoryItemRepository.cachedSequence(itemId)).`as`("entry dropped").isNull()
+
+        // Reload from the store and keep going: 4 already taken, 6 left, so 6 succeeds and 1 fails.
+        gateway.sendAndWait<Any?>(SagaReserveItemCommand(id = itemId, quantity = 6))
+        gateway.sendAndWait<Any?>(SagaReserveItemCommand(id = itemId, quantity = 1))
+
+        var reserved = 0
+        var failed = 0
+        val stream = eventStore.readEvents(itemId, 0L)
+        while (stream.hasNext()) {
+            when (stream.next().payload) {
+                is InventoryReservedEvent -> reserved++
+                is InventoryReservationFailedEvent -> failed++
+            }
+        }
+        assertThat(reserved).`as`("both valid reserves honoured after the eviction").isEqualTo(2)
+        assertThat(failed).`as`("the over-reserve was refused, so stock survived the eviction").isEqualTo(1)
+        assertThat(inventoryItemRepository.cachedSequence(itemId))
+            .`as`("cache re-seeded and advanced past the pre-eviction sequence").isGreaterThan(seqBefore!!)
+    }
+
+    /**
+     * Snapshot creation is scheduled at `onPrepareCommit` and Axon's auto-configuration leaves the
+     * snapshotter on `DirectExecutor`, so it actually runs on the command thread — but the projection
+     * and the commit ordering still make the row's visibility timing-dependent, so poll rather than
+     * assume it is already there.
+     */
     private fun awaitSnapshot(itemId: String, timeoutMs: Long = 15_000): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {

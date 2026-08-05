@@ -59,6 +59,12 @@ snapshot:
 
 cache:
   enabled: true
+  # Idle timeout (expireAfterAccess) + size bound on the confirmed-state cache. An aggregate under
+  # continuous load never goes idle, so on a benchmark hot set of a handful of items neither limit
+  # is ever reached and the cache behaves exactly as the old never-evicted map did. They exist to
+  # bound memory for aggregates that go cold. An eviction costs one cold replay, never correctness.
+  ttl: ${CACHE_TTL:10m}
+  maximum-size: ${CACHE_MAXIMUM_SIZE:10000}
 
 management:
   endpoints:
