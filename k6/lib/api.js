@@ -1,14 +1,14 @@
 // Thin HTTP wrappers. Field names match the controller DTOs exactly:
-//   CreateItemRequest(id, availableQty, additionalBytesSize)
+//   CreateItemRequest(id, availableQty, additionalBytesSize, reserveDelayMs)
 //   CreateOrderRequest(userId, items: [OrderItemRequest(itemId, quantity)])
 import http from 'k6/http';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
-export function createItem(baseUrl, id, availableQty, additionalBytesSize) {
+export function createItem(baseUrl, id, availableQty, additionalBytesSize, reserveDelayMs) {
     return http.post(
         `${baseUrl}/inventory`,
-        JSON.stringify({ id, availableQty, additionalBytesSize }),
+        JSON.stringify({ id, availableQty, additionalBytesSize, reserveDelayMs }),
         { headers: JSON_HEADERS, tags: { op: 'create_item' }, responseType: 'text' },
     );
 }

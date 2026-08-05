@@ -34,6 +34,7 @@ set -- run /scripts/main.js -e "SCENARIO=$SCENARIO" -e "OUT_DIR=$OUT_DIR"
 [ -n "$ITEMS_PER_ORDER" ] && set -- "$@" -e "ITEMS_PER_ORDER=$ITEMS_PER_ORDER"
 [ -n "$DISTINCT_ITEMS" ] && set -- "$@" -e "DISTINCT_ITEMS=$DISTINCT_ITEMS"
 [ -n "$PAYLOAD_BYTES" ]  && set -- "$@" -e "PAYLOAD_BYTES=$PAYLOAD_BYTES"
+[ -n "$RESERVE_DELAY_MS" ] && set -- "$@" -e "RESERVE_DELAY_MS=$RESERVE_DELAY_MS"
 
 k6 "$@"
 
