@@ -24,6 +24,7 @@ COLUMNS = {
         ("items", "meta.config.distinctItems", "d"),
         ("lines", "meta.config.itemsPerOrder", "d"),
         ("payloadB", "meta.config.payloadBytes", "d"),
+        ("reserveMs", "meta.config.reserveDelayMs", "d"),
         ("achieved/s", "dump.derived.achieved_rps", ".1f"),
         ("e2e p50", "dump.scalars.e2e_p50.confirmed", ".3f"),
         ("e2e p95", "dump.scalars.e2e_p95.confirmed", ".3f"),

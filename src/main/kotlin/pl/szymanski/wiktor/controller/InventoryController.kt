@@ -20,7 +20,7 @@ import java.util.UUID
 
 data class OrderItemRequest(val itemId: String, val quantity: Int)
 data class CreateOrderRequest(val userId: String, val items: List<OrderItemRequest>)
-data class CreateItemRequest(val id: String, val availableQty: Int, val additionalBytesSize: Int = 0)
+data class CreateItemRequest(val id: String, val availableQty: Int, val additionalBytesSize: Int = 0, val reserveDelayMs: Int = 0)
 
 data class InventoryResponse(val itemId: String, val availableQty: Int, val version: Long)
 data class CreateItemResponse(val itemId: String, val availableQty: Int)
@@ -45,9 +45,15 @@ class InventoryController(
 
     @PostMapping
     fun createItem(@RequestBody request: CreateItemRequest): ResponseEntity<CreateItemResponse> {
-        log.info("POST /inventory itemId={} availableQty={} additionalBytesSize={}", request.id, request.availableQty, request.additionalBytesSize)
+        log.info("POST /inventory itemId={} availableQty={} additionalBytesSize={} reserveDelayMs={}", request.id, request.availableQty, request.additionalBytesSize, request.reserveDelayMs)
         inventoryService.createItem(
-            CreateItemCommand(request.id, request.availableQty, request.additionalBytesSize, UUID.randomUUID())
+            CreateItemCommand(
+                id = request.id,
+                availableQty = request.availableQty,
+                additionalBytesSize = request.additionalBytesSize,
+                reserveDelayMs = request.reserveDelayMs,
+                correlationId = UUID.randomUUID(),
+            )
         )
         log.info("POST /inventory success itemId={}", request.id)
         return ResponseEntity.status(HttpStatus.CREATED).body(CreateItemResponse(request.id, request.availableQty))

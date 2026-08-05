@@ -12,6 +12,9 @@ data class InventoryCreatedEvent(
     override val correlationId: UUID,
     val quantity: Int,
     val additionalBytes: String = "",
+    // Artificial per-reserve cost, in milliseconds. Replayed into aggregate state, so it applies
+    // to every later reserve of this item. Mirrors the TO branch's inventory_state.reserve_delay_ms.
+    val reserveDelayMs: Int = 0,
 ) : InventoryEvent(id, correlationId)
 
 data class InventoryReservedEvent(
