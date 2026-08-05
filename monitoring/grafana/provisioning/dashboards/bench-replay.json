@@ -1208,7 +1208,7 @@
       "gridPos": {
         "x": 0,
         "y": 84,
-        "w": 8,
+        "w": 12,
         "h": 8
       },
       "datasource": {
@@ -1267,9 +1267,9 @@
       "description": "",
       "type": "timeseries",
       "gridPos": {
-        "x": 8,
+        "x": 12,
         "y": 84,
-        "w": 8,
+        "w": 12,
         "h": 8
       },
       "datasource": {
@@ -1540,7 +1540,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "dump.json does not carry these signals, so no panel can exist for them:\n\n- HTTP error rate (4xx / 5xx)\n- Order processing time \u2014 p50 / p95 (TO family)\n- Order queue wait \u2014 p50 / p95 (TO family)\n- Orders completed by outcome & reason (TO family)\n- Outbox backlog (TO family)\n- Outbox write time \u2014 p50 / p95 (TO family)\n- Order worker \u2014 queue depth & active threads (TO family)\n- Non-heap memory by pool\n- GC pause duration \u2014 p50 / p95 / p99\n- JVM threads\n- Loaded classes & uptime\n- HikariCP connections\n- Tomcat HTTP threads\n- WAL size\n- Active connections by state\n- Transaction rate\n- Tuple operations rate\n- Buffer cache hit ratio\n- Live rows by table\n- Per-table write rate\n- Locks by mode\n- Checkpoint activity"
+        "content": "dump.json does not carry these signals, so no panel can exist for them:\n\n- HTTP error rate (4xx / 5xx)\n- Order processing time \u2014 p50 / p95 (TO family)\n- Order queue wait \u2014 p50 / p95 (TO family)\n- Orders completed by outcome & reason (TO family)\n- Outbox backlog (TO family)\n- Outbox write time \u2014 p50 / p95 (TO family)\n- Order worker \u2014 queue depth & active threads (TO family)\n- Non-heap memory by pool\n- GC pause duration \u2014 p50 / p95 / p99\n- JVM threads\n- Loaded classes\n- Process uptime\n- HikariCP connections\n- Tomcat HTTP threads\n- WAL size\n- Active connections by state\n- Transaction rate\n- Tuple operations rate\n- Buffer cache hit ratio\n- Live rows by table\n- Per-table write rate\n- Locks by mode\n- Checkpoint activity"
       }
     }
   ]
