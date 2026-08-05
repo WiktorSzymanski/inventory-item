@@ -1,0 +1,264 @@
+"""Single source of truth for both Grafana dashboards.
+
+Every metric appears exactly once. `targets` is what the live dashboard queries against a
+Prometheus that is scraping the stack; `archived` is the equivalent against the three generic
+metrics scripts/replay_run.py backfills from a run's dump.json:
+
+    replay_series {run_id, variant, scenario, metric}              -- 5s, whole window
+    replay_step   {run_id, variant, scenario, metric, dim, step}   -- one point per capacity step
+    replay_summary{run_id, variant, scenario, key, dim}            -- one point per run
+
+`archived=None` means the signal is not in dump.json at all; build.py lists those panels in a
+"not available" note rather than rendering an empty panel.
+"""
+import re
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Target:
+    legend: str
+    expr: str
+
+
+@dataclass
+class Panel:
+    title: str
+    unit: str
+    targets: list
+    archived: list = None
+    w: int = 8
+    h: int = 8
+    description: str = ""
+    type: str = "timeseries"
+    max: float = None
+
+
+@dataclass
+class Section:
+    title: str
+    panels: list = field(default_factory=list)
+
+
+# Expressions allowed to repeat because the second use is a different visual form of the same
+# number (a gauge of heap-used-over-max next to the heap timeseries), not a duplicated panel.
+DUP_EXEMPT = set()
+
+# dump.json keys the miniature fixture does not carry, but real runs do. Keeping this list
+# explicit means a typo in spec.py still fails the test.
+FIXTURE_GAPS = {
+    "rate_terminal", "e2e_p95_1m", "heap", "db_size", "conflict_rate", "k6_offered",
+    "target_rate", "orders_non202", "reads_total", "e2e_count", "e2e_sum", "append_success",
+    "opt_exhausted", "cache_hit", "cache_miss", "catchup", "events_processed",
+    "saga_completed", "saga_cmd_failed", "e2e_p50", "e2e_p99", "http_order_p50",
+    "http_order_p95", "http_order_p99", "projection_lag_p50", "projection_lag_p95",
+    "projection_lag_p99", "order_proj_lag_p50", "order_proj_lag_p95", "order_proj_lag_p99",
+    "state_load_p50", "state_load_p95", "state_load_p99", "state_persist_p50",
+    "state_persist_p95", "state_persist_p99", "publish_lag_p50", "publish_lag_p95",
+    "publish_lag_p99", "saga_lifetime_p50", "saga_lifetime_p95", "saga_lifetime_p99",
+    "cpu_max", "sys_cpu_avg", "heap_max_bytes", "heap_end_bytes", "db_size_start",
+    "db_size_end", "container_cpu", "container_rss", "inflight_start", "inflight_end",
+    "inflight_max", "completion_ratio", "rejected_ratio", "non202_ratio", "conflict_ratio",
+    "cache_hit_ratio", "db_growth_bytes", "db_bytes_per_order", "drain_seconds",
+    "drain_service_rate", "e2e_mean_confirmed", "achieved_rps_load_window",
+    "cpu_avg_load_window", "window_seconds", "orders_accepted",
+}
+
+
+def metric_labels(expr):
+    """Every metric="..." value referenced by a replay_* expression."""
+    return re.findall(r'metric="([^"]+)"', expr) + re.findall(r'key="([^"]+)"', expr)
+
+
+def _q(quantile, metric, by, job=True):
+    selector = '{job="$job"}' if job else "{}"
+    return (f'histogram_quantile({quantile}, sum(rate({metric}{selector}[1m])) by ({by}))')
+
+
+SECTIONS = [
+    Section("HTTP", [
+        Panel(
+            title="Request rate by endpoint & method",
+            unit="reqps", w=12,
+            description="sum(rate(http_server_requests_seconds_count)) by (uri, method). Replaces the "
+                        "separate per-family throughput panels the three old dashboards each had.",
+            targets=[Target("{{method}} {{uri}}",
+                            'sum(rate(http_server_requests_seconds_count{job="$job"}[1m])) by (uri, method)')],
+            archived=[Target("{{run_id}} accepted (202)", 'replay_series{run_id=~"$runs",metric="rate_accepted"}')],
+        ),
+        Panel(
+            title="POST /inventory/orders by status",
+            unit="reqps", w=12,
+            description="Admission outcome. On archived runs only the 202/non-202 split survives.",
+            targets=[Target("{{status}}",
+                            'sum(rate(http_server_requests_seconds_count{job="$job",method="POST",uri="/inventory/orders"}[1m])) by (status)')],
+            archived=[Target("{{run_id}} accepted", 'replay_step{run_id=~"$runs",metric="orders_accepted"}'),
+                      Target("{{run_id}} non-202", 'replay_step{run_id=~"$runs",metric="orders_non202"}')],
+        ),
+        Panel(
+            title="Request latency — p50 / p95 / p99",
+            unit="s", w=12,
+            targets=[Target("{{method}} {{uri}} p50", _q(0.50, "http_server_requests_seconds_bucket", "le, uri, method")),
+                     Target("{{method}} {{uri}} p95", _q(0.95, "http_server_requests_seconds_bucket", "le, uri, method")),
+                     Target("{{method}} {{uri}} p99", _q(0.99, "http_server_requests_seconds_bucket", "le, uri, method"))],
+            archived=[Target("{{run_id}} POST orders p50", 'replay_step{run_id=~"$runs",metric="http_order_p50"}'),
+                      Target("{{run_id}} POST orders p95", 'replay_step{run_id=~"$runs",metric="http_order_p95"}'),
+                      Target("{{run_id}} POST orders p99", 'replay_step{run_id=~"$runs",metric="http_order_p99"}')],
+        ),
+        Panel(
+            title="HTTP error rate (4xx / 5xx)",
+            unit="reqps", w=12,
+            targets=[Target("{{status}} {{uri}}",
+                            'sum(rate(http_server_requests_seconds_count{job="$job",status=~"[45].."}[1m])) by (uri, status)')],
+            archived=None,
+        ),
+    ]),
+    Section("Orders & domain", [
+        Panel(
+            title="Offered vs accepted vs terminal",
+            unit="reqps", w=24, h=9,
+            description="One axis, orders/s. Dashed = asked of the system, solid = done by it.",
+            targets=[Target("accepted (202)",
+                            'sum(rate(http_server_requests_seconds_count{job="$job",method="POST",uri="/inventory/orders",status="202"}[1m]))'),
+                     Target("terminal", 'sum(rate(order_e2e_time_seconds_count{job="$job"}[1m]))')],
+            archived=[Target("{{run_id}} accepted", 'replay_series{run_id=~"$runs",metric="rate_accepted"}'),
+                      Target("{{run_id}} terminal", 'replay_series{run_id=~"$runs",metric="rate_terminal"}'),
+                      Target("{{run_id}} k6 offered", 'replay_series{run_id=~"$runs",metric="k6_offered"}'),
+                      Target("{{run_id}} step target", 'replay_series{run_id=~"$runs",metric="target_rate"}')],
+        ),
+        Panel(
+            title="In-flight orders (saturation)",
+            unit="short", w=12,
+            description="Admitted minus terminal. Monotonic growth on a constant-rate plateau is saturation.",
+            targets=[Target("in-flight",
+                            '(sum(http_server_requests_seconds_count{job="$job",method="POST",uri="/inventory/orders",status="202"}) or vector(0))'
+                            ' - (sum(order_e2e_time_seconds_count{job="$job"}) or vector(0))')],
+            archived=[Target("{{run_id}}", 'replay_series{run_id=~"$runs",metric="inflight"}')],
+        ),
+        Panel(
+            title="Order e2e latency by outcome — p50 / p95 / p99",
+            unit="s", w=12,
+            targets=[Target("{{outcome}} p50", _q(0.50, "order_e2e_time_seconds_bucket", "le, outcome")),
+                     Target("{{outcome}} p95", _q(0.95, "order_e2e_time_seconds_bucket", "le, outcome")),
+                     Target("{{outcome}} p99", _q(0.99, "order_e2e_time_seconds_bucket", "le, outcome"))],
+            archived=[Target("{{run_id}} {{dim}} p50", 'replay_step{run_id=~"$runs",metric="e2e_p50"}'),
+                      Target("{{run_id}} {{dim}} p95", 'replay_step{run_id=~"$runs",metric="e2e_p95"}'),
+                      Target("{{run_id}} {{dim}} p99", 'replay_step{run_id=~"$runs",metric="e2e_p99"}')],
+        ),
+        Panel(
+            title="Order processing time — p50 / p95 (TO family)",
+            unit="s", w=12,
+            targets=[Target("p50", _q(0.50, "order_processing_time_seconds_bucket", "le")),
+                     Target("p95", _q(0.95, "order_processing_time_seconds_bucket", "le"))],
+            archived=None,
+        ),
+        Panel(
+            title="Order queue wait — p50 / p95 (TO family)",
+            unit="s", w=12,
+            targets=[Target("p50", _q(0.50, "order_queue_wait_seconds_bucket", "le")),
+                     Target("p95", _q(0.95, "order_queue_wait_seconds_bucket", "le"))],
+            archived=None,
+        ),
+        Panel(
+            title="Orders completed by outcome & reason (TO family)",
+            unit="ops", w=12,
+            targets=[Target("{{outcome}} {{reason}}",
+                            'sum by (outcome, reason) (rate(orders_completed_total{job="$job"}[1m]))')],
+            archived=None,
+        ),
+        Panel(
+            title="Business exception rate by type",
+            unit="ops", w=12,
+            targets=[Target("{{type}}", 'sum by (type) (rate(inventory_exception_total{job="$job"}[1m]))')],
+            archived=[Target("{{run_id}} {{dim}}", 'replay_step{run_id=~"$runs",metric="exceptions"}')],
+        ),
+        Panel(
+            title="Optimistic locking — append success vs conflict",
+            unit="ops", w=12,
+            targets=[Target("append success", 'sum(rate(inventory_append_success_total{job="$job"}[1m]))'),
+                     Target("retry", 'sum(rate(inventory_optimistic_retry_total{job="$job"}[1m]))'),
+                     Target("exhausted", 'sum(rate(inventory_optimistic_exhausted_total{job="$job"}[1m]))')],
+            archived=[Target("{{run_id}} retry rate", 'replay_series{run_id=~"$runs",metric="conflict_rate"}'),
+                      Target("{{run_id}} exhausted (step total)", 'replay_step{run_id=~"$runs",metric="opt_exhausted"}')],
+        ),
+        Panel(
+            title="Events processed by type",
+            unit="ops", w=12,
+            targets=[Target("{{eventType}}", 'sum by (eventType) (rate(es_events_processed_total{job="$job"}[1m]))')],
+            archived=[Target("{{run_id}} {{dim}}", 'replay_step{run_id=~"$runs",metric="events_processed"}')],
+        ),
+        Panel(
+            title="Publish lag by event type — p50 / p95 / p99",
+            unit="s", w=12,
+            targets=[Target("{{eventType}} p50", _q(0.50, "publish_lag_seconds_bucket", "le, eventType")),
+                     Target("{{eventType}} p95", _q(0.95, "publish_lag_seconds_bucket", "le, eventType")),
+                     Target("{{eventType}} p99", _q(0.99, "publish_lag_seconds_bucket", "le, eventType"))],
+            archived=[Target("{{run_id}} {{dim}} p95", 'replay_step{run_id=~"$runs",metric="publish_lag_p95"}'),
+                      Target("{{run_id}} {{dim}} p99", 'replay_step{run_id=~"$runs",metric="publish_lag_p99"}')],
+        ),
+        Panel(
+            title="State load time by phase — p50 / p95",
+            unit="s", w=12,
+            targets=[Target("{{phase}} p50", _q(0.50, "state_load_time_seconds_bucket", "le, phase")),
+                     Target("{{phase}} p95", _q(0.95, "state_load_time_seconds_bucket", "le, phase"))],
+            archived=[Target("{{run_id}} {{dim}} p50", 'replay_step{run_id=~"$runs",metric="state_load_p50"}'),
+                      Target("{{run_id}} {{dim}} p95", 'replay_step{run_id=~"$runs",metric="state_load_p95"}')],
+        ),
+        Panel(
+            title="State persist time by source — p50 / p95 / p99",
+            unit="s", w=12,
+            targets=[Target("{{source}} p50", _q(0.50, "state_persist_time_seconds_bucket", "le, source")),
+                     Target("{{source}} p95", _q(0.95, "state_persist_time_seconds_bucket", "le, source")),
+                     Target("{{source}} p99", _q(0.99, "state_persist_time_seconds_bucket", "le, source"))],
+            archived=[Target("{{run_id}} {{dim}} p95", 'replay_step{run_id=~"$runs",metric="state_persist_p95"}'),
+                      Target("{{run_id}} {{dim}} p99", 'replay_step{run_id=~"$runs",metric="state_persist_p99"}')],
+        ),
+        Panel(
+            title="Projection lag — p50 / p95 / p99",
+            unit="s", w=12,
+            targets=[Target("inventory p50", _q(0.50, "projection_lag_seconds_bucket", "le")),
+                     Target("inventory p95", _q(0.95, "projection_lag_seconds_bucket", "le")),
+                     Target("order p95", _q(0.95, "order_projection_lag_seconds_bucket", "le"))],
+            archived=[Target("{{run_id}} inventory p95", 'replay_step{run_id=~"$runs",metric="projection_lag_p95"}'),
+                      Target("{{run_id}} order p95", 'replay_step{run_id=~"$runs",metric="order_proj_lag_p95"}')],
+        ),
+        Panel(
+            title="Aggregate cache — hit vs miss vs catch-up",
+            unit="ops", w=12,
+            targets=[Target("hit", 'sum(rate(inventory_opt_cache_hit_total{job="$job"}[1m]))'),
+                     Target("miss", 'sum(rate(inventory_opt_cache_miss_total{job="$job"}[1m]))'),
+                     Target("catch-up", 'sum(rate(inventory_opt_catchup_total{job="$job"}[1m]))')],
+            archived=[Target("{{run_id}} hit", 'replay_step{run_id=~"$runs",metric="cache_hit"}'),
+                      Target("{{run_id}} miss", 'replay_step{run_id=~"$runs",metric="cache_miss"}'),
+                      Target("{{run_id}} catch-up", 'replay_step{run_id=~"$runs",metric="catchup"}')],
+        ),
+        Panel(
+            title="Outbox backlog (TO family)",
+            unit="short", w=12,
+            targets=[Target("backlog", 'outbox_backlog{job="$job"}')],
+            archived=None,
+        ),
+        Panel(
+            title="Outbox write time — p50 / p95 (TO family)",
+            unit="s", w=12,
+            targets=[Target("p50", _q(0.50, "outbox_write_time_seconds_bucket", "le")),
+                     Target("p95", _q(0.95, "outbox_write_time_seconds_bucket", "le"))],
+            archived=None,
+        ),
+        Panel(
+            title="Order worker — queue depth & active threads (TO family)",
+            unit="short", w=12,
+            targets=[Target("queued", 'executor_queued_tasks{job="$job",name="orderWorkerExecutor"}'),
+                     Target("active", 'executor_active_threads{job="$job",name="orderWorkerExecutor"}')],
+            archived=None,
+        ),
+        Panel(
+            title="Saga outcome — completed vs failed (ES family)",
+            unit="ops", w=24,
+            targets=[Target("completed", 'sum(rate(saga_completed_total{job="$job"}[1m]))'),
+                     Target("command failed", 'sum(rate(saga_command_failed_total{job="$job"}[1m]))')],
+            archived=[Target("{{run_id}} completed", 'replay_step{run_id=~"$runs",metric="saga_completed"}'),
+                      Target("{{run_id}} cmd failed", 'replay_step{run_id=~"$runs",metric="saga_cmd_failed"}')],
+        ),
+    ]),
+]
