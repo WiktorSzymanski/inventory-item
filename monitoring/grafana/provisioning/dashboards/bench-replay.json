@@ -76,7 +76,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "replay_summary{run_id=~\"$runs\"}",
+          "expr": "last_over_time(replay_summary{run_id=~\"$runs\"}[$__range])",
           "format": "table",
           "instant": true,
           "refId": "A"

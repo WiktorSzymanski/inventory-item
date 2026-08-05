@@ -150,7 +150,8 @@ def _summary_table(panel_id, y):
         "gridPos": {"x": 0, "y": y, "w": 24, "h": 8}, "datasource": DS_REPLAY,
         "fieldConfig": {"defaults": {"custom": {"align": "right"}}, "overrides": []},
         "options": {"showHeader": True},
-        "targets": [{"datasource": DS_REPLAY, "expr": 'replay_summary{run_id=~"$runs"}',
+        "targets": [{"datasource": DS_REPLAY,
+                     "expr": 'last_over_time(replay_summary{run_id=~"$runs"}[$__range])',
                      "format": "table", "instant": True, "refId": "A"}],
         "transformations": [
             {"id": "organize", "options": {"excludeByName": {"Time": True, "__name__": True}}},
