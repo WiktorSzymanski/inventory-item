@@ -45,8 +45,17 @@ management:
         order.processing.time: true
         order.queue.wait: true
         order.e2e.time: true
+      # order.e2e.time bounds are pinned explicitly — and must stay identical on every
+      # variant branch. Micrometer's default Timer max is 30s; declaring
+      # maximum-expected-value for publish.lag alone left order.e2e.time on that default,
+      # so every sample above 30s collapsed into +Inf and histogram_quantile reported
+      # ~30s — making a saturated TO run look FASTER than a healthy ES one, purely as a
+      # bucketing artefact. Matches the ES branches exactly: 1ms to 10m.
+      minimum-expected-value:
+        order.e2e.time: 1ms
       maximum-expected-value:
         publish.lag: 10m
+        order.e2e.time: 10m
 
 server:
   port: 8080
