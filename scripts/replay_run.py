@@ -30,9 +30,9 @@ Usage:
     python3 scripts/replay_run.py --dry-run <run-dir>          # write the .om file, stop there
 """
 import argparse
+import glob
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -40,6 +40,8 @@ from datetime import datetime, timezone
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROM_IMAGE = "prom/prometheus:v2.52.0"
+REPLAY_VOLUME = "bench-replay-data"
+REPLAY_CONTAINER = "prometheus-replay"
 
 ANCHOR_EPOCH = 1767225600  # 2026-01-01T00:00:00Z — common origin for the elapsed axis
 
@@ -170,18 +172,12 @@ def build_openmetrics(run_dir, axis="elapsed"):
 
 
 def prometheus_volume():
-    """Name of the docker volume mounted at /prometheus, from the container if it exists."""
+    """Volume backing the replay archive, read from the container when it exists."""
     proc = subprocess.run(
-        ["docker", "inspect", "prometheus", "--format",
+        ["docker", "inspect", REPLAY_CONTAINER, "--format",
          '{{range .Mounts}}{{if eq .Destination "/prometheus"}}{{.Name}}{{end}}{{end}}'],
-        capture_output=True, text=True,
-    )
-    name = proc.stdout.strip()
-    if name:
-        return name
-    # Container gone: fall back to compose's default project name (sanitised directory name).
-    project = re.sub(r"[^a-z0-9_-]", "", os.path.basename(REPO_ROOT).lower())
-    return f"{project}_prometheus-data"
+        capture_output=True, text=True)
+    return proc.stdout.strip() or REPLAY_VOLUME
 
 
 def docker(*args, check=True):
@@ -193,20 +189,33 @@ def docker(*args, check=True):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("run_dirs", nargs="+", help="bench-results/<run_id> directories to replay")
+    ap.add_argument("run_dirs", nargs="*", help="bench-results/<run_id> directories to replay")
     ap.add_argument("--volume", help="Prometheus data volume (default: auto-detect)")
     ap.add_argument("--dry-run", action="store_true", help="only write the OpenMetrics file")
     ap.add_argument("--keep-om", metavar="DIR", help="keep the generated OpenMetrics files here")
+    ap.add_argument("--axis", choices=["elapsed", "wall"], default="elapsed",
+                    help="elapsed: anchor every run to a common origin so runs overlay (default). "
+                         "wall: keep original timestamps, matching report.pdf and meta.json.")
+    ap.add_argument("--all", action="store_true",
+                    help="replay every bench-results/*/ that has a dump.json")
     args = ap.parse_args()
+
+    run_dirs = args.run_dirs
+    if args.all:
+        run_dirs = sorted(
+            os.path.dirname(p) for p in
+            glob.glob(os.path.join(REPO_ROOT, "bench-results", "*", "dump.json")))
+    if not run_dirs:
+        ap.error("no run_dirs given (pass directories or --all)")
 
     staging = args.keep_om or tempfile.mkdtemp(prefix="replay-")
     os.makedirs(staging, exist_ok=True)
 
     runs = []
-    for run_dir in args.run_dirs:
+    for run_dir in run_dirs:
         if not os.path.exists(os.path.join(run_dir, "dump.json")):
             die(f"{run_dir}: no dump.json")
-        text, run_id, window, count = build_openmetrics(run_dir)
+        text, run_id, window, count = build_openmetrics(run_dir, axis=args.axis)
         om_path = os.path.join(staging, f"{run_id}.om")
         with open(om_path, "w") as fh:
             fh.write(text)
@@ -223,10 +232,10 @@ def main():
         die(f"prometheus volume not found: {volume} (start the stack once, or pass --volume)")
     log(f"target volume: {volume}")
 
-    running = docker("ps", "-q", "-f", "name=^prometheus$", check=False).stdout.strip()
+    running = docker("ps", "-q", "-f", f"name=^{REPLAY_CONTAINER}$", check=False).stdout.strip()
     if running:
-        log("stopping prometheus (backfilled blocks must not overlap the live head block)")
-        docker("stop", "prometheus")
+        log(f"stopping {REPLAY_CONTAINER} (backfilled blocks must not overlap the live head block)")
+        docker("stop", REPLAY_CONTAINER)
 
     for run_id, om_path, _ in runs:
         log(f"{run_id}: promtool create-blocks-from openmetrics")
@@ -244,14 +253,22 @@ def main():
         log(f"{run_id}: {blocks[-1] if blocks else 'blocks written'}")
 
     if running:
-        log("starting prometheus")
-        docker("start", "prometheus")
+        log(f"starting {REPLAY_CONTAINER}")
+        docker("start", REPLAY_CONTAINER)
 
+    # Where the data actually landed: wall axis keeps the original window, elapsed axis
+    # re-anchors every run's start to ANCHOR_EPOCH, so the printed range must follow suit.
+    def stamped_span(window):
+        if args.axis == "wall":
+            return window[0], window[1]
+        return ANCHOR_EPOCH, ANCHOR_EPOCH + (window[1] - window[0])
+
+    spans = [stamped_span(window) for _, _, window in runs]
+    frm = min(s[0] for s in spans) * 1000
+    to = max(s[1] for s in spans) * 1000
+    run_query = "&".join(f"var-runs={run_id}" for run_id, _, _ in runs)
     print()
-    for run_id, _, window in runs:
-        frm, to = window[0] * 1000, window[1] * 1000
-        print(f"  {run_id}")
-        print(f"    http://localhost:3000/d/bench-replay/?from={frm}&to={to}&var-run={run_id}")
+    print(f"  http://localhost:3000/d/bench-replay/?from={frm}&to={to}&{run_query}")
     print()
 
 
