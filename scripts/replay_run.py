@@ -237,24 +237,25 @@ def main():
         log(f"stopping {REPLAY_CONTAINER} (backfilled blocks must not overlap the live head block)")
         docker("stop", REPLAY_CONTAINER)
 
-    for run_id, om_path, _ in runs:
-        log(f"{run_id}: promtool create-blocks-from openmetrics")
-        proc = docker(
-            "run", "--rm",
-            "-v", f"{volume}:/prometheus",
-            "-v", f"{os.path.abspath(om_path)}:/in.om:ro",
-            "--entrypoint", "/bin/promtool", PROM_IMAGE,
-            "tsdb", "create-blocks-from", "openmetrics", "/in.om", "/prometheus",
-            check=False,
-        )
-        if proc.returncode != 0:
-            die(f"{run_id}: promtool failed:\n{proc.stdout}\n{proc.stderr}")
-        blocks = [ln for ln in proc.stdout.splitlines() if ln.strip()]
-        log(f"{run_id}: {blocks[-1] if blocks else 'blocks written'}")
-
-    if running:
-        log(f"starting {REPLAY_CONTAINER}")
-        docker("start", REPLAY_CONTAINER)
+    try:
+        for run_id, om_path, _ in runs:
+            log(f"{run_id}: promtool create-blocks-from openmetrics")
+            proc = docker(
+                "run", "--rm",
+                "-v", f"{volume}:/prometheus",
+                "-v", f"{os.path.abspath(om_path)}:/in.om:ro",
+                "--entrypoint", "/bin/promtool", PROM_IMAGE,
+                "tsdb", "create-blocks-from", "openmetrics", "/in.om", "/prometheus",
+                check=False,
+            )
+            if proc.returncode != 0:
+                die(f"{run_id}: promtool failed:\n{proc.stdout}\n{proc.stderr}")
+            blocks = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+            log(f"{run_id}: {blocks[-1] if blocks else 'blocks written'}")
+    finally:
+        if running:
+            log(f"starting {REPLAY_CONTAINER}")
+            docker("start", REPLAY_CONTAINER)
 
     # Where the data actually landed: wall axis keeps the original window, elapsed axis
     # re-anchors every run's start to ANCHOR_EPOCH, so the printed range must follow suit.
