@@ -101,6 +101,28 @@ def check_validity(checks, meta, dump, summary, cfg):
                  round(1.0 - cfg["min_completion_ratio"], 6)
                  if cfg.get("min_completion_ratio") is not None else None)
 
+    # At REPLICAS=1 the JVM-local LockFactory serialises every writer to an aggregate, so no
+    # 23505 can occur and no command can exhaust its retries. A non-zero count therefore does
+    # not mean "contention" — it falsifies that assumption, and the single-node baseline this
+    # run is supposed to produce cannot be trusted. Above 1 the count is expected and is the
+    # contention signal itself, so the check only applies to single-node runs.
+    # An absent `command_failed` series means zero, not "no data" — the counter is only
+    # created on first increment. So a dict without the key must PASS, while a missing
+    # `saga_completed` entirely (TO-*, where the saga does not exist) must skip.
+    saga_outcomes = scalars.get("saga_completed")
+    if expected == 1 and isinstance(saga_outcomes, dict):
+        contention = dget(saga_outcomes, "command_failed", 0)
+        checks.add(
+            "saga_command_failed_single_node", "validity", contention, 0, contention == 0,
+            # The counter fires on ANY terminal reserve-command failure, not only a 23505 — a
+            # one-off pool timeout or RejectedExecutionException raises it without saying
+            # anything about locking. Read saga_cmd_failed{stage} and the API log before
+            # concluding the LockFactory assumption broke.
+            note=None if contention == 0 else
+            "non-zero at single node: check saga_cmd_failed{stage} and the API log — a pool "
+            "timeout raises this too, it is not necessarily a lost write race",
+        )
+
     checks.add("git_clean", "validity", meta.get("git_dirty"), 0, meta.get("git_dirty", 0) == 0)
     checks.add("image_fresh", "validity", meta.get("image_built_after_head"), True,
                bool(meta.get("image_built_after_head")))

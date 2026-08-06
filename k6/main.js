@@ -37,7 +37,7 @@ const nonAccepted = new Counter('orders_non202');
 
 export function seed() {
     for (const id of itemIds()) {
-        const res = createItem(CONFIG.baseUrl, id, CONFIG.seedQty, CONFIG.payloadBytes);
+        const res = createItem(CONFIG.baseUrl, id, CONFIG.seedQty, CONFIG.payloadBytes, CONFIG.reserveDelayMs);
         // 409 means a previous run already created it, which is fine — bench.sh truncates
         // before every measured run, so a 409 here only happens on an ad-hoc invocation.
         if (res.status !== 201 && res.status !== 409) {
@@ -46,7 +46,7 @@ export function seed() {
     }
     console.log(
         `seeded ${CONFIG.distinctItems} items, qty=${CONFIG.seedQty}, ` +
-        `payload=${CONFIG.payloadBytes}B`,
+        `payload=${CONFIG.payloadBytes}B, reserve_delay=${CONFIG.reserveDelayMs}ms`,
     );
 }
 

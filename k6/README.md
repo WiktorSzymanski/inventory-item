@@ -56,6 +56,7 @@ Each run does: build → reset DB + restart API → seed → warmup → settle �
 | `DISTINCT_ITEMS` | 6 | Number of item aggregates — the contention axis |
 | `ITEMS_PER_ORDER` | 4 | Lines per order — each costs one *sequential* saga hop |
 | `PAYLOAD_BYTES` | 0 | Aggregate padding — copy-on-write and snapshot cost |
+| `RESERVE_DELAY_MS` | 0 | Artificial per-reserve sleep inside the aggregate — the domain-work cost axis (`TO-3`, `ES-4` only) |
 | `READ_RATE` | 0 | Optional concurrent read load (separate scenario) |
 | `SEED` | 1337 | RNG seed; identical item sequence across variants |
 | `SKIP_BUILD` | 0 | Skip gradle+docker build (only if the image is already current) |
@@ -138,6 +139,7 @@ One factor at a time from the Phase 2 baseline. Do **not** run the full cross pr
 |---|---|---|---|
 | **Contention** | `DISTINCT_ITEMS=1` then `100` (with `ITEMS_PER_ORDER=1`) | `ES-3-optimistic`, `ES-3-pesimistic`, `ES-3-WeakRefCache-NullLock`, `TO-1` | This is the lock A/B. One hot aggregate is where `NullLockFactory` and `PessimisticLockFactory` diverge; 100 items is the no-contention control. |
 | **Payload** | `PAYLOAD_BYTES=1048576 DURATION=5m` | `ES-3-*` cache variants, `TO-1` control | Padding rides only on `InventoryCreatedEvent`, so it does **not** inflate appends — it inflates snapshot rows and the per-command Jackson deep copy. It is a copy-on-write cost lever, and it is what separates strong-ref from weak-ref caching. |
+| **Reserve cost** | `RESERVE_DELAY_MS=5` then `50` | `TO-3`, `ES-4` (the only branches that implement it) | The counterpart to the payload sweep: it lengthens the *reserve* itself, not the payload. The sleep happens while the DB row lock (TO) or the pessimistic aggregate lock (ES) is held, so it is the lever that shows how each family degrades when domain logic stops being free. Throughput ceiling is roughly `workers / (ITEMS_PER_ORDER × delay)` on TO and `DISTINCT_ITEMS / delay` on ES — **lower `STEP_START`/`RATE` to match**, or the staircase saturates at step 0 and evaluates `INVALID`. |
 | **Fan-out** | `ITEMS_PER_ORDER=1` then `8` | one TO, one ES-3 | Each line is a *sequential* saga hop on ES; on TO it is one transaction. The clearest structural difference between the families. |
 | **Read load** | `READ_RATE=200` | one TO, one ES-3 | Tests the projection-decoupling claim. Deserves its own table — never fold it into the write numbers. |
 
