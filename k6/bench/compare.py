@@ -69,6 +69,25 @@ COLUMNS = {
         ("load p95 ms", "dump.scalars.state_load_p95.total", "ms"),
         ("persist p95 ms", "dump.scalars.state_persist_p95.db_write", "ms"),
     ],
+    # The contention-vs-stock split. `contention` is a lost write race that exhausted its
+    # retries; `stock` is a genuine out-of-stock rejection. Both are zero on a healthy
+    # single-node run — see the Scaling section of CLAUDE.md. `cmd fail-*` localises which
+    # dispatch site gave up; `fail-order` and `ignored` are the two that leave an order
+    # non-terminal, so a non-zero value there is a different class of problem from the rest.
+    # Absent on TO-*, where the saga does not exist, and rendered as "-" like any other gap.
+    "saga": [
+        ("variant", "meta.variant", "s"),
+        ("scenario", "meta.scenario", "s"),
+        ("completed", "dump.scalars.saga_completed.completed", "d"),
+        ("contention", "dump.scalars.saga_completed.command_failed", "d"),
+        ("stock", "dump.scalars.saga_completed.failed", "d"),
+        ("cmd fail-reserve", "dump.scalars.saga_cmd_failed.reserve", "d"),
+        ("cmd fail-complete", "dump.scalars.saga_cmd_failed.complete", "d"),
+        ("cmd fail-release", "dump.scalars.saga_cmd_failed.release", "d"),
+        ("cmd fail-order", "dump.scalars.saga_cmd_failed.fail-order", "d"),
+        ("cmd fail-ignored", "dump.scalars.saga_cmd_failed.fail-order-ignored", "d"),
+        ("saga p95", "dump.scalars.saga_lifetime_p95.completed", ".3f"),
+    ],
     "provenance": [
         ("variant", "meta.variant", "s"),
         ("scenario", "meta.scenario", "s"),
