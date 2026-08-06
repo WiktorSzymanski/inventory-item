@@ -31,7 +31,7 @@ class ApplicationTest {
     @Test
     fun `POST inventory creates item and returns 201`() {
         every { inventoryService.createItem(any()) } returns
-            InventoryItem("ITEM-002", 500, 0L)
+            InventoryItem("ITEM-002", 500, version = 0L)
 
         mockMvc.perform(post("/inventory")
             .contentType(MediaType.APPLICATION_JSON)
@@ -53,7 +53,7 @@ class ApplicationTest {
     @Test
     fun `GET inventory item returns 200`() {
         every { inventoryService.getItem("ITEM-001") } returns
-            InventoryItem("ITEM-001", 1000, 0L)
+            InventoryItem("ITEM-001", 1000, version = 0L)
 
         mockMvc.perform(get("/inventory/ITEM-001"))
             .andExpect(status().isOk)
