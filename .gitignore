@@ -43,3 +43,7 @@ CLAUDE.md
 reports/
 think-about-it.md
 __pycache__/
+
+# per-run Prometheus TSDB snapshots (scripts/prom_snapshot.sh): tens of MB of binary blocks,
+# not meant to be committed or propagated across branches by the dashboard sync workflow.
+bench-results/*/prom-snapshot/
