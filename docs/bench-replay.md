@@ -144,11 +144,41 @@ type, state load time by phase, state persist time by source, projection lag, bu
 by type, events processed by type, optimistic locking (retry rate, exhausted), aggregate cache
 (hit/miss/catch-up), saga outcome, JVM heap, CPU, API container CPU/RSS, database size.
 
-**Not available, for any archived run:** HTTP breakdown by `uri`/`method`/`status`, GC pause
-duration, JVM thread counts, loaded classes, non-heap memory, HikariCP connections, Tomcat
-threads, order worker executor queue depth, and all `pg_stat_*` metrics (WAL size, active
-connections, transaction rate, tuple operations, buffer cache hit ratio, per-table writes, locks,
-checkpoint activity).
+**Not available, for any archived run** — this is a `Panel(..., archived=None)` in `spec.py`
+grouped by dashboard section; it is the exact same `skipped` set `build.py` renders into the
+dashboard's own "Not available for archived runs" panel, not a hand-kept summary. Regenerate it
+after any `spec.py` change with:
+
+```bash
+python3 -c "
+from scripts.dashboards import spec
+for section in spec.SECTIONS:
+    skipped = [p.title for p in section.panels if not p.archived]
+    if skipped:
+        print(section.title + ':')
+        for t in skipped:
+            print('  - ' + t)
+"
+```
+
+Current output:
+
+- **HTTP:** HTTP error rate (4xx / 5xx)
+- **Orders & domain:** Order processing time — p50 / p95 (TO family); Order queue wait — p50 / p95
+  (TO family); Orders completed by outcome & reason (TO family); Outbox backlog (TO family);
+  Outbox write time — p50 / p95 (TO family); Order worker — queue depth & active threads (TO
+  family)
+- **JVM:** Non-heap memory by pool; GC pause duration — p50 / p95 / p99; JVM threads; Loaded
+  classes; Process uptime
+- **Spring pools:** HikariCP connections; Tomcat HTTP threads
+- **PostgreSQL:** WAL size; Active connections by state; Transaction rate; Tuple operations rate;
+  Buffer cache hit ratio; Live rows by table; Per-table write rate; Locks by mode; Checkpoint
+  activity
+
+Five of the six "Orders & domain" gaps are TO-family outbox and order-timing panels — exactly the
+axis this thesis compares TO against ES on — so an archived TO run cannot show outbox backlog,
+outbox write time, order processing time, order queue wait, or the outcome/reason breakdown at
+all. That data only ever existed in the live TSDB.
 
 Two shape caveats that don't show up in the list above: the continuous panels (`replay_series`)
 are real 5-second series, but the per-step panels (`replay_step`) are only ~10 points per run —
