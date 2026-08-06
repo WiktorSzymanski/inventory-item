@@ -19,6 +19,7 @@ data class CreateItemCommand(
     val availableQty: Int,
     val correlationId: UUID = UUID.randomUUID(),
     val additionalBytesSize: Int = 0,
+    val reserveDelayMs: Int = 0,
 )
 
 @Service
@@ -35,8 +36,10 @@ class CreateInventoryItemCommandHandler(
 
     @Transactional(propagation = Propagation.REQUIRED, rollbackFor = [Exception::class])
     fun handle(command: CreateItemCommand): InventoryItem {
-        log.info("[CREATE] itemId={} availableQty={} additionalBytesSize={} correlationId={}", command.id, command.availableQty, command.additionalBytesSize, command.correlationId)
-        val (item, event) = InventoryItem.create(command.id, command.availableQty, command.correlationId, clock, command.additionalBytesSize)
+        log.info("[CREATE] itemId={} availableQty={} additionalBytesSize={} reserveDelayMs={} correlationId={}", command.id, command.availableQty, command.additionalBytesSize, command.reserveDelayMs, command.correlationId)
+        val (item, event) = InventoryItem.create(
+            command.id, command.availableQty, command.correlationId, clock, command.additionalBytesSize, command.reserveDelayMs
+        )
         try {
             inventoryRepo.save(item)
         } catch (e: DuplicateKeyException) {

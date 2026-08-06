@@ -13,6 +13,9 @@ data class InventoryCreatedEvent(
     // Filler to inflate the serialized event payload for benchmarking; mirrors the ES branch's
     // additionalBytes so TO and ES can be load-tested at equal payload sizes.
     val additionalBytes: String = "",
+    // Artificial per-reserve cost the item was created with. Carried on the event so the outbox
+    // record describes the item fully, and so the payload matches the ES branch's event.
+    val reserveDelayMs: Int = 0,
 )
 
 data class InventoryReservedEvent(
