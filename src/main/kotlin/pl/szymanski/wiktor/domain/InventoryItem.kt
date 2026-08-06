@@ -17,13 +17,19 @@ class InventoryItem {
     private var availableQty = 0
     private var additionalBytes: String = ""
 
+    // Artificial per-reserve cost, in milliseconds, fixed at creation. Stands in for expensive
+    // aggregate logic (pricing, eligibility, allocation) so the variants can be compared under
+    // something more than a subtraction. The counterpart to additionalBytes, which inflates the
+    // payload but not the time a reserve takes. Mirrors the TO branch's field of the same name.
+    private var reserveDelayMs: Int = 0
+
     constructor()
 
     @CommandHandler
     constructor(command: CreateItemCommand) {
         val additionalBytes = if (command.additionalBytesSize > 0) "x".repeat(command.additionalBytesSize) else ""
         AggregateLifecycle.apply(
-            InventoryCreatedEvent(command.id, command.correlationId, command.availableQty, additionalBytes)
+            InventoryCreatedEvent(command.id, command.correlationId, command.availableQty, additionalBytes, command.reserveDelayMs)
         )
     }
 
@@ -32,6 +38,7 @@ class InventoryItem {
         id = event.id
         availableQty = event.quantity
         additionalBytes = event.additionalBytes
+        reserveDelayMs = event.reserveDelayMs
     }
 
     @CommandHandler
@@ -42,6 +49,15 @@ class InventoryItem {
             )
             return
         }
+
+        // Paid only once the reserve is known to succeed, and inside the command handler rather
+        // than the event-sourcing handler: the latter runs on every replay and snapshot load, which
+        // would make the delay a startup cost instead of a per-reserve one. The aggregate's lock is
+        // held throughout — that is the point, it models slow domain logic.
+        if (reserveDelayMs > 0) {
+            Thread.sleep(reserveDelayMs.toLong())
+        }
+
         AggregateLifecycle.apply(InventoryReservedEvent(id, command.correlationId, command.quantity))
     }
 

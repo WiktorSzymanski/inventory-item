@@ -7,5 +7,6 @@ data class CreateItemCommand(
     @TargetAggregateIdentifier val id: String,
     val availableQty: Int,
     val additionalBytesSize: Int = 0,
+    val reserveDelayMs: Int = 0,
     val correlationId: UUID = UUID.randomUUID(),
 )
