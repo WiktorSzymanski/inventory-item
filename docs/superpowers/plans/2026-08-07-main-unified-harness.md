@@ -241,10 +241,34 @@ writes unified versions."
 - Consumes: Task 2's `docker-compose.bench.yml`, which references services `api`, `postgres`, `k6`, `nginx`, `prometheus`, `grafana`.
 - Produces: services named **`api`** and **`postgres`**, volume `postgres-data`, Prometheus job **`inventory`**. Task 4's `common.sh` constants must match these exactly.
 
-- [ ] **Step 1: Write the unified `docker-compose.yml`**
+- [ ] **Step 1: Start from `ES-4`'s file, then apply the edits below**
+
+Do **not** transcribe the file from scratch — it has ten services, and
+`docker-compose.bench.yml` and `bench.sh` both reference `k6`, `grafana-renderer` and
+`grafana-reporter`, which a hand-written version silently drops. Copy, then edit:
+
+```bash
+cd .worktrees/main
+git checkout ES-4 -- docker-compose.yml
+```
+
+Then apply exactly these changes, leaving `k6`, `cadvisor`, `grafana`, `grafana-renderer`
+and `grafana-reporter` untouched apart from the renames:
+
+1. Rename service `postgres-es` → `postgres`, `api-es` → `api` (both the service key and
+   every `depends_on` reference).
+2. Rename `container_name: postgres-es` → `postgres`; volume `postgres-es-data` →
+   `postgres-data` in both the service's `volumes:` and the top-level `volumes:` block.
+3. Point `DATA_SOURCE_NAME` on `postgres-exporter` at `postgres:5432`.
+4. Point `DB_JDBC_URL` / `DB_R2DBC_URL` on `api` at `postgres:5432`.
+5. Replace the `image:` line on `api` with the mandatory form (below).
+6. Update nginx's `depends_on: - api-es` → `- api` and its port comment.
+
+The two services that change substantively must end up exactly as follows.
+
+`postgres`:
 
 ```yaml
-services:
   postgres:
     image: postgres:16-alpine
     container_name: postgres
@@ -308,37 +332,19 @@ services:
       postgres:
         condition: service_healthy
 
-  nginx:
-    image: nginx:1.27-alpine
-    container_name: nginx
-    ports:
-      - "8080:8080"          # single public entry point: host :8080 -> nginx -> api replicas
-    volumes:
-      - ./monitoring/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - api
+The top-level `volumes:` block becomes:
 
-  cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.49.1
-    container_name: cadvisor
-    ports:
-      - "8081:8080"
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-      - /dev/disk/:/dev/disk:ro
-    privileged: true
+```yaml
+volumes:
+  postgres-data:
+  prometheus-data:
+  grafana-data:
+```
 
-  prometheus:
-    image: prom/prometheus:v2.53.0
-    container_name: prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
+And `prometheus`'s `command:` list gains one entry — this is the TO snapshot fix, so do
+not omit it:
+
+```yaml
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -347,33 +353,11 @@ services:
       # /api/v1/admin/tsdb/snapshot. The TO compose files omitted this, so TSDB
       # preservation silently failed on every TO run.
       - --web.enable-admin-api
-
-  grafana:
-    image: grafana/grafana:11.0.0
-    container_name: grafana
-    ports:
-      - "3000:3000"
-    environment:
-      GF_SECURITY_ADMIN_USER:     admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
-      GF_USERS_ALLOW_SIGN_UP:     "false"
-    volumes:
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - grafana-data:/var/lib/grafana
-    depends_on:
-      - prometheus
-
-volumes:
-  postgres-data:
-  prometheus-data:
-  grafana-data:
 ```
 
-> **Before writing:** open `ES-4:docker-compose.yml` and carry over the `grafana-renderer`,
-> `grafana-reporter` and `k6` service definitions verbatim, changing only `api-es` → `api`
-> and `postgres-es` → `postgres`. They are omitted above only to keep this plan readable;
-> `docker-compose.bench.yml` and `bench.sh` both reference them, so the file is incomplete
-> without them.
+`ES-4` already carries `--web.enable-admin-api`, so after the copy this line should
+already be present — verify rather than assume, because the whole point is that it must
+hold for TO variants too, which now share this file.
 
 - [ ] **Step 2: Write the unified `monitoring/prometheus/prometheus.yml`**
 
