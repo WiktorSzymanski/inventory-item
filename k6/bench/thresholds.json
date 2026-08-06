@@ -37,6 +37,21 @@
       "max_drain_seconds": null,
       "max_recovery_seconds": 180
     },
+    "stress": {
+      "_comment": [
+        "Deliberate overload above the knee. Latency SLOs are meaningless by construction,",
+        "and an undrained backlog is the measurement rather than a broken measurement --",
+        "so require_backlog_drained is false HERE AND NOWHERE ELSE. What must still hold:",
+        "every admitted order reaches a terminal state (completion_ratio), the API does not",
+        "restart, and admission does not start refusing connections."
+      ],
+      "require_backlog_drained": false,
+      "max_e2e_p95_confirmed_s": null,
+      "max_e2e_p99_confirmed_s": null,
+      "max_drain_seconds": null,
+      "max_rejected_ratio": null,
+      "max_projection_lag_p95_s": null
+    },
     "soak": {
       "_comment": "Drift ratios: last decile vs first decile of the run, from dump.series.",
       "max_e2e_p95_confirmed_s": null,

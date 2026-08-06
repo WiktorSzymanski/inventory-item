@@ -60,7 +60,7 @@ class Checks:
 
 
 # --------------------------------------------------------------------------- validity
-def check_validity(checks, meta, dump, summary, cfg):
+def check_validity(checks, meta, dump, summary, cfg, limits):
     scalars = dump.get("scalars", {})
     derived = dump.get("derived", {})
     metrics = summary.get("metrics", {})
@@ -75,9 +75,14 @@ def check_validity(checks, meta, dump, summary, cfg):
     # If maxVUs bound, `dropped_iterations` means "k6 ran out of VUs", not "the system
     # was slow" — the run measures the load generator rather than the system under test.
     vus_max = dget(metrics.get("vus_max", {}).get("values", {}), "max")
-    limits = load(os.path.join(ARGS.run_dir, "profile.json"), required=False).get("vu_limits", {})
+    # Named vu_limits, NOT limits: `limits` is the per-scenario threshold block passed in by
+    # the caller, and it is read further down for the drain gate. Reusing the name here
+    # would silently shadow it — the gate would then read this dict, never find
+    # require_backlog_drained, and fall back to True, so `stress` would still report INVALID
+    # on the very backlog it exists to produce.
+    vu_limits = load(os.path.join(ARGS.run_dir, "profile.json"), required=False).get("vu_limits", {})
     ceiling = None
-    for spec in limits.values():
+    for spec in vu_limits.values():
         if isinstance(spec, dict) and isinstance(spec.get("maxVUs"), (int, float)):
             ceiling = max(ceiling or 0, spec["maxVUs"])
     if ceiling and vus_max is not None:
@@ -92,8 +97,15 @@ def check_validity(checks, meta, dump, summary, cfg):
     checks.add("targets_scraped", "validity", scalars.get("target_count"), expected,
                num(scalars.get("target_count"), 0) == expected)
 
-    checks.add("backlog_drained", "validity", derived.get("drained"), True,
-               bool(derived.get("drained")))
+    # The one validity gate a scenario may opt out of. Under `stress` the run is pushed past
+    # the knee on purpose, so a backlog outliving DRAIN_TIMEOUT is the result. Every other
+    # scenario keeps it hard: a truncated e2e histogram is unusable, and reporting its
+    # optimistic percentile would be worse than reporting nothing.
+    if limits.get("require_backlog_drained", True):
+        checks.add("backlog_drained", "validity", derived.get("drained"), True,
+                   bool(derived.get("drained")))
+    else:
+        checks.add("backlog_drained", "info", derived.get("drained"), "not required", True)
 
     checks.upper("completion_ratio_inverse", "validity",
                  round(1.0 - (derived.get("completion_ratio") or 0.0), 6)
@@ -277,7 +289,7 @@ def main():
     limits.pop("_comment", None)
 
     checks = Checks()
-    check_validity(checks, meta, dump, summary, conf.get("validity", {}))
+    check_validity(checks, meta, dump, summary, conf.get("validity", {}), limits)
     check_slo(checks, dump, limits)
 
     if scenario == "soak":

@@ -232,6 +232,11 @@ const BUILDERS = {
     capacity,
     steady: () => constantRate('steady', CONFIG.rate, CONFIG.duration),
     soak: () => constantRate('soak', CONFIG.rate, CONFIG.soakDuration),
+    // Same shape as `steady`. The difference is entirely in how it is RUN (RATE set above
+    // the measured knee) and how it is JUDGED (see thresholds.json). Giving it its own name
+    // rather than reusing `steady` is what lets evaluate.py apply overload rules, and what
+    // keeps the two apart in bench-results/.
+    stress: () => constantRate('stress', CONFIG.rate, CONFIG.duration),
     spike,
     legacy,
     'legacy-vus': legacyVus,
