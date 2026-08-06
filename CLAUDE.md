@@ -95,12 +95,11 @@ p99 0.263 s. All 15 rejections landed in the **warmup** phase, so the measured w
 `rejected_ratio=0.0` and `opt_exhausted=0.0` — those zeros mean "none inside the window", not
 "the terminal path never fired".
 
-That run used the `k6/bench/` harness, which is tracked only on `ES-2` and `ES-4`. **This
-branch does not have it** — it still carries the legacy `k6/run.sh` +
-`k6/reserve-load-test.js`, and no `bench.env` or `docker-compose.bench.yml`, so there is no
-`bench.sh` to run here. (A `k6/bench/` directory left behind untracked by a branch switch is
-not the harness; `git status` will show it as `??`.) The code fix is shared across all four
-branches; the measurement is not, and this branch has never been measured at `REPLICAS>1`.
+That run used the `k6/bench/` harness. **This branch now has it too** — it was rolled out
+here on 2026-08-06, replacing the legacy `k6/run.sh` + `k6/reserve-load-test.js` path, so
+`./k6/bench/bench.sh` works the same way it does on `ES-2`. The code fix is shared across
+all four branches; the `REPLICAS>1` *measurement* above is still `ES-2`'s alone, and this
+branch has never been measured at `REPLICAS>1`.
 
 **The contention-vs-stock split is not exhaustive.** `saga_completed{outcome="command_failed"}`
 separates contention-driven rejections from genuine out-of-stock ones on the *reservation*
@@ -249,14 +248,28 @@ max is 30 s; when a branch omits these, every sample above 30 s collapses into `
 `histogram_quantile` reports ~30 s, making a saturated variant look *faster* than a healthy
 one.
 
-### No benchmark harness on this branch
+### Benchmarking
 
-`ES-3` still carries the legacy `k6/run.sh` + `k6/reserve-load-test.js`. It has no
-`bench.env`, no `docker-compose.bench.yml` and no `k6/bench/`, and `common.sh` hard-fails
-here — so **there is no `bench.sh` to run on `ES-3`**. The harness exists only on `ES-2` and
-`ES-4`. An untracked `k6/bench/` left behind by a branch switch is not the harness; `git
-status` shows it as `??`.
+`ES-3` carries the full harness — `bench.env`, `docker-compose.bench.yml` and `k6/bench/` —
+as of 2026-08-06. It was the last pair of branches (with `ES-1`) still on the legacy
+`k6/run.sh` + `k6/reserve-load-test.js` path, and `common.sh` no longer hard-fails here.
 
-Because of that, the `saga_completed{outcome}` / `saga_command_failed{stage}` split that the
-Scaling section calls the primary diagnostic is not collected automatically here — on `ES-3`
-it is reachable only from `/actuator/prometheus` or Grafana.
+```bash
+SCENARIO=steady RATE=60 DURATION=10m ./k6/bench/bench.sh
+python3 k6/bench/compare.py bench-results/*_steady_*
+```
+
+Everything under `k6/` and `docker-compose.bench.yml` is byte-identical across all eight
+variant branches, with `ES-4` as the reference; `bench.env` is the only per-branch file, and
+its `IMAGE_TAG` (`inventory-reservation-es-3:latest`) is unique per variant so building this
+branch cannot overwrite a sibling's image.
+
+To benchmark every variant as a set rather than this one alone, use the entry point on
+`main`: `scripts/build-images.sh` then `scripts/run-suite.sh`. It runs each variant from its
+own git worktree using that branch's own harness.
+
+The `saga_completed{outcome}` / `saga_command_failed{stage}` split that the Scaling section
+calls the primary diagnostic is now collected automatically — it is in `queries.promql`, so
+it lands in `dump.json` on every run, and `python3 k6/bench/compare.py --cols saga <run-dirs>`
+tabulates it. Reading it off `/actuator/prometheus` or Grafana by hand is no longer the only
+route.
