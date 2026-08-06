@@ -36,7 +36,8 @@ when iterating, not the workload.
 
 | Path | What it does |
 |---|---|
-| `variants.env` | The registry. One line per variant: `<variant> <branch> <family>`. Everything else reads it. |
+| `variants.env` | The registry. One line per variant: `<variant> <branch> <family> <capabilities>`. Everything else reads it. |
+| `workload.env` | Optional sticky knobs for a campaign. Ships fully commented out; the shell environment always wins. |
 | `scripts/build-images.sh` | Builds `inventory-reservation-<variant>:latest` from each branch's worktree, plus `bench-results/images.json`. |
 | `scripts/run-suite.sh` | Runs each variant's own `k6/bench/bench.sh` in turn, on a clean stack, collecting results centrally. |
 | `scripts/compare.py` | Renders a set of run directories as one comparison table. Copy of the branches' own. |
@@ -74,6 +75,39 @@ config is a bind mount that a running container never re-reads.
 
 **`SKIP_BUILD=1` is passed to `bench.sh`.** Otherwise it would rebuild and retag the image
 itself, discarding the provenance stamp and running something the suite never recorded.
+
+## Knobs, and one that is not universal
+
+Every knob `bench.sh` understands is passed straight through — `RATE`, `DURATION`,
+`DISTINCT_ITEMS`, `ITEMS_PER_ORDER`, `PAYLOAD_BYTES`, `WARMUP_ITERATIONS`, `STEP_*` and the
+rest. Set them per invocation, or pin them for a campaign in `workload.env`.
+
+**`RESERVE_DELAY_MS` is implemented on `ES-4` and `TO-3` only.** It adds an artificial sleep
+inside the aggregate on every successful reserve — the domain-work cost axis, and the
+counterpart to the `PAYLOAD_BYTES` sweep. The other six branches have no `reserveDelayMs`
+field on `CreateItemRequest` and no sleep in the aggregate.
+
+The trap is that this fails *silently*. `k6/` is byte-identical on all eight branches, so k6
+sends the field everywhere; Spring ignores unknown JSON properties, so the seed still returns
+201 and the run still passes. And `meta.json` records the **requested** `reserveDelayMs` on
+every variant, because it records what k6 was told, not what the server honoured — so
+`compare.py`'s `reserveMs` column shows the same number for all eight while only two of them
+actually slept. Nothing downstream can distinguish them.
+
+So sweep it against the two branches that implement it:
+
+```bash
+RESERVE_DELAY_MS=25 RATE=10 scripts/run-suite.sh --only ES-4,TO-3
+```
+
+`run-suite.sh` warns and names the affected variants if a non-zero value is set for any
+branch that cannot honour it. `variants.env` is where that capability is recorded, as the
+`reserve-delay` flag in the fourth column.
+
+Lower `RATE` / `STEP_START` when you raise the delay: the sleep is held while the DB row lock
+(TO) or the pessimistic aggregate lock (ES) is held, so the throughput ceiling is roughly
+`workers / (ITEMS_PER_ORDER × delay)` on TO and `DISTINCT_ITEMS / delay` on ES. Leave the
+rate high and the staircase saturates at step 0 and reads `INVALID`.
 
 ## Verdicts
 

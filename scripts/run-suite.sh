@@ -9,7 +9,13 @@
 # DISTINCT_ITEMS, ITEMS_PER_ORDER, QTY_PER_LINE, PAYLOAD_BYTES, RESERVE_DELAY_MS,
 # WARMUP_ITERATIONS, STEP_*, DRAIN_TIMEOUT, ... — and is inherited straight through. This
 # script adds no knob vocabulary of its own; it decides WHICH variants run and in what
-# order, and guarantees each one starts from a clean stack.
+# order, and guarantees each one starts from a clean stack. Knobs can also be pinned for a
+# whole campaign in workload.env, which this sources; the shell environment still wins.
+#
+# RESERVE_DELAY_MS is implemented on ES-4 and TO-3 ONLY. The other six branches have no
+# `reserveDelayMs` on CreateItemRequest, k6 sends it anyway, and Spring ignores unknown
+# properties — so it is silently discarded there while meta.json still records the requested
+# value. Sweep it with `--only ES-4,TO-3`; the suite warns if you do otherwise.
 #
 # Options:
 #   --only V1,V2        subset of variants.env (validated; order still follows the registry)
@@ -46,8 +52,19 @@ require_not_root
 require_tools
 assert_ports_free
 
+# Sticky knobs. Every assignment in that file is written `VAR="${VAR:-value}"`, so anything
+# already in the environment wins and a one-off override on the command line still works.
+if [ -f "$MAIN_ROOT/workload.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "$MAIN_ROOT/workload.env"
+    set +a
+fi
+
 VARIANTS="$(select_variants "$ONLY")"
 SCENARIO="${SCENARIO:-steady}"
+
+warn_unsupported_knobs "$VARIANTS"
 mkdir -p "$RESULTS_DIR"
 
 [ -w "$RESULTS_DIR" ] || die \

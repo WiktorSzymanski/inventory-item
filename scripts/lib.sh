@@ -43,15 +43,49 @@ die()  { printf '[%s] FATAL: %s\n' "$(date +%H:%M:%S)" "$*" >&2; exit 1; }
 
 # ---------------------------------------------------------------- registry
 
-# Emits "<variant> <branch> <family>" per line, comments and blanks stripped.
+# Emits "<variant> <branch> <family> <capabilities>" per line, comments and blanks stripped.
+# Capabilities default to "-" so a registry line written before that column existed still
+# parses rather than yielding an empty field.
 read_variants() {
     local reg="$MAIN_ROOT/variants.env"
     [ -f "$reg" ] || die "variants.env not found at $reg"
-    sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$reg" | awk '{print $1, $2, $3}'
+    sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$reg" \
+        | awk '{print $1, $2, $3, ($4 == "" ? "-" : $4)}'
 }
 
 branch_of() { read_variants | awk -v v="$1" '$1 == v {print $2}'; }
 family_of() { read_variants | awk -v v="$1" '$1 == v {print $3}'; }
+caps_of()   { read_variants | awk -v v="$1" '$1 == v {print $4}'; }
+
+has_cap() {
+    case ",$(caps_of "$1")," in *",$2,"*) return 0 ;; *) return 1 ;; esac
+}
+
+# Warn when a knob is set for variants whose branch does not implement it.
+#
+# This failure is silent by construction and cannot be caught downstream: k6 is
+# byte-identical on all eight branches and sends every knob, Spring ignores unknown JSON
+# properties, and meta.json records what k6 was TOLD rather than what the server honoured.
+# So a suite-wide RESERVE_DELAY_MS sweep produces six rows that look like they applied a
+# delay and did not. Nothing else in the pipeline can tell the difference, which is why the
+# check has to live here, before the first run starts.
+warn_unsupported_knobs() {
+    local variants="$1" v missing=""
+    if [ -n "${RESERVE_DELAY_MS:-}" ] && [ "${RESERVE_DELAY_MS}" != "0" ]; then
+        for v in $variants; do
+            has_cap "$v" reserve-delay || missing="$missing $v"
+        done
+        if [ -n "$missing" ]; then
+            log ""
+            log "WARNING: RESERVE_DELAY_MS=$RESERVE_DELAY_MS is implemented on ES-4 and TO-3 only."
+            log "         These selected variants will SILENTLY IGNORE it:$missing"
+            log "         Their meta.json will still record reserveDelayMs=$RESERVE_DELAY_MS,"
+            log "         because that is what k6 was told, not what the server applied."
+            log "         For a valid sweep use: --only ES-4,TO-3"
+            log ""
+        fi
+    fi
+}
 
 # Resolve a --only/-o list against the registry, preserving REGISTRY order (not the order
 # the user typed) so a suite pass always crosses the family boundary once.
