@@ -83,28 +83,34 @@ Every knob `bench.sh` understands is passed straight through — `RATE`, `DURATI
 `DISTINCT_ITEMS`, `ITEMS_PER_ORDER`, `PAYLOAD_BYTES`, `WARMUP_ITERATIONS`, `STEP_*` and the
 rest. Set them per invocation, or pin them for a campaign in `workload.env`.
 
-**`PAYLOAD_BYTES` is honoured everywhere. `RESERVE_DELAY_MS` is not — `ES-1`, `ES-2` and
-`ES-3` still lack it.**
+**Both aggregate-cost levers are honoured on all eight branches** as of 2026-08-06.
 
-| Knob | What it costs | Honoured on |
+| Knob | What it costs | Implemented as |
 |---|---|---|
-| `PAYLOAD_BYTES` | padding on the row/aggregate that every reserve rewrites | all eight |
-| `RESERVE_DELAY_MS` | a sleep on the reserve path, under the row/aggregate lock | all four `TO-*`, plus `ES-4` |
+| `PAYLOAD_BYTES` | padding on the row/aggregate every reserve rewrites | TO: `additional_bytes` column. ES: aggregate state replayed from the creation event. |
+| `RESERVE_DELAY_MS` | a sleep on the reserve path, under the row/aggregate lock | TO: `reserve_delay_ms` column, slept in `reserve()`. ES: aggregate state, slept in the `@CommandHandler`. |
 
-The trap is that a missing knob fails *silently*. `k6/` is byte-identical on all eight
-branches, so k6 sends the field everywhere; Spring ignores unknown JSON properties, so the
-seed still returns 201 and the run still passes. And `meta.json` records the **requested**
-value on every variant, because it records what k6 was told, not what the server honoured —
-so `compare.py`'s `reserveMs` column shows the same number for all eight while only some of
-them actually slept. Nothing downstream can distinguish them.
+Both are paid **only once a reserve is known to succeed**. Charging them on the out-of-stock
+path would make the rejection rate a hidden throughput lever, which would dominate a
+`DISTINCT_ITEMS=1` contention sweep. On ES the sleep is in the `@CommandHandler` rather than
+the `@EventSourcingHandler`, so a replay or snapshot load does not pay it — otherwise a
+per-reserve cost would become a startup cost, which is exactly what the cached and
+snapshotting variants exist to measure.
 
-`run-suite.sh` warns and names the affected variants if a non-zero value is set for a branch
-that cannot honour it. `variants.env`'s fourth column is the source of truth, and the
-warning's "honoured on" list is derived from it rather than hardcoded.
+Lower `RATE` / `STEP_START` when you raise the delay: the lock is held for its duration, so
+the ceiling is roughly `workers / (ITEMS_PER_ORDER × delay)` on TO and `DISTINCT_ITEMS / delay`
+on ES.
 
 ```bash
-RESERVE_DELAY_MS=25 RATE=10 scripts/run-suite.sh --only TO-3,ES-4
+RESERVE_DELAY_MS=25 RATE=10 scripts/run-suite.sh
 ```
+
+Should a future branch ever lack one of these, the failure would be **silent**: `k6/` is
+byte-identical everywhere so k6 sends the field regardless, Spring ignores unknown JSON
+properties, and `meta.json` records the *requested* value rather than what the server applied.
+`run-suite.sh` guards against exactly that — it warns and names any selected variant missing
+the capability, reading `variants.env`'s fourth column, with the "honoured on" list derived
+from the registry rather than hardcoded.
 
 Lower `RATE` / `STEP_START` when you raise the delay: the sleep is held while the DB row lock
 (TO) or the pessimistic aggregate lock (ES) is held, so the throughput ceiling is roughly

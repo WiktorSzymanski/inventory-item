@@ -15,25 +15,23 @@ block in phase 1 collapses to a single command here.
 ### What is still blocked
 
 The campaign design assumes `RESERVE_DELAY_MS` and `PAYLOAD_BYTES` are honoured on **all
-eight** branches. As of 2026-08-06 one of them is:
+eight** branches. As of 2026-08-06 both are, so §6 is unconstrained — any pair of winners
+produces valid `C01`, `C10` and `C11` cells.
 
-| Knob | Honoured on | Ignored on |
+| Knob | Honoured on | Implemented as |
 |---|---|---|
-| `PAYLOAD_BYTES` | all eight | — |
-| `RESERVE_DELAY_MS` | all four `TO-*`, `ES-4` | `ES-1`, `ES-2`, `ES-3` |
+| `PAYLOAD_BYTES` | all eight | TO: `additional_bytes` column (V6). ES: aggregate state from the creation event. |
+| `RESERVE_DELAY_MS` | all eight | TO: `reserve_delay_ms` column (V5, V2 on TO-3). ES: aggregate state, slept in the `@CommandHandler`. |
 
-k6 sends both fields to every branch, Spring ignores unknown JSON properties, and `meta.json`
-records what k6 was *told* rather than what the server applied — so `compare.py` would print
-the requested value for all eight while only some slept. `run-suite.sh` warns and names the
-affected variants before the first run; do not ignore it.
+`run-suite.sh` still warns if a knob is set for a variant that lacks it, reading
+`variants.env`'s capability column. Heed it if it ever fires: k6 sends both fields to every
+branch, Spring ignores unknown JSON properties, and `meta.json` records what k6 was *told*
+rather than what the server applied — so `compare.py` would print the requested value on a
+row that never paid it, and nothing downstream could tell.
 
-**Consequence for §6.** The TO side is now unconstrained: any variant can be `<TO-WIN>` and
-its `C01`/`C11` runs will apply the delay. On the ES side, cells `C01` and `C11` are only
-meaningful if `<ES-WIN>` is `ES-4`. If phase 1 selects `ES-1`, `ES-2` or `ES-3`, those two
-cells measure the `C00` binary for the ES winner and the comparison is void — port the knob
-to that branch first, or record the constraint explicitly.
-
-`C10` (payload only) is unaffected on both sides.
+**One caveat that does still apply.** Both levers are paid under the row lock (TO) or the
+aggregate lock (ES), so they cut the achievable rate hard. The §6.1 staircases already start
+low for that reason; §2.1's bracketing rule matters more in phase 2 than anywhere else.
 
 ### Runs go through `scripts/run-suite.sh`
 
