@@ -1,17 +1,29 @@
 #!/usr/bin/env bash
 # Shared helpers. Sourced by bench.sh / reset.sh / sweep.sh.
-# Byte-identical on every variant branch: all per-branch values come from bench.env.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export REPO_ROOT
 
-if [ -f "$REPO_ROOT/bench.env" ]; then
-    # shellcheck disable=SC1091
-    set -a; . "$REPO_ROOT/bench.env"; set +a
-else
-    echo "FATAL: $REPO_ROOT/bench.env not found (it is the only per-branch harness file)" >&2
-    exit 1
-fi
+# There is no bench.env any more. main owns the only harness and names the compose
+# services itself, so every value that used to be per-branch is either a constant or comes
+# from variants.env via scripts/run-suite.sh, which exports VARIANT, VARIANT_FAMILY and
+# IMAGE_TAG before invoking this.
+#
+# Keeping these as overridable defaults rather than hardcoding them lets a one-off manual
+# run point at a differently-named stack without editing the harness.
+API_SVC="${API_SVC:-api}"
+DB_SVC="${DB_SVC:-postgres}"
+PROM_JOB="${PROM_JOB:-inventory}"
+# UNANCHORED with hyphen bounds. The api service is scaled with deploy.replicas and so
+# carries no container_name, which means cadvisor sees `<project>-api-1`, `-2`, ...
+# queries.promql matches it with an anchored name=~"$CRE", and Prometheus anchors regexes
+# fully — so the leading and trailing .* are required. A bare `api` would also match
+# sibling containers.
+API_CONTAINER_RE="${API_CONTAINER_RE:-.*-api-.*}"
+DB_NAME="${DB_NAME:-inventory}"
+DB_USER="${DB_USER:-inventory}"
+VARIANT_FAMILY="${VARIANT_FAMILY:-}"
+export API_SVC DB_SVC PROM_JOB API_CONTAINER_RE DB_NAME DB_USER VARIANT_FAMILY
 
 # .env is the SINGLE source of truth for the replica count: docker compose auto-loads it,
 # so whatever REPLICAS says there is what actually runs. Sourcing it here (rather than
@@ -24,12 +36,7 @@ fi
 EXPECTED_REPLICAS="${REPLICAS:-1}"
 export EXPECTED_REPLICAS
 
-: "${VARIANT:?bench.env must set VARIANT}"
-: "${API_SVC:?bench.env must set API_SVC}"
-: "${DB_SVC:?bench.env must set DB_SVC}"
-: "${DB_USER:?bench.env must set DB_USER}"
-: "${DB_NAME:?bench.env must set DB_NAME}"
-: "${PROM_JOB:?bench.env must set PROM_JOB}"
+: "${VARIANT:?VARIANT must be set (scripts/run-suite.sh sets it from variants.env)}"
 
 # Compose invocation as a function over an array, not a string. A string variable used as
 # `dc run ...` depends on unquoted word-splitting, which breaks outright under zsh and is
