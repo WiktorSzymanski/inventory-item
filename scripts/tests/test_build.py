@@ -62,6 +62,38 @@ class GeneratedDashboards(unittest.TestCase):
                 pos = panel["gridPos"]
                 self.assertLessEqual(pos["x"] + pos["w"], 24, f"{panel.get('title')} overflows")
 
+    def test_no_panels_overlap(self):
+        """_layout must not place two panels on the same grid cell. Regression test for a bug
+        where wrapping advanced `y` by the INCOMING panel's height instead of the height of the
+        row just completed, which overlapped rows whenever a wrap point followed a taller panel."""
+        for dashboard in (self.live, self.archived):
+            claimed = {}
+            for panel in dashboard["panels"]:
+                if panel.get("type") == "row":
+                    continue
+                pos = panel["gridPos"]
+                for x in range(pos["x"], pos["x"] + pos["w"]):
+                    for y in range(pos["y"], pos["y"] + pos["h"]):
+                        cell = (x, y)
+                        self.assertNotIn(
+                            cell, claimed,
+                            f"{dashboard['uid']}: {panel.get('title')!r} overlaps "
+                            f"{claimed.get(cell)!r} at cell {cell}")
+                        claimed[cell] = panel.get("title")
+
+    def test_live_query_variables_have_a_narrowing_regex(self):
+        """Grafana resolves an empty `current` ({}) to the first option under sort=1
+        (alphabetical) across ALL variant families' label values -- e.g. label_values(up, job)
+        returns ["cadvisor", "inventory-to", "postgres"], so $job defaults to "cadvisor" and
+        every panel using {job="$job"} queries a job with none of the expected metrics. A `regex`
+        that narrows the options to exactly the one matching this branch's family fixes the
+        default without hardcoding a family name into the file."""
+        names = {v["name"]: v for v in self.live["templating"]["list"]}
+        for name, var in names.items():
+            if var.get("type") != "query":
+                continue
+            self.assertTrue(var.get("regex"), f"$({name}): query variable has no narrowing regex")
+
     def test_build_is_deterministic(self):
         self.assertEqual(build.build_live(), self.live)
         self.assertEqual(build.build_archived(), self.archived)

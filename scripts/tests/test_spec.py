@@ -83,6 +83,21 @@ class MergeCoverage(unittest.TestCase):
         # jvm-spring
         "jvm_gc_pause_seconds_bucket", "jvm_threads_live_threads", "jvm_threads_daemon_threads",
         "jvm_threads_peak_threads", "jvm_classes_loaded_classes", "process_uptime_seconds",
+        # Task 9 deleted TO-2's jvm-dashboard.json and ES-1's inventory-es-dashboard.json without
+        # the plan accounting for them; Task 10 merges their remaining signals back in.
+        "system_load_average_1m", "system_cpu_count", "jvm_threads_states_threads",
+        "http_server_requests_active_seconds_gcount", "jvm_gc_memory_allocated_bytes_total",
+        "jvm_gc_memory_promoted_bytes_total", "jvm_gc_overhead", "jvm_gc_live_data_size_bytes",
+        "jvm_gc_max_data_size_bytes", "jvm_memory_committed_bytes", "jvm_gc_pause_seconds_sum",
+        "jvm_gc_pause_seconds_count", "jvm_gc_pause_seconds_max", "logback_events_total",
+        "spring_data_repository_invocations_seconds_count", "hikaricp_connections_acquire_seconds_sum",
+        "hikaricp_connections_acquire_seconds_count", "hikaricp_connections_acquire_seconds_max",
+        "hikaricp_connections_usage_seconds_sum", "hikaricp_connections_usage_seconds_count",
+        "hikaricp_connections_usage_seconds_max", "hikaricp_connections_timeout_total",
+        "executor_pool_size_threads", "container_network_receive_bytes_total",
+        "container_network_transmit_bytes_total", "r2dbc_pool_acquired_connections",
+        "r2dbc_pool_pending_connections", "r2dbc_pool_idle_connections",
+        "r2dbc_pool_max_allocated_connections", "data_state_fetch_ms_seconds_bucket",
     }
 
     def test_no_old_metric_was_dropped(self):

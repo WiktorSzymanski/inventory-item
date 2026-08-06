@@ -74,14 +74,19 @@ def _layout(sections, pick, datasource):
         panels.append(_row(section.title, panel_id, y))
         panel_id += 1
         y += 1
-        x = 0
+        x, row_h = 0, 0
         for panel, targets in chosen:
             if x + panel.w > 24:
-                x, y = 0, y + panel.h
+                # Advance by the height of the row just completed, not the incoming panel's
+                # height -- using the incoming panel's height here caused rows to overlap
+                # whenever a wrapped-to panel was shorter than the row it followed.
+                x, y = 0, y + row_h
+                row_h = 0
             panels.append(_timeseries(panel, targets, datasource, panel_id, x, y))
             panel_id += 1
             x += panel.w
-        y += max(p.h for p, _ in chosen)
+            row_h = max(row_h, panel.h)
+        y += row_h
     return panels, panel_id, y, skipped
 
 
@@ -96,10 +101,19 @@ def _base(uid, title, description, time_from, time_to, templating):
     }
 
 
-def _var(name, label, query, datasource, multi=False):
+def _var(name, label, query, datasource, multi=False, regex=""):
+    # `regex` filters the label_values() result before Grafana computes `current` from an empty
+    # `{}` (it takes the first option under `sort: 1`, alphabetical). Without a regex that leaves
+    # single-variant-family variables ($job/$db/$dbc/$apic) resolving to whatever sorts first
+    # across BOTH families' containers (e.g. "cadvisor" before "inventory-to"), which is empty for
+    # every panel. A regex that narrows the options to exactly one per family fixes the default
+    # without pinning the file to either family -- it still matches on all eight variant branches.
+    # Any capturing group in this regex must be non-capturing ((?:...)): Grafana uses the FIRST
+    # capturing group's match as the option's value/text when one is present, not the full match
+    # -- `(to|es)` would turn the option "postgres-to" into just "to", which then matches nothing.
     return {"name": name, "label": label, "type": "query", "datasource": datasource,
             "query": {"query": query, "refId": f"{name}-variable"}, "definition": query,
-            "refresh": 2, "sort": 1, "includeAll": multi, "multi": multi,
+            "regex": regex, "refresh": 2, "sort": 1, "includeAll": multi, "multi": multi,
             "current": {}, "options": []}
 
 
@@ -127,10 +141,10 @@ def build_live():
         "Replay' and set the time range to that run's window.",
         "now-15m", "now",
         [_ds_var(),
-         _var("job", "API job", "label_values(up, job)", DS),
-         _var("db", "Database", "label_values(pg_database_size_bytes, datname)", DS),
-         _var("dbc", "DB container", "label_values(container_memory_rss, name)", DS),
-         _var("apic", "API container", "label_values(container_memory_rss, name)", DS)])
+         _var("job", "API job", "label_values(up, job)", DS, regex="/^inventory-.*/"),
+         _var("db", "Database", "label_values(pg_database_size_bytes, datname)", DS, regex="/^inventory$/"),
+         _var("dbc", "DB container", "label_values(container_memory_rss, name)", DS, regex="/^postgres-(?:to|es)$/"),
+         _var("apic", "API container", "label_values(container_memory_rss, name)", DS, regex="/api-(?:to|es)-[0-9]+$/")])
     dash["refresh"] = "5s"
     panels, _, _, _ = _layout(spec.SECTIONS, lambda p: p.targets, DS_VAR)
     dash["panels"] = panels
@@ -147,11 +161,12 @@ def build_archived():
         ANCHOR_ISO, "2026-01-01T02:00:00.000Z",
         [_var("runs", "Runs", "label_values(replay_series, run_id)", DS_REPLAY, multi=True)])
     panels, next_id, y, skipped = _layout(spec.SECTIONS, lambda p: p.archived, DS_REPLAY)
-    panels.insert(0, _summary_table(next_id, 0))
-    for p in panels[1:]:
+    tables = _summary_tables(next_id, 0)
+    panels[0:0] = tables
+    for p in panels[len(tables):]:
         p["gridPos"]["y"] += 8
     panels.append({
-        "id": next_id + 1, "type": "text", "title": "Not available for archived runs",
+        "id": next_id + len(tables), "type": "text", "title": "Not available for archived runs",
         "gridPos": {"x": 0, "y": y + 8, "w": 24, "h": 6},
         "options": {"mode": "markdown", "content":
                     "dump.json does not carry these signals, so no panel can exist for them:\n\n"
@@ -161,22 +176,57 @@ def build_archived():
     return dash
 
 
-def _summary_table(panel_id, y):
-    """One row per selected run, one column per dump.json derived/scalar key."""
-    return {
-        "id": panel_id, "title": "Run summary (dump.json derived + scalars)", "type": "table",
-        "gridPos": {"x": 0, "y": y, "w": 24, "h": 8}, "datasource": DS_REPLAY,
+def _summary_tables(panel_id, y):
+    """Two tables covering replay_summary, split so neither silently collapses distinct series
+    into one cell. replay_summary carries `window` (full|load) and `dim` (e.g. outcome, phase) on
+    top of `key` -- a single groupingToMatrix keyed only on (run_id, key) used to pick one of
+    several same-keyed values with no sign the others existed. Both queries are pinned to
+    axis="elapsed" (the archived dashboard's common anchor) and window="full" (the run-end
+    figure, not the load-phase-only one) so the only remaining axis is `dim`, which the two tables
+    split on explicitly instead of collapsing.
+    """
+    scalars = {
+        "id": panel_id, "title": "Run summary — scalars (window=full)", "type": "table",
+        "gridPos": {"x": 0, "y": y, "w": 12, "h": 8}, "datasource": DS_REPLAY,
         "fieldConfig": {"defaults": {"custom": {"align": "right"}}, "overrides": []},
         "options": {"showHeader": True},
         "targets": [{"datasource": DS_REPLAY,
-                     "expr": 'last_over_time(replay_summary{run_id=~"$runs"}[$__range])',
+                     "expr": 'last_over_time(replay_summary{run_id=~"$runs",axis="elapsed",'
+                             'window="full",dim=""}[$__range])',
                      "format": "table", "instant": True, "refId": "A"}],
         "transformations": [
-            {"id": "organize", "options": {"excludeByName": {"Time": True, "__name__": True}}},
+            {"id": "organize", "options": {"excludeByName": {
+                "Time": True, "__name__": True, "axis": True, "window": True, "dim": True}}},
             {"id": "groupingToMatrix",
              "options": {"columnField": "key", "rowField": "run_id", "valueField": "Value"}},
         ],
     }
+    # Deliberately NOT a groupingToMatrix on `dim` alone: several keys share the same dim values
+    # (e2e_p50/p95/p99 and state_load_p50/p95/p99 are all broken out by "confirmed"/"phase" etc),
+    # so a matrix keyed only on dim would reintroduce the exact silent-collapse bug this split
+    # exists to fix -- one cell per (run_id, dim) with no sign which key's value survived. This
+    # table instead stays one row per (run_id, key, dim): nothing is discarded.
+    dimensioned = {
+        "id": panel_id + 1,
+        "title": "Run summary — dimensioned metrics (by key x dim, window=full)", "type": "table",
+        "description": "One row per (run_id, key, dim) -- e.g. e2e_p50 broken out by outcome, "
+                       "state_load_p95 by phase. Not matrixed: several keys share dim values, so "
+                       "a dim-only matrix would collapse them the same way the old single table did.",
+        "gridPos": {"x": 12, "y": y, "w": 12, "h": 8}, "datasource": DS_REPLAY,
+        "fieldConfig": {"defaults": {"custom": {"align": "right"}}, "overrides": []},
+        "options": {"showHeader": True, "sortBy": [{"displayName": "run_id"}, {"displayName": "key"}]},
+        "targets": [{"datasource": DS_REPLAY,
+                     "expr": 'last_over_time(replay_summary{run_id=~"$runs",axis="elapsed",'
+                             'window="full",dim!=""}[$__range])',
+                     "format": "table", "instant": True, "refId": "A"}],
+        "transformations": [
+            {"id": "organize", "options": {
+                "excludeByName": {"Time": True, "__name__": True, "axis": True, "window": True},
+                "indexByName": {"run_id": 0, "key": 1, "dim": 2, "Value": 3},
+            }},
+        ],
+    }
+    return [scalars, dimensioned]
 
 
 def main():

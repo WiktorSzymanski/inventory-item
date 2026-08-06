@@ -33,6 +33,13 @@ docker compose -f docker-compose.yml -f docker-compose.replay.yml up -d promethe
 
 Both commands are idempotent — safe to run again on a machine that already has the archive.
 
+`prometheus-replay` is deliberately outside the bench compose overlay, so running
+`docker compose -f docker-compose.yml -f docker-compose.bench.yml up --remove-orphans` (which
+treats any container not defined in that overlay as an orphan) will stop it. That looks alarming —
+"the archive vanished" — but the external volume is never deleted by that command, so the data is
+intact; bring the container back with `docker compose -f docker-compose.yml -f
+docker-compose.replay.yml up -d prometheus-replay` (or a plain `docker start prometheus-replay`).
+
 ---
 
 ## 2. Everyday usage
@@ -165,21 +172,25 @@ for section in spec.SECTIONS:
 "
 ```
 
-Current output:
+Current output (36 panels, regenerated 2026-08-06 after Task 10 added 13 panels and renamed
+"Order worker — queue depth & active threads (TO family)" to "Executor pools — threads & queue"):
 
 - **HTTP:** HTTP error rate (4xx / 5xx)
 - **Orders & domain:** Order processing time — p50 / p95 (TO family); Order queue wait — p50 / p95
-  (TO family); Orders completed by outcome & reason (TO family); Outbox backlog (TO family);
-  Outbox write time — p50 / p95 (TO family); Order worker — queue depth & active threads (TO
-  family)
+  (TO family); Orders completed by outcome & reason (TO family); Aggregate state fetch latency (ES
+  family); Outbox backlog (TO family); Outbox write time — p50 / p95 (TO family); Executor pools —
+  threads & queue
 - **JVM:** Non-heap memory by pool; GC pause duration — p50 / p95 / p99; JVM threads; Loaded
-  classes; Process uptime
-- **Spring pools:** HikariCP connections; Tomcat HTTP threads
+  classes; Process uptime; System load vs CPU cores; Threads by state; In-flight HTTP requests; GC
+  allocation & promotion rate; GC overhead; Live data after GC; Log events by level; Spring Data
+  repository invocations (top 10)
+- **Spring pools:** HikariCP connections; Tomcat HTTP threads; HikariCP — acquire & usage time;
+  HikariCP — connection timeouts; R2DBC connection pool (ES family)
 - **PostgreSQL:** WAL size; Active connections by state; Transaction rate; Tuple operations rate;
   Buffer cache hit ratio; Live rows by table; Per-table write rate; Locks by mode; Checkpoint
-  activity
+  activity; Container network I/O
 
-Five of the six "Orders & domain" gaps are TO-family outbox and order-timing panels — exactly the
+Five of the seven "Orders & domain" gaps are TO-family outbox and order-timing panels — exactly the
 axis this thesis compares TO against ES on — so an archived TO run cannot show outbox backlog,
 outbox write time, order processing time, order queue wait, or the outcome/reason breakdown at
 all. That data only ever existed in the live TSDB.
@@ -225,7 +236,7 @@ the run's end.
 
 ## 7. Current archive state
 
-21 runs are backfilled as of this writing — every `bench-results/*/` that has a `dump.json`; the
+22 runs are backfilled as of this writing — every `bench-results/*/` that has a `dump.json`; the
 other directories under `bench-results/` are incomplete runs (no `dump.json`, e.g. an aborted or
 still-running benchmark). Confirm the current count rather than trusting this number:
 
@@ -237,13 +248,15 @@ find bench-results -maxdepth 2 -name dump.json | wc -l
 
 ## 8. Per-run TSDB snapshots — full parity for future runs
 
-`replay_run.py` (sections 1-7) can only ever show what `dump.json` extracted — 23 of the merged
-dashboard's panels (every `pg_stat_*` metric, WAL size, locks, checkpoints, GC pause, JVM threads,
-HikariCP, Tomcat, executor queues, and on the TO family the outbox backlog and order-timing
-panels) have no archived equivalent at any effort, because that data was never captured into
-`dump.json` in the first place. For a run you are about to execute (not one already archived),
-there is a better option: snapshot the live Prometheus's actual TSDB right after the run and merge
-its blocks into `bench-replay-data`. Every panel then works for that run, exactly as it did live.
+`replay_run.py` (sections 1-7) can only ever show what `dump.json` extracted — 36 of the merged
+dashboard's 56 panels (every `pg_stat_*` metric, WAL size, locks, checkpoints, GC pause, JVM
+threads, HikariCP, Tomcat, R2DBC, container network I/O, non-heap memory, GC allocation/overhead,
+log events, Spring Data repository invocations, and on the TO family the outbox backlog and
+order-timing panels) have no archived equivalent at any effort, because that data was never
+captured into `dump.json` in the first place. For a run you are about to execute (not one already
+archived), there is a better option: snapshot the live Prometheus's actual TSDB right after the
+run and merge its blocks into `bench-replay-data`. Every panel then works for that run, exactly as
+it did live.
 
 This is a separate, opt-in step you run *after* `bench.sh` finishes — never inside it. `bench.sh`
 and everything under `k6/` must stay byte-identical across all eight variant branches (the
@@ -272,8 +285,8 @@ fails.
 
 ### Viewing a snapshotted run: the "Data source" dropdown on `the-dashboard`
 
-Once a run is archived, the way to actually look at it — at full fidelity, all 48 panels, not just
-the ~25 `dump.json` can carry — is `the-dashboard` itself, not `bench-replay`. `the-dashboard`
+Once a run is archived, the way to actually look at it — at full fidelity, all 56 panels, not just
+the 20 `dump.json` can carry — is `the-dashboard` itself, not `bench-replay`. `the-dashboard`
 carries a **"Data source" template variable** (`$ds`) that every panel and target is wired to,
 instead of a fixed datasource. It defaults to the live Prometheus (normal day-to-day use, no
 behaviour change), so:
@@ -284,7 +297,7 @@ behaviour change), so:
 3. Set the time picker to the archived run's window (`meta.json`'s `windows.load` /
    `windows.full`, or the range `prom_snapshot.sh` / `prom_archive.sh` printed).
 
-Every panel — including the 23 that `bench-replay` can never show, like `pg_stat_*`, WAL size,
+Every panel — including the 36 that `bench-replay` can never show, like `pg_stat_*`, WAL size,
 locks, checkpoints, GC pause, HikariCP, and the TO family's outbox/order-timing panels — now
 queries the archive instead of live Prometheus and renders that run's real data. `bench-replay`
 still exists for its own purpose: overlaying several runs' `dump.json` extracts on one
@@ -299,7 +312,7 @@ DURATION=2m`): after snapshot + archive, `pg_stat_activity_count{datname="invent
 9091) — through a direct Prometheus API query, Grafana's `/api/ds/query`, and rendering
 `the-dashboard`'s own "Active connections by state" panel (id 39) via
 `/render/d-solo/the-dashboard/?panelId=39&var-ds=prometheus-replay&...` over the run's window,
-which returned a valid, non-trivial PDF. Those are two of the 23 panels that no `dump.json`-based
+which returned a valid, non-trivial PDF. Those are two of the 36 panels that no `dump.json`-based
 archive can ever show — and this time the check went through the dashboard's own datasource
 switch, not only the Prometheus API directly.
 
