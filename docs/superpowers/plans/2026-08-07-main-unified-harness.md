@@ -290,7 +290,11 @@ The two services that change substantively must end up exactly as follows.
     command: postgres -c max_connections=${PG_MAX_CONNECTIONS:-600}
     volumes:
       - postgres-data:/var/lib/postgresql/data
+```
 
+`postgres-exporter`:
+
+```yaml
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:v0.15.0
     container_name: postgres-exporter
@@ -301,7 +305,11 @@ The two services that change substantively must end up exactly as follows.
     depends_on:
       postgres:
         condition: service_healthy
+```
 
+`api`:
+
+```yaml
   api:
     # No default tag. IMAGE_TAG is always set by the harness from variants.env; a default
     # here would let a bare `docker compose up` silently run whichever variant was baked in.
@@ -331,6 +339,7 @@ The two services that change substantively must end up exactly as follows.
     depends_on:
       postgres:
         condition: service_healthy
+```
 
 The top-level `volumes:` block becomes:
 
