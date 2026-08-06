@@ -1,0 +1,28 @@
+# Archive Prometheus for replayed benchmark runs.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.replay.yml up -d prometheus-replay
+#
+# Deliberately NOT part of docker-compose.bench.yml: bench.sh must not start, stop or
+# depend on it, and its volume is external so `docker compose down -v` leaves it alone.
+services:
+  prometheus-replay:
+    image: prom/prometheus:v2.52.0
+    container_name: prometheus-replay
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus-replay.yml:/etc/prometheus/prometheus.yml:ro
+      - bench-replay-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # The archive must outlive the thesis. Default retention is 15d, which would silently
+      # delete replayed runs anchored at 2026-01-01.
+      - --storage.tsdb.retention.time=3650d
+      - --storage.tsdb.retention.size=0
+      - --web.enable-admin-api
+      - --web.enable-lifecycle
+
+volumes:
+  bench-replay-data:
+    external: true
