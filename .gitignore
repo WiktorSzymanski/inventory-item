@@ -1,36 +1,9 @@
-.gradle
-build/
-!gradle/wrapper/gradle-wrapper.jar
-!**/src/main/**/build/
-!**/src/test/**/build/
-
-### STS ###
-.apt_generated
-.classpath
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
-bin/
-!**/src/main/**/bin/
-!**/src/test/**/bin/
-
 ### IntelliJ IDEA ###
 .idea
 *.iws
 *.iml
 *.ipr
 out/
-!**/src/main/**/out/
-!**/src/test/**/out/
-
-### NetBeans ###
-/nbproject/private/
-/nbbuild/
-/dist/
-/nbdist/
-/.nb-gradle/
 
 ### VS Code ###
 .vscode/
@@ -39,10 +12,10 @@ out/
 .kotlin
 CLAUDE.md
 
-# per-variant git worktrees created by scripts/run-suite.sh
+# per-variant git worktrees created by scripts/build-images.sh
 .worktrees/
 
-# central benchmark artifacts: every variant's runs land here
+# central benchmark artifacts: every variant's run lands here
 bench-results/
 
 __pycache__/
