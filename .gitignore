@@ -37,3 +37,4 @@ out/
 
 .claude
 .kotlin
+__pycache__/
