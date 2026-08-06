@@ -224,3 +224,65 @@ require_not_root() {
     [ "$(id -u)" != "0" ] || [ "${ALLOW_ROOT:-0}" = "1" ] \
         || die "do not run this under sudo — it makes bench-results/ root-owned. Add yourself to the docker group instead (ALLOW_ROOT=1 overrides)."
 }
+
+# ---------------------------------------------------------------- workload points
+
+POINT_IDENTITY_KNOBS="DISTINCT_ITEMS ITEMS_PER_ORDER PAYLOAD_BYTES RESERVE_DELAY_MS"
+POINT_CALIBRATION_KNOBS="STEP_START STEP_INC STEP_COUNT"
+
+# Capture what the SHELL set, before any point expands. Afterwards a point-set knob and a
+# shell-set knob are indistinguishable, so the conflict check would have nothing to compare
+# against. Must be called before resolve_point.
+snapshot_shell_knobs() {
+    local k
+    for k in $POINT_IDENTITY_KNOBS $POINT_CALIBRATION_KNOBS; do
+        eval "__SHELL_$k=\"\${$k:-}\""
+    done
+}
+
+# Emit "KEY=VALUE" per line for one named point.
+read_point() {
+    local p="$1" fields
+    fields="$(sed -e 's/#.*//' "$MAIN_ROOT/points.env" \
+              | awk -v p="$p" '$1 == p { for (i = 2; i <= NF; i++) print $i }')"
+    [ -n "$fields" ] || die "unknown point '$p' (known: $(known_points | tr '\n' ' '))"
+    printf '%s\n' "$fields"
+}
+
+known_points() {
+    sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$MAIN_ROOT/points.env" | awk '{print $1}'
+}
+
+# Expand $POINT (comma-separated, composable) into the workload knobs and RUN_LABEL.
+resolve_point() {
+    [ -n "${POINT:-}" ] || return 0
+    local p kv key val prior label=""
+    for p in ${POINT//,/ }; do
+        # Checked here, not left to read_point's own die(): that call runs inside the
+        # < <(...) process substitution below, a subshell whose exit status this loop
+        # never inspects, so a die() there would be silently swallowed and the run would
+        # proceed as if the point matched nothing.
+        case " $(known_points | tr '\n' ' ') " in
+            *" $p "*) ;;
+            *) die "unknown point '$p' (known: $(known_points | tr '\n' ' '))" ;;
+        esac
+        label="${label:+$label-}$p"
+        while IFS= read -r kv; do
+            [ -n "$kv" ] || continue
+            key="${kv%%=*}"; val="${kv#*=}"
+            eval "prior=\"\${__SHELL_$key:-}\""
+            case " $POINT_IDENTITY_KNOBS " in
+                *" $key "*)
+                    if [ -n "$prior" ] && [ "$prior" != "$val" ]; then
+                        die "POINT=$p defines $key=$val but the environment sets $key=$prior. $key is an identity knob: honouring the override would make the run label '$label' describe a workload it did not run. Drop the override, or drop POINT and set every knob by hand."
+                    fi
+                    export "$key=$val" ;;
+                *)
+                    [ -n "$prior" ] || export "$key=$val" ;;
+            esac
+        done < <(read_point "$p")
+    done
+    POINT_RESOLVED="$label"
+    RUN_LABEL="${RUN_LABEL:-$label}"
+    export POINT_RESOLVED RUN_LABEL
+}
