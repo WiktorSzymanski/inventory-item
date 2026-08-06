@@ -332,18 +332,55 @@ via `k6/bench/dump.py`. Verdicts are therefore computed *post-run* by
 measurement itself was broken (backlog never drained, scrape gap, API restarted mid-run,
 orders that never reached a terminal event), which is not the same as a slow system.
 
-**The harness only exists on `ES-2` and `ES-4`.** `TO-1`..`TO-4`, `ES-1` and `ES-3` still
-carry the legacy `k6/run.sh` + `k6/reserve-load-test.js` and have no `bench.env`,
-`docker-compose.bench.yml` or `k6/bench/` — `common.sh` hard-fails there. Rolling the
-harness out to them is a separate job.
+**All eight variant branches now carry the harness.** It used to exist only on `ES-2` and
+`ES-4`; `TO-1`..`TO-4` gained it earlier, and `ES-1`/`ES-3` gained it on 2026-08-06, so no
+branch is left on the legacy `k6/run.sh` + `k6/reserve-load-test.js` path.
 
-On the branches that do have it, everything under `k6/` and `docker-compose.bench.yml` is
-**byte-identical**; `bench.env` is the only per-branch file. Verify against `ES-2` (the
+Everything under `k6/` and `docker-compose.bench.yml` is **byte-identical** on all eight;
+`bench.env` is the only per-branch file. The reference is `ES-4`, not `ES-2` (the
 `harness-v1` ref older comments name does not exist in this repository):
 
 ```bash
-git diff --stat ES-2 <branch> -- k6 docker-compose.bench.yml   # must be empty
+git diff --stat ES-4 <branch> -- k6/bench k6/lib k6/main.js docker-compose.bench.yml
 ```
+
+must print nothing. `k6/benchmark-campaign-plan.md` and `k6/campaign-prerequisites-plan.md`
+are `ES-4`-local notes rather than harness, which is why the path list is explicit rather
+than a bare `k6`.
+
+**`IMAGE_TAG` is unique per variant, not per family.** `bench.env` sets
+`inventory-reservation-<variant>:latest` (lowercased), and `docker-compose.yml` substitutes
+`${IMAGE_TAG:-<that variant>}` rather than hardcoding a tag. Before this, `ES-2` and `ES-4`
+both built `inventory-reservation-es:latest` and `TO-1`..`TO-4` shared the `-to` one, so
+building any variant silently overwrote its sibling and a bare `docker compose up` could
+run another variant's jar. `common.sh` exports `IMAGE_TAG` from `bench.env`, and Compose
+prefers the shell environment over `.env`, so the harness and manual compose always agree.
+
+### Benchmarking all eight variants: `main`
+
+`main` carries no application code anybody benchmarks — its `src/` is an early prototype.
+What it carries is the cross-variant entry point:
+
+```bash
+scripts/build-images.sh                                     # one image per branch
+SCENARIO=steady RATE=60 DURATION=10m scripts/run-suite.sh   # every variant, in turn
+python3 scripts/compare.py bench-results/*_steady_*
+```
+
+Each variant is built and run from its own git worktree under `.worktrees/<variant>/`,
+using **that branch's** harness — `main` deliberately holds no unified `docker-compose.yml`
+or `queries.promql`, because the families genuinely differ and a third copy would drift
+from both. Worktree `bench-results/` are symlinked to `main`'s, so every run lands in one
+place. `run-suite.sh` passes `SKIP_BUILD=1`, pins one Compose project (`iir`), and runs
+`down -v --remove-orphans` before each variant — which is also what forces Prometheus to
+re-read its bind-mounted config across a TO↔ES switch.
+
+`build-images.sh` stamps the commit SHA with a **`RUN`** layer, not a `LABEL`. `image_fresh`
+is a *validity* check computed as `image Created >= HEAD commit time`, and since the
+`Dockerfile` only COPYs `gradle/` and `src/`, a docs-only commit reuses every cached layer
+and leaves `Created` older than `HEAD` — reporting a good run `INVALID`. A `LABEL` does not
+fix it: BuildKit inherits `Created` from the base image, so the stamp yields a new image ID
+carrying the old timestamp. A `RUN` creates a layer and the image is dated now.
 
 `EXPECTED_REPLICAS` is **not** set in `bench.env`; `common.sh` derives it from `REPLICAS`
 in `.env`, the file compose actually acts on. `reset.sh` asserts the running container
