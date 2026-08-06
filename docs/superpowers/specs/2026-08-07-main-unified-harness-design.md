@@ -152,6 +152,71 @@ requiring Docker would be a lie. It keeps `require_not_root`.
 
 `scripts/tests/` and `scripts/dashboards/` come across from `ES-4` alongside the harness.
 
+### Named workload points (`points.env`)
+
+The harness has **no notion of `W-base`, `W-hot`, `W-fan` or the `C**` cells** — verified by
+grep over `k6/` and `scripts/` on `ES-4`, which returns nothing. The names live only in the
+campaign spec, the phase-0 plan and the runbook. A point is identified solely by the values
+`meta.json` records under `config.distinctItems` / `config.itemsPerOrder` /
+`config.payloadBytes` / `config.reserveDelayMs`, and `RUN_LABEL` is free text that appears
+only in the run directory name — there is not even a `run_label` field in `meta.json`.
+
+Nothing therefore binds a point's *name* to its *numbers*. A run labelled `W-base` that
+actually used `DISTINCT_ITEMS=8` produces artifacts that agree with the wrong label.
+Across 24 phase-1 breakpoint runs and 34 phase-2 cell runs, the only guard is the operator
+retyping the runbook's numbers 58 times. (`compare.py` does surface `items`, `lines`,
+`payloadB` and `reserveMs` as columns, so a mixed table is *visible* — but visibility after
+the fact is not prevention.)
+
+Because `main` will own both the harness and the registry, a point can be defined once and
+applied identically to all eight variants by construction. `main` gains `points.env`:
+
+```
+# <point>  <knobs...>                                    <staircase>
+W-base     DISTINCT_ITEMS=100 ITEMS_PER_ORDER=4          STEP_START=40 STEP_INC=40 STEP_COUNT=10
+W-hot      DISTINCT_ITEMS=8   ITEMS_PER_ORDER=4          STEP_START=20 STEP_INC=20 STEP_COUNT=12
+W-fan      DISTINCT_ITEMS=100 ITEMS_PER_ORDER=16         STEP_START=10 STEP_INC=10 STEP_COUNT=12
+C00        PAYLOAD_BYTES=0       RESERVE_DELAY_MS=0
+C01        PAYLOAD_BYTES=0       RESERVE_DELAY_MS=25     STEP_START=10 STEP_INC=15 STEP_COUNT=10
+C10        PAYLOAD_BYTES=1048576 RESERVE_DELAY_MS=0      STEP_START=5  STEP_INC=5  STEP_COUNT=10
+C11        PAYLOAD_BYTES=1048576 RESERVE_DELAY_MS=25     STEP_START=2  STEP_INC=3  STEP_COUNT=10
+```
+
+Usage, with the W and C axes composable because phase 2 crosses them (§6.4 runs W-hot and
+W-fan at C11):
+
+```bash
+POINT=W-hot        scripts/run-suite.sh    # phase 1
+POINT=W-base,C11   scripts/run-suite.sh    # phase 2 cell
+```
+
+`POINT` sets the knobs **and** `RUN_LABEL` together, so the directory name and the recorded
+config cannot disagree. Values come from the campaign design §4.2 and §6.1 and the
+runbook's phase-2 staircases.
+
+**Two classes of value, with different override rules.** This split is what keeps the
+guarantee strong without breaking the bracketing rule:
+
+- **Identity** — `DISTINCT_ITEMS`, `ITEMS_PER_ORDER`, `PAYLOAD_BYTES`, `RESERVE_DELAY_MS`.
+  These *are* the point. If the shell sets one to a value conflicting with the named point,
+  `run-suite.sh` **dies**. Silently honouring the override would make the label a lie,
+  which is the whole defect being fixed.
+- **Calibration** — `STEP_START`, `STEP_INC`, `STEP_COUNT`. The campaign's §4.2 bracketing
+  rule *expects* these to be re-tuned and every variant at that point re-run. They are
+  defaults only; the shell wins, no error.
+
+**Precedence, and why order matters.** `run-suite.sh` snapshots the knobs already present
+in the shell *before* resolving `POINT`, because once the point exports them a shell-set
+value is indistinguishable from a point-set one. It then resolves `POINT` against that
+snapshot: an identity conflict dies, a calibration override is honoured. `workload.env` is
+sourced afterwards and uses the `VAR="${VAR:-value}"` form throughout, so it fills only
+what is still unset and can never silently contradict a named point.
+
+`bench.sh` additionally records `run_label` and `point` in `meta.json`, so a point is
+machine-readable rather than inferable from the directory name, and `compare.py` gains a
+`point` column. Runs made without `POINT` are unaffected — the field is empty and every
+existing invocation keeps working.
+
 ### Deleted from `main` (32 tracked files)
 
 | Removed | Why |
@@ -305,4 +370,8 @@ The change is only trustworthy if it reproduces a known-good run.
    populated — impossible before this change.
 5. **Replica derivation:** confirm `EXPECTED_REPLICAS` still comes from `REPLICAS` in `.env`
    and that `reset.sh`'s container-count assertion fires correctly at `REPLICAS=1`.
-6. `python3 scripts/compare.py bench-results/*_steady_*` renders old and new runs together.
+6. `python3 k6/bench/compare.py bench-results/*_steady_*` renders old and new runs together.
+7. **Named points:** `POINT=W-hot scripts/run-suite.sh --only ES-4` produces a run directory
+   labelled `W-hot` whose `meta.json` shows `distinctItems=8, itemsPerOrder=4`, and
+   `DISTINCT_ITEMS=100 POINT=W-hot scripts/run-suite.sh` exits non-zero with a conflict
+   message rather than running.
