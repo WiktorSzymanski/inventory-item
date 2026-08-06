@@ -108,10 +108,33 @@ cell C01 from C11. A two-line change appending an optional label makes ~73 run d
 navigable. `meta.json` already records the full resolved config, so the label is for
 navigation only and is never the source of truth.
 
+### 2e. Re-synchronise the harness across all eight branches
+
+Added 2026-08-06 after auditing the actual branch state. The invariant below is **currently
+violated on all seven non-`TO-3` branches**, which means no measurement taken today is
+cross-comparable and 2c/2d cannot simply be "propagated":
+
+| Branch | `k6/` vs `TO-3` | `bench.env` |
+|---|---|---|
+| `TO-1`, `TO-2`, `TO-4` | 8 files differ — missing the `reserveDelayMs` harness plumbing in `config.js`, `api.js`, `main.js` | present |
+| `ES-2` | 10 files differ — older `evaluate.py`, `compare.py`, `queries.promql` | present |
+| `ES-4` | 5 files differ, insertions only — a strict superset of `TO-3` in three files, plus two stale planning docs | present |
+| `ES-1`, `ES-3` | **harness absent** — legacy `k6/reserve-load-test.js`, no `k6/bench/`, no `k6/lib/`, no `docker-compose.bench.yml` | **missing** |
+
+`common.sh` exits `FATAL` without `bench.env`, so `ES-1` and `ES-3` — two of the eight
+campaign subjects — cannot be benchmarked at all today. Both do carry the application
+instrumentation the harness queries (`order_e2e_time`, `order_projection_lag_seconds`), so
+the gap there is files, not metrics.
+
+Since neither `TO-3` nor `ES-4` is a superset of the other, the canonical harness is `TO-3`
+plus `ES-4`'s three-file additions; every branch is then converged onto that by wholesale
+replacement, and `ES-1`/`ES-3` additionally get a `bench.env` and the DNS-discovery
+`prometheus.yml` the other ES branches already use.
+
 ### Cross-branch invariant
 
 Everything under `k6/` and `docker-compose.bench.yml` stays byte-identical on all eight
-branches; `bench.env` is the only per-branch file. After propagating 2c and 2d:
+branches; `bench.env` is the only per-branch file. After 2c, 2d and 2e:
 
 ```bash
 git diff --stat TO-3 <branch> -- k6 docker-compose.bench.yml    # must be empty
