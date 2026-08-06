@@ -32,7 +32,7 @@ services:
         condition: service_healthy
 
   api-to:
-    image: inventory-reservation-to:latest
+    image: ${IMAGE_TAG:-inventory-reservation-to-4:latest}
     # No container_name / no host port: this service is scaled via deploy.replicas, and both
     # would collide on the second replica. Replicas are reached inside the compose network
     # by the DNS name `api-to` (round-robin A records); nginx is the single published entry
