@@ -44,6 +44,7 @@ done
 
 require_not_root
 require_tools
+assert_ports_free
 
 VARIANTS="$(select_variants "$ONLY")"
 SCENARIO="${SCENARIO:-steady}"

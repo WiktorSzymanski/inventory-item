@@ -144,6 +144,24 @@ teardown() {
     dc_for "$wt" down -v --remove-orphans --timeout 30 >/dev/null 2>&1 || true
 }
 
+# `down --remove-orphans` only reaches containers in OUR compose project. A stack brought
+# up by hand from the repo root, or by an older workflow, lives under a different project
+# name (Compose defaults to the directory basename) and keeps its grip on the shared host
+# ports. The failure that produces is a port-binding error or a health timeout several
+# minutes into a run, which says nothing about the actual cause — so name it up front.
+assert_ports_free() {
+    local foreign
+    foreign="$(docker ps --format '{{.Names}}\t{{.Label "com.docker.compose.project"}}\t{{.Ports}}' \
+        | awk -F'\t' -v proj="$COMPOSE_PROJECT_NAME" \
+              '$2 != proj && $3 ~ /0\.0\.0\.0:(8080|9090|3000|5432)->/ {print "    " $1 " (project: " ($2 == "" ? "none" : $2) ")"}')"
+    [ -z "$foreign" ] && return 0
+    printf 'FATAL: containers outside the "%s" compose project are holding the ports the suite needs:\n%s\n' \
+        "$COMPOSE_PROJECT_NAME" "$foreign" >&2
+    printf 'Stop them first. From the directory that started them:\n    docker compose down\n' >&2
+    printf 'Add -v as well only if you also want their volumes erased.\n' >&2
+    exit 1
+}
+
 require_tools() {
     local t
     for t in docker python3 curl git; do

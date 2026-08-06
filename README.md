@@ -20,9 +20,17 @@ Narrow it down while iterating:
 
 ```bash
 scripts/build-images.sh --only ES-4,TO-1
-SCENARIO=steady RATE=5 DURATION=60s WARMUP_ITERATIONS=200 \
+SCENARIO=steady RATE=30 DURATION=3m WARMUP_ITERATIONS=2000 \
   scripts/run-suite.sh --only ES-4,TO-1
 ```
+
+**Do not shrink a smoke run below a few thousand orders.** `completion_ratio_inverse` is a
+validity check with a 0.001 limit, so it needs enough orders that a couple of stragglers at
+the window boundary stay under a tenth of a percent. At `RATE=5 DURATION=60s` — about 300
+orders — a single late completion is already 0.33%, and the run reports `INVALID` for
+reasons that have nothing to do with the variant. Every run at `RATE>=30` with a load phase
+of two minutes or more has measured 0.0 to 0.0002 on that check. Shorten the *variant list*
+when iterating, not the workload.
 
 ## The pieces
 
