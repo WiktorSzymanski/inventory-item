@@ -54,7 +54,8 @@ function textSummary(data, profile) {
         '',
         `  scenario           ${profile.name}   run_id=${CONFIG.runId}`,
         `  workload           distinct=${CONFIG.distinctItems} lines/order=${CONFIG.itemsPerOrder} ` +
-        `qty/line=${CONFIG.qtyPerLine} payload=${CONFIG.payloadBytes}B read_rate=${CONFIG.readRate}`,
+        `qty/line=${CONFIG.qtyPerLine} payload=${CONFIG.payloadBytes}B ` +
+        `reserve_delay=${CONFIG.reserveDelayMs}ms read_rate=${CONFIG.readRate}`,
         '',
         `  iterations         ${iterations}`,
         `  orders accepted    ${accepted} (202)`,
