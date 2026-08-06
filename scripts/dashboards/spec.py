@@ -187,21 +187,6 @@ SECTIONS = [
             targets=[Target("{{eventType}}", 'sum by (eventType) (rate(es_events_processed_total{job="$job"}[1m]))')],
             archived=[Target("{{run_id}} {{dim}}", 'replay_step{run_id=~"$runs",axis="elapsed",metric="events_processed"}')],
         ),
-        # Absorbed from ES-1's inventory-es-dashboard.json (Task 9 deleted it; Task 10 merges its
-        # signal). Plotted in seconds, not ms: despite the metric name, the histogram is already
-        # in seconds, consistent with every other latency panel here. Placed here (before
-        # "Publish lag by event type") rather than after so the w=24 insertion splits the
-        # surrounding run of w=12 panels evenly (8/8) instead of unevenly (9/7), keeping every
-        # row in the section packed to exactly 24 with no gaps.
-        Panel(
-            title="Aggregate state fetch latency (ES family)",
-            unit="s", w=24,
-            description="KurrentDB stream replay time. Empty on the TO family.",
-            targets=[Target("p50", _q(0.50, "data_state_fetch_ms_seconds_bucket", "le")),
-                     Target("p95", _q(0.95, "data_state_fetch_ms_seconds_bucket", "le")),
-                     Target("p99", _q(0.99, "data_state_fetch_ms_seconds_bucket", "le"))],
-            archived=None,
-        ),
         Panel(
             title="Publish lag by event type — p50 / p95 / p99",
             unit="s", w=12,
@@ -295,11 +280,11 @@ SECTIONS = [
                        Target("system", 'avg(system_cpu_usage{job="$job"})')],
               archived=[Target("{{run_id}} process", 'replay_series{run_id=~"$runs",axis="elapsed",metric="cpu"}'),
                         Target("{{run_id}} system (step avg)", 'replay_step{run_id=~"$runs",axis="elapsed",metric="sys_cpu_avg"}')]),
-        Panel(title="GC pause duration — p50 / p95 / p99", unit="s", w=12,
-              targets=[Target("p50", _q(0.50, "jvm_gc_pause_seconds_bucket", "le")),
-                       Target("p95", _q(0.95, "jvm_gc_pause_seconds_bucket", "le")),
-                       Target("p99", _q(0.99, "jvm_gc_pause_seconds_bucket", "le")),
-                       Target("avg",
+        # avg/max only, no quantiles: Micrometer publishes buckets for a Timer solely when the
+        # meter is listed under management.metrics.distribution.percentiles-histogram, and
+        # jvm.gc.pause is on no branch's list, so jvm_gc_pause_seconds_bucket does not exist.
+        Panel(title="GC pause duration — avg / max", unit="s", w=12,
+              targets=[Target("avg",
                              'rate(jvm_gc_pause_seconds_sum{job="$job"}[1m]) / rate(jvm_gc_pause_seconds_count{job="$job"}[1m])'),
                        Target("max", 'jvm_gc_pause_seconds_max{job="$job"}')],
               archived=None),
@@ -345,19 +330,14 @@ SECTIONS = [
               archived=None),
     ]),
     Section("Spring pools", [
-        Panel(title="HikariCP connections", unit="short", w=12,
+        Panel(title="HikariCP connections", unit="short", w=8,
               targets=[Target("active", 'hikaricp_connections_active{job="$job"}'),
                        Target("pending", 'hikaricp_connections_pending{job="$job"}'),
                        Target("max", 'hikaricp_connections_max{job="$job"}')],
               archived=None),
-        Panel(title="Tomcat HTTP threads", unit="short", w=12,
-              targets=[Target("busy", 'tomcat_threads_busy_threads{job="$job"}'),
-                       Target("current", 'tomcat_threads_current_threads{job="$job"}'),
-                       Target("max", 'tomcat_threads_config_max_threads{job="$job"}')],
-              archived=None),
         # Absorbed from TO-2's jvm-dashboard.json and ES-1's inventory-es-dashboard.json
         # (Task 9 deleted both; Task 10 merges their signals).
-        Panel(title="HikariCP — acquire & usage time", unit="s", w=12,
+        Panel(title="HikariCP — acquire & usage time", unit="s", w=8,
               targets=[Target("acquire avg",
                               'rate(hikaricp_connections_acquire_seconds_sum{job="$job"}[1m]) / rate(hikaricp_connections_acquire_seconds_count{job="$job"}[1m])'),
                        Target("acquire max", 'hikaricp_connections_acquire_seconds_max{job="$job"}'),
@@ -365,15 +345,8 @@ SECTIONS = [
                               'rate(hikaricp_connections_usage_seconds_sum{job="$job"}[1m]) / rate(hikaricp_connections_usage_seconds_count{job="$job"}[1m])'),
                        Target("usage max", 'hikaricp_connections_usage_seconds_max{job="$job"}')],
               archived=None),
-        Panel(title="HikariCP — connection timeouts", unit="ops", w=12,
+        Panel(title="HikariCP — connection timeouts", unit="ops", w=8,
               targets=[Target("timeouts", 'rate(hikaricp_connections_timeout_total{job="$job"}[1m])')],
-              archived=None),
-        Panel(title="R2DBC connection pool (ES family)", unit="short", w=24,
-              description="Reactive pool metrics; empty on the TO family, which uses HikariCP.",
-              targets=[Target("{{name}} acquired", 'r2dbc_pool_acquired_connections{job="$job"}'),
-                       Target("{{name}} pending", 'r2dbc_pool_pending_connections{job="$job"}'),
-                       Target("{{name}} idle", 'r2dbc_pool_idle_connections{job="$job"}'),
-                       Target("{{name}} max", 'r2dbc_pool_max_allocated_connections{job="$job"}')],
               archived=None),
     ]),
     Section("PostgreSQL", [

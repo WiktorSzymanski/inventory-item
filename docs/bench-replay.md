@@ -172,25 +172,23 @@ for section in spec.SECTIONS:
 "
 ```
 
-Current output (36 panels, regenerated 2026-08-06 after Task 10 added 13 panels and renamed
-"Order worker — queue depth & active threads (TO family)" to "Executor pools — threads & queue"):
+Current output (33 panels, regenerated 2026-08-06 after the dead-metric removal below):
 
 - **HTTP:** HTTP error rate (4xx / 5xx)
 - **Orders & domain:** Order processing time — p50 / p95 (TO family); Order queue wait — p50 / p95
-  (TO family); Orders completed by outcome & reason (TO family); Aggregate state fetch latency (ES
-  family); Outbox backlog (TO family); Outbox write time — p50 / p95 (TO family); Executor pools —
-  threads & queue
-- **JVM:** Non-heap memory by pool; GC pause duration — p50 / p95 / p99; JVM threads; Loaded
+  (TO family); Orders completed by outcome & reason (TO family); Outbox backlog (TO family); Outbox
+  write time — p50 / p95 (TO family); Executor pools — threads & queue
+- **JVM:** Non-heap memory by pool; GC pause duration — avg / max; JVM threads; Loaded
   classes; Process uptime; System load vs CPU cores; Threads by state; In-flight HTTP requests; GC
   allocation & promotion rate; GC overhead; Live data after GC; Log events by level; Spring Data
   repository invocations (top 10)
-- **Spring pools:** HikariCP connections; Tomcat HTTP threads; HikariCP — acquire & usage time;
-  HikariCP — connection timeouts; R2DBC connection pool (ES family)
+- **Spring pools:** HikariCP connections; HikariCP — acquire & usage time; HikariCP — connection
+  timeouts
 - **PostgreSQL:** WAL size; Active connections by state; Transaction rate; Tuple operations rate;
   Buffer cache hit ratio; Live rows by table; Per-table write rate; Locks by mode; Checkpoint
   activity; Container network I/O
 
-Five of the seven "Orders & domain" gaps are TO-family outbox and order-timing panels — exactly the
+Five of the six "Orders & domain" gaps are TO-family outbox and order-timing panels — exactly the
 axis this thesis compares TO against ES on — so an archived TO run cannot show outbox backlog,
 outbox write time, order processing time, order queue wait, or the outcome/reason breakdown at
 all. That data only ever existed in the live TSDB.
@@ -248,9 +246,9 @@ find bench-results -maxdepth 2 -name dump.json | wc -l
 
 ## 8. Per-run TSDB snapshots — full parity for future runs
 
-`replay_run.py` (sections 1-7) can only ever show what `dump.json` extracted — 36 of the merged
-dashboard's 56 panels (every `pg_stat_*` metric, WAL size, locks, checkpoints, GC pause, JVM
-threads, HikariCP, Tomcat, R2DBC, container network I/O, non-heap memory, GC allocation/overhead,
+`replay_run.py` (sections 1-7) can only ever show what `dump.json` extracted — 33 of the merged
+dashboard's 53 panels (every `pg_stat_*` metric, WAL size, locks, checkpoints, GC pause, JVM
+threads, HikariCP, container network I/O, non-heap memory, GC allocation/overhead,
 log events, Spring Data repository invocations, and on the TO family the outbox backlog and
 order-timing panels) have no archived equivalent at any effort, because that data was never
 captured into `dump.json` in the first place. For a run you are about to execute (not one already
@@ -285,7 +283,7 @@ fails.
 
 ### Viewing a snapshotted run: the "Data source" dropdown on `the-dashboard`
 
-Once a run is archived, the way to actually look at it — at full fidelity, all 56 panels, not just
+Once a run is archived, the way to actually look at it — at full fidelity, all 53 panels, not just
 the 20 `dump.json` can carry — is `the-dashboard` itself, not `bench-replay`. `the-dashboard`
 carries a **"Data source" template variable** (`$ds`) that every panel and target is wired to,
 instead of a fixed datasource. It defaults to the live Prometheus (normal day-to-day use, no
@@ -297,7 +295,7 @@ behaviour change), so:
 3. Set the time picker to the archived run's window (`meta.json`'s `windows.load` /
    `windows.full`, or the range `prom_snapshot.sh` / `prom_archive.sh` printed).
 
-Every panel — including the 36 that `bench-replay` can never show, like `pg_stat_*`, WAL size,
+Every panel — including the 33 that `bench-replay` can never show, like `pg_stat_*`, WAL size,
 locks, checkpoints, GC pause, HikariCP, and the TO family's outbox/order-timing panels — now
 queries the archive instead of live Prometheus and renders that run's real data. `bench-replay`
 still exists for its own purpose: overlaying several runs' `dump.json` extracts on one
@@ -312,7 +310,7 @@ DURATION=2m`): after snapshot + archive, `pg_stat_activity_count{datname="invent
 9091) — through a direct Prometheus API query, Grafana's `/api/ds/query`, and rendering
 `the-dashboard`'s own "Active connections by state" panel (id 39) via
 `/render/d-solo/the-dashboard/?panelId=39&var-ds=prometheus-replay&...` over the run's window,
-which returned a valid, non-trivial PDF. Those are two of the 36 panels that no `dump.json`-based
+which returned a valid, non-trivial PDF. Those are two of the 33 panels that no `dump.json`-based
 archive can ever show — and this time the check went through the dashboard's own datasource
 switch, not only the Prometheus API directly.
 
@@ -340,3 +338,70 @@ a benchmarking session (fresh head block) and archiving right after each run kee
 incremental archive step small; letting many runs accumulate in one long-lived `prometheus`
 process before the first snapshot makes the *first* snapshot of that session proportionally
 larger, one-time only.
+
+---
+
+## 9. Checking that every panel actually resolves
+
+The unit tests around `scripts/dashboards/` are *structural*: they prove expressions are unique,
+panels tile the grid, variables are declared, and no metric **name** was dropped in the merge of
+the five original dashboards. None of that notices a panel querying a metric the application never
+publishes — the name is carried over faithfully, the panel renders, and it is simply always empty.
+
+`scripts/verify_dashboard_metrics.py` closes that gap by asking Prometheus:
+
+```bash
+python3 scripts/verify_dashboard_metrics.py                        # live dashboard vs :9090
+python3 scripts/verify_dashboard_metrics.py --dashboard archived   # replay dashboard vs :9091
+python3 scripts/verify_dashboard_metrics.py --var job=inventory-es --var dbc=postgres-es
+```
+
+Each target lands in one of three buckets — `OK` (returns series), `EMPTY` (metric names exist,
+selector matches nothing right now), `MISSING` (Prometheus has never seen the name). Exit status is
+non-zero when anything is `MISSING` or errors.
+
+Two things to keep in mind when reading the output:
+
+- **A stack is one family, never both.** ES-family metrics are `MISSING` on a TO stack and vice
+  versa; that is correct, not a defect. Run it against a stack of each family, or corroborate with
+  branch source, before calling a panel dead.
+- **An idle stack proves nothing about counters.** Micrometer registers many meters lazily, on
+  first increment, so a counter that has not fired yet is indistinguishable from one that does not
+  exist. Run it under load, or point it at the replay archive, which holds a full TSDB snapshot of
+  a completed run.
+
+### The 2026-08-06 sweep, and what it removed
+
+First run of this check against a live TO stack: **89 of 99** live targets returned data, 9 were
+ES-family, 1 (`HTTP error rate`) was empty only because an idle stack throws no 4xx/5xx. The
+archived dashboard scored **38 of 39**. Before that sweep, four panels queried metrics that **no
+branch has ever produced**, and they were deleted:
+
+| Panel | Metric | Root cause |
+|---|---|---|
+| Aggregate state fetch latency (ES family) | `data_state_fetch_ms_seconds_bucket` | no branch registers this meter; the name is also malformed (`_ms_seconds`) |
+| GC pause duration (p50/p95/p99 targets only) | `jvm_gc_pause_seconds_bucket` | `jvm.gc.pause` is on no branch's `percentiles-histogram` list, so Micrometer emits only count/sum/max |
+| Tomcat HTTP threads | `tomcat_threads_*` | needs `server.tomcat.mbeanregistry.enabled=true`, which no branch sets; only `tomcat_sessions_*` are exposed |
+| R2DBC connection pool (ES family) | `r2dbc_pool_*` | no branch uses R2DBC |
+
+All four arrived through the merge of `jvm-spring-dashboard.json` and `inventory-es-dashboard.json`
+— legacy dashboards written against an older implementation. The merge test enforced that no name
+was *lost*, which is exactly how dead names got carried *forward*. `GC pause duration` kept its
+working avg/max targets and was retitled; the other three panels are gone. Recovering the middle
+two would mean changing the application under measurement across all eight variant branches
+mid-campaign, so they were removed rather than enabled.
+`MergeCoverage.test_never_collected_metrics_are_not_reintroduced` now fails if any of the nine
+names comes back.
+
+The ES-family metrics that this check reports `MISSING` on a TO stack were confirmed present a
+different way, since an ES stack could not be built in that session: each meter is registered in
+`ES-1..ES-4` source (`es.events.processed`, `projection.lag`, `order.projection.lag`,
+`saga.completed`, `saga.command.failed`; `inventory.opt.cache.*` and `inventory.opt.catchup` on
+ES-4 only), and all 16 archived ES runs carry populated `projection_lag_*`, `publish_lag_*` and
+`state_load_*` quantiles in `dump.json`, while all 8 archived TO runs carry `projection_lag = None`
+— the family split the dashboard encodes is the one the data shows.
+
+One caveat found and cleared along the way: `ES-1`, `ES-2` and `ES-3` have no
+`percentiles-histogram` block in `application.yaml` at all, which looks like it should leave every
+latency quantile empty on those branches. It does not — they configure histograms programmatically
+via `MeterFilter` instead, and their archived runs' quantiles are populated.
