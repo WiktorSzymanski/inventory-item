@@ -24,6 +24,10 @@ data class InventoryItem(
     // aggregate logic (pricing, eligibility, allocation) so the variants can be compared under
     // something more than a subtraction. Mirrors the ES branch's aggregate field of the same name.
     val reserveDelayMs: Int = 0,
+    // Benchmark padding, stored on the row rather than only on the creation event, so every
+    // reserve's read-modify-write carries it. The TO counterpart to ES rehydrating and
+    // snapshotting the same bytes on every aggregate load.
+    val additionalBytes: String = "",
     @Version
     val version: Long = 0L,
 ) {
@@ -69,7 +73,12 @@ data class InventoryItem(
         ): Pair<InventoryItem, InventoryCreatedEvent> {
             val additionalBytes = if (additionalBytesSize > 0) "x".repeat(additionalBytesSize) else ""
             return Pair(
-                InventoryItem(id = id, availableQty = availableQty, reserveDelayMs = reserveDelayMs),
+                InventoryItem(
+                    id = id,
+                    availableQty = availableQty,
+                    reserveDelayMs = reserveDelayMs,
+                    additionalBytes = additionalBytes,
+                ),
                 InventoryCreatedEvent(id, availableQty, correlationId, clock.instant(), additionalBytes, reserveDelayMs)
             )
         }
