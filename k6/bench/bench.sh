@@ -242,6 +242,8 @@ meta = {
     "variant": "$VARIANT",
     "variant_family": "${VARIANT_FAMILY:-}",
     "scenario": "$SCENARIO",
+    "run_label": "${RUN_LABEL:-}",
+    "point": "${POINT_RESOLVED:-${POINT:-}}",
     "branch": "$GIT_BRANCH",
     "commit": "$GIT_COMMIT",
     "git_dirty": int("$GIT_DIRTY"),

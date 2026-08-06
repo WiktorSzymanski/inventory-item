@@ -41,5 +41,28 @@ class RunLabel(unittest.TestCase):
         self.assertEqual("_p1.0MiB_d25-ms", run_label_block("p1.0MiB_d25-ms"))
 
 
+class MetaRecordsThePoint(unittest.TestCase):
+    """meta.json must carry the point as data, not only inside the directory name.
+
+    Without this a point is recoverable only by re-deriving it from four separate
+    config values, and compare.py cannot group by it at all.
+    """
+
+    def setUp(self):
+        with open(BENCH_SH) as fh:
+            self.script = fh.read()
+
+    def test_meta_json_has_a_run_label_field(self):
+        self.assertIn('"run_label":', self.script)
+
+    def test_meta_json_has_a_point_field(self):
+        self.assertIn('"point":', self.script)
+
+    def test_point_field_prefers_the_resolved_value(self):
+        # POINT_RESOLVED is normalised ("W-base,C11" -> "W-base-C11"); raw POINT is the
+        # fallback for a hand-run that never went through resolve_point.
+        self.assertIn('${POINT_RESOLVED:-${POINT:-}}', self.script)
+
+
 if __name__ == "__main__":
     unittest.main()
