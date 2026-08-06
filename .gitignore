@@ -38,3 +38,11 @@ out/
 .claude
 .kotlin
 CLAUDE.md
+
+# per-variant git worktrees created by scripts/run-suite.sh
+.worktrees/
+
+# central benchmark artifacts: every variant's runs land here
+bench-results/
+
+__pycache__/

@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# Run the benchmark on every variant, one after another, from `main`.
+#
+#   SCENARIO=steady RATE=60 DURATION=10m scripts/run-suite.sh
+#   scripts/run-suite.sh --only ES-4,TO-1
+#   SCENARIO=capacity scripts/run-suite.sh --continue-on-fail
+#
+# Every benchmark knob is the one bench.sh already understands — SCENARIO, RATE, DURATION,
+# DISTINCT_ITEMS, ITEMS_PER_ORDER, QTY_PER_LINE, PAYLOAD_BYTES, RESERVE_DELAY_MS,
+# WARMUP_ITERATIONS, STEP_*, DRAIN_TIMEOUT, ... — and is inherited straight through. This
+# script adds no knob vocabulary of its own; it decides WHICH variants run and in what
+# order, and guarantees each one starts from a clean stack.
+#
+# Options:
+#   --only V1,V2        subset of variants.env (validated; order still follows the registry)
+#   --no-build          use the images as they are; do not rebuild even if stale
+#   --continue-on-fail  run every variant even after one fails, and report at the end
+#   --snapshot-tsdb     preserve each run's raw Prometheus TSDB before teardown
+#
+# WHY SEQUENTIAL. All eight variants publish the same host ports (8080 nginx, 9090
+# prometheus, 3000 grafana, 5432 postgres), so they physically cannot overlap — and even if
+# they could, sharing a machine would make every number a measure of contention with the
+# neighbour rather than of the variant.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib.sh
+. "$HERE/lib.sh"
+
+ONLY=""
+NO_BUILD=0
+CONTINUE=0
+SNAPSHOT_TSDB="${SNAPSHOT_TSDB:-0}"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --only|-o)         ONLY="$2"; shift 2 ;;
+        --no-build)        NO_BUILD=1; shift ;;
+        --continue-on-fail) CONTINUE=1; shift ;;
+        --snapshot-tsdb)   SNAPSHOT_TSDB=1; shift ;;
+        -h|--help)         sed -n '2,30p' "$0" | sed 's/^# \?//'; exit 0 ;;
+        *)                 die "unknown argument: $1" ;;
+    esac
+done
+
+require_not_root
+require_tools
+
+VARIANTS="$(select_variants "$ONLY")"
+SCENARIO="${SCENARIO:-steady}"
+mkdir -p "$RESULTS_DIR"
+
+[ -w "$RESULTS_DIR" ] || die \
+    "bench-results/ is not writable by $(id -un) — likely left root-owned by an earlier sudo run. Fix with: sudo chown -R $(id -un):$(id -gn) '$RESULTS_DIR'"
+
+log "suite: scenario=$SCENARIO variants=$(tr '\n' ' ' <<<"$VARIANTS")"
+
+# Verdict codes are bench.sh's own: 0 PASS, 1 FAIL, 2 INVALID.
+declare -A VERDICT RUNDIR
+LAST_WT=""
+
+# The image is stale if the manifest has no record of it, the recorded commit no longer
+# matches the branch head, or the tag has since been deleted from the daemon.
+image_is_current() {
+    local variant="$1" wt="$2"
+    python3 - "$RESULTS_DIR/images.json" "$variant" "$(git -C "$wt" rev-parse HEAD)" \
+             "$(image_tag "$variant")" <<'PY'
+import json, subprocess, sys
+manifest, variant, head, tag = sys.argv[1:5]
+try:
+    rec = json.load(open(manifest))["images"][variant]
+except Exception:
+    sys.exit(1)
+if rec.get("commit") != head:
+    sys.exit(1)
+sys.exit(subprocess.call(["docker", "image", "inspect", tag],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+PY
+}
+
+run_one() {
+    local variant="$1" wt rc=0 run_dir
+
+    wt="$(ensure_worktree "$variant")"
+
+    # Fail closed. A branch without bench.env has no harness, and common.sh would exit with
+    # a message that says nothing about which variant it was.
+    if [ ! -f "$wt/bench.env" ] || [ ! -x "$wt/k6/bench/bench.sh" ]; then
+        log "SKIP $variant: no benchmark harness on $(branch_of "$variant") (bench.env / k6/bench/bench.sh missing)"
+        VERDICT[$variant]="SKIPPED"
+        return 0
+    fi
+
+    # Clean slate before this variant starts, not after the previous one finished — so an
+    # aborted earlier suite, or a stack left running by hand, is cleared too.
+    # Explicit `if`: under `set -e` a bare `[ -n "$X" ] && cmd` aborts the script on the
+    # very first variant, when LAST_WT is still empty.
+    if [ -n "$LAST_WT" ]; then teardown "$LAST_WT"; fi
+    teardown "$wt"
+    LAST_WT="$wt"
+
+    if [ "$NO_BUILD" = "0" ] && ! image_is_current "$variant" "$wt"; then
+        log "$variant: image missing or behind branch head — building"
+        "$HERE/build-images.sh" --only "$variant"
+    fi
+
+    log "=== $variant: $SCENARIO ==="
+    # SKIP_BUILD=1 is what makes the suite honest: bench.sh would otherwise rebuild and
+    # retag the image itself, discarding the provenance stamp build-images.sh applied and
+    # running something this script never recorded.
+    ( cd "$wt" && SKIP_BUILD=1 ./k6/bench/bench.sh ) || rc=$?
+
+    case "$rc" in
+        0) VERDICT[$variant]="PASS" ;;
+        1) VERDICT[$variant]="FAIL" ;;
+        2) VERDICT[$variant]="INVALID" ;;
+        *) VERDICT[$variant]="ERROR($rc)" ;;
+    esac
+
+    # Newest run directory for this variant — bench.sh names it <variant>_<scenario>_<ts>.
+    run_dir="$(ls -td "$RESULTS_DIR/${variant}_${SCENARIO}_"* 2>/dev/null | head -1 || true)"
+    RUNDIR[$variant]="${run_dir:-(none)}"
+
+    # Must happen BEFORE teardown: `down -v` destroys the prometheus-data volume, and with
+    # it every raw series. dump.json keeps ~20 extracted series; the TSDB keeps all of them.
+    if [ "$SNAPSHOT_TSDB" = "1" ] && [ -n "$run_dir" ] && [ -x "$wt/scripts/prom_snapshot.sh" ]; then
+        log "$variant: snapshotting Prometheus TSDB"
+        ( cd "$wt" && ./scripts/prom_snapshot.sh "$(basename "$run_dir")" ) \
+            || log "$variant: TSDB snapshot failed (non-fatal; the run's own artifacts are intact)"
+    fi
+
+    log "$variant: ${VERDICT[$variant]}"
+    [ "$rc" = "0" ] || [ "$CONTINUE" = "1" ] || return "$rc"
+    return 0
+}
+
+SUITE_RC=0
+for v in $VARIANTS; do
+    run_one "$v" || { SUITE_RC=$?; break; }
+done
+
+if [ -n "$LAST_WT" ]; then teardown "$LAST_WT"; fi
+
+# ---------------------------------------------------------------- report
+echo
+printf '  %-8s  %-9s  %s\n' VARIANT VERDICT RUN
+printf '  %-8s  %-9s  %s\n' -------- --------- ---
+for v in $VARIANTS; do
+    printf '  %-8s  %-9s  %s\n' "$v" "${VERDICT[$v]:-not-run}" \
+        "$(basename "${RUNDIR[$v]:-}" 2>/dev/null)"
+done
+echo
+echo "  compare:  python3 scripts/compare.py bench-results/*_${SCENARIO}_*"
+echo
+
+for v in $VARIANTS; do
+    case "${VERDICT[$v]:-not-run}" in
+        PASS|SKIPPED) ;;
+        *) SUITE_RC=1 ;;
+    esac
+done
+exit "$SUITE_RC"
