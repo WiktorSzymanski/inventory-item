@@ -270,13 +270,38 @@ Grafana purely by its time range; `prometheus-replay` is stopped for the copy (b
 must be older than the running head block) and always restarted afterwards, even if the copy
 fails.
 
+### Viewing a snapshotted run: the "Data source" dropdown on `the-dashboard`
+
+Once a run is archived, the way to actually look at it — at full fidelity, all 48 panels, not just
+the ~25 `dump.json` can carry — is `the-dashboard` itself, not `bench-replay`. `the-dashboard`
+carries a **"Data source" template variable** (`$ds`) that every panel and target is wired to,
+instead of a fixed datasource. It defaults to the live Prometheus (normal day-to-day use, no
+behaviour change), so:
+
+1. Open `the-dashboard` in Grafana.
+2. Switch the "Data source" dropdown (top of the dashboard) from "Prometheus" to "Prometheus
+   Replay".
+3. Set the time picker to the archived run's window (`meta.json`'s `windows.load` /
+   `windows.full`, or the range `prom_snapshot.sh` / `prom_archive.sh` printed).
+
+Every panel — including the 23 that `bench-replay` can never show, like `pg_stat_*`, WAL size,
+locks, checkpoints, GC pause, HikariCP, and the TO family's outbox/order-timing panels — now
+queries the archive instead of live Prometheus and renders that run's real data. `bench-replay`
+still exists for its own purpose: overlaying several runs' `dump.json` extracts on one
+elapsed-time axis, which `the-dashboard` cannot do. `bench-replay` itself has no such dropdown and
+stays pinned to `prometheus-replay` — it only ever holds replayed data, so a switch would be
+meaningless there.
+
 **Verified end to end** (2026-08-06, run `TO-3_steady_20260806T001945Z`, `SCENARIO=steady
 DURATION=2m`): after snapshot + archive, `pg_stat_activity_count{datname="inventory"}` and
 `pg_stat_database_xact_commit{datname="inventory"}` both returned real data for the run's own
 `[t_settle_end, t_load_end]` window when queried against the `prometheus-replay` datasource (port
-9091) — through both a direct Prometheus API query and Grafana's `/api/ds/query`, using the exact
-PromQL from the "Active connections by state" panel in `spec.py`. Those are two of the 23 panels
-that no `dump.json`-based archive can ever show.
+9091) — through a direct Prometheus API query, Grafana's `/api/ds/query`, and rendering
+`the-dashboard`'s own "Active connections by state" panel (id 39) via
+`/render/d-solo/the-dashboard/?panelId=39&var-ds=prometheus-replay&...` over the run's window,
+which returned a valid, non-trivial PDF. Those are two of the 23 panels that no `dump.json`-based
+archive can ever show — and this time the check went through the dashboard's own datasource
+switch, not only the Prometheus API directly.
 
 ### Disk cost
 

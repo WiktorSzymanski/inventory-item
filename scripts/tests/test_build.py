@@ -27,6 +27,35 @@ class GeneratedDashboards(unittest.TestCase):
                             self.assertIn(token[1:], declared,
                                           f"{dashboard['uid']}/{panel['title']}: {token} not declared")
 
+    def test_live_dashboard_has_a_switchable_datasource_variable(self):
+        """The live dashboard can be pointed at the replay archive from the dropdown
+        (Task 8): every panel/target uses ${ds}, not a fixed uid, and the default is
+        explicitly the live Prometheus so switching is opt-in, not accidental."""
+        names = {v["name"]: v for v in self.live["templating"]["list"]}
+        self.assertIn("ds", names)
+        self.assertEqual(names["ds"]["type"], "datasource")
+        self.assertEqual(names["ds"]["current"]["uid"], "prometheus")
+        for panel in self.live["panels"]:
+            if "datasource" in panel:
+                self.assertEqual(panel["datasource"], {"type": "prometheus", "uid": "${ds}"},
+                                  f"the-dashboard/{panel.get('title')}: not on ${{ds}}")
+            for target in panel.get("targets", []):
+                self.assertEqual(target["datasource"], {"type": "prometheus", "uid": "${ds}"},
+                                  f"the-dashboard/{panel.get('title')}: target not on ${{ds}}")
+
+    def test_archived_dashboard_stays_pinned_to_the_replay_datasource(self):
+        """bench-replay must never expose the switch: it only ever holds replayed
+        dump.json data, so pointing it at live Prometheus would be nonsensical."""
+        names = {v["name"] for v in self.archived["templating"]["list"]}
+        self.assertNotIn("ds", names)
+        for panel in self.archived["panels"]:
+            if "datasource" in panel:
+                self.assertEqual(panel["datasource"]["uid"], "prometheus-replay",
+                                  f"bench-replay/{panel.get('title')}: not pinned to prometheus-replay")
+            for target in panel.get("targets", []):
+                self.assertEqual(target["datasource"]["uid"], "prometheus-replay",
+                                  f"bench-replay/{panel.get('title')}: target not pinned to prometheus-replay")
+
     def test_no_panel_overflows_the_grid(self):
         for dashboard in (self.live, self.archived):
             for panel in dashboard["panels"]:
