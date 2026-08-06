@@ -49,6 +49,7 @@
           "refId": "job-variable"
         },
         "definition": "label_values(up, job)",
+        "regex": "/^inventory-.*/",
         "refresh": 2,
         "sort": 1,
         "includeAll": false,
@@ -69,6 +70,7 @@
           "refId": "db-variable"
         },
         "definition": "label_values(pg_database_size_bytes, datname)",
+        "regex": "/^inventory$/",
         "refresh": 2,
         "sort": 1,
         "includeAll": false,
@@ -89,6 +91,7 @@
           "refId": "dbc-variable"
         },
         "definition": "label_values(container_memory_rss, name)",
+        "regex": "/^postgres-(?:to|es)$/",
         "refresh": 2,
         "sort": 1,
         "includeAll": false,
@@ -109,6 +112,7 @@
           "refId": "apic-variable"
         },
         "definition": "label_values(container_memory_rss, name)",
+        "regex": "/api-(?:to|es)-[0-9]+$/",
         "refresh": 2,
         "sort": 1,
         "includeAll": false,
@@ -484,7 +488,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 26,
+        "y": 27,
         "w": 12,
         "h": 8
       },
@@ -545,7 +549,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 26,
+        "y": 27,
         "w": 12,
         "h": 8
       },
@@ -624,7 +628,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 34,
+        "y": 35,
         "w": 12,
         "h": 8
       },
@@ -694,7 +698,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 34,
+        "y": 35,
         "w": 12,
         "h": 8
       },
@@ -764,7 +768,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 42,
+        "y": 43,
         "w": 12,
         "h": 8
       },
@@ -825,7 +829,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 42,
+        "y": 43,
         "w": 12,
         "h": 8
       },
@@ -886,7 +890,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 50,
+        "y": 51,
         "w": 12,
         "h": 8
       },
@@ -965,7 +969,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 50,
+        "y": 51,
         "w": 12,
         "h": 8
       },
@@ -1026,7 +1030,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 58,
+        "y": 59,
         "w": 24,
         "h": 8
       },
@@ -1105,7 +1109,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 66,
+        "y": 67,
         "w": 12,
         "h": 8
       },
@@ -1184,7 +1188,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 66,
+        "y": 67,
         "w": 12,
         "h": 8
       },
@@ -1254,7 +1258,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 74,
+        "y": 75,
         "w": 12,
         "h": 8
       },
@@ -1333,7 +1337,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 74,
+        "y": 75,
         "w": 12,
         "h": 8
       },
@@ -1412,7 +1416,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 82,
+        "y": 83,
         "w": 12,
         "h": 8
       },
@@ -1491,7 +1495,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 82,
+        "y": 83,
         "w": 12,
         "h": 8
       },
@@ -1552,7 +1556,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 90,
+        "y": 91,
         "w": 12,
         "h": 8
       },
@@ -1622,7 +1626,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 90,
+        "y": 91,
         "w": 12,
         "h": 8
       },
@@ -1701,7 +1705,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 98,
+        "y": 99,
         "w": 24,
         "h": 8
       },
