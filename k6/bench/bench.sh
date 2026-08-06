@@ -29,7 +29,22 @@ SETTLE_S="${SETTLE_S:-60}"
 SCRAPE_SETTLE_S="${SCRAPE_SETTLE_S:-15}"
 
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
-RUN_NAME="${VARIANT}_${SCENARIO}_${TS}"
+
+# >>> run-label
+# Optional human label, so runs differing only in PAYLOAD_BYTES / RESERVE_DELAY_MS are
+# distinguishable in bench-results/ without opening meta.json. meta.json remains the source
+# of truth for the config; this is navigation only.
+#
+# Sanitised because the label becomes a directory name AND is interpolated into the
+# container-side OUT_DIR path: an unescaped slash would split the path, a space would split
+# the argument. printf '%s' avoids the trailing newline that echo would feed to tr.
+LABEL_PART=""
+if [ -n "${RUN_LABEL:-}" ]; then
+    LABEL_PART="_$(printf '%s' "$RUN_LABEL" | tr -c 'A-Za-z0-9._-' '-')"
+fi
+# <<< run-label
+
+RUN_NAME="${VARIANT}_${SCENARIO}${LABEL_PART}_${TS}"
 RUN_DIR="$REPO_ROOT/bench-results/$RUN_NAME"
 CONTAINER_OUT="/bench-results/$RUN_NAME"
 
