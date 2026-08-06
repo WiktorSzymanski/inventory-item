@@ -54,6 +54,7 @@ This is what the plan corrects. Do not assume any of it has changed.
 | `k6/bench/bench.sh` | Modify (Task 3): optional sanitised `RUN_LABEL` in `RUN_NAME`. |
 | `scripts/tests/test_evaluate.py` | Create (Task 2). |
 | `scripts/tests/test_bench_sh.py` | Create (Task 3). |
+| `scripts/bench_run.sh` | Already written (`0f881e8`): `bench.sh` + a TSDB snapshot that survives `docker compose down -v`. Lives outside `k6/` deliberately — the harness must never depend on the replay stack — so it is not covered by the byte-identical invariant, but Task 4 must still copy it to all 8 branches or the runbook's commands fail there. |
 | `bench.env` | Create on `ES-1`, `ES-3` (Task 4): the only per-branch file. |
 | `monitoring/prometheus/prometheus.yml` | Modify on `ES-1`, `ES-3` (Task 4): DNS service discovery for `api-es`. |
 
@@ -523,8 +524,8 @@ The harness diverges on every other branch and is absent from `ES-1` and `ES-3`.
 for b in TO-1 TO-2 TO-4 ES-2 ES-4; do
     git checkout "$b" || break
     git rm -rq k6
-    git checkout TO-3 -- k6 docker-compose.bench.yml
-    git add -A k6 docker-compose.bench.yml
+    git checkout TO-3 -- k6 docker-compose.bench.yml scripts/bench_run.sh
+    git add -A k6 docker-compose.bench.yml scripts/bench_run.sh
     git commit -q -m "chore(bench): converge k6/ onto the canonical TO-3 harness
 
 The harness was supposed to be byte-identical on every branch and had drifted on
@@ -549,7 +550,7 @@ for b in ES-1 ES-3; do
     git checkout "$b" || break
     git rm -rq k6
     git checkout TO-3 -- k6 docker-compose.bench.yml \
-        scripts/grafana_snapshot.py scripts/prom_restore.sh
+        scripts/grafana_snapshot.py scripts/prom_restore.sh scripts/bench_run.sh
     git add -A k6 docker-compose.bench.yml scripts
 done
 ```
