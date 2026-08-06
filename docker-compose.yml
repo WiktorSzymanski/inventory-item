@@ -21,7 +21,7 @@ services:
       - postgres-es-data:/var/lib/postgresql/data
 
   api-es:
-    image: inventory-reservation-es:latest
+    image: ${IMAGE_TAG:-inventory-reservation-es-1:latest}
     # No container_name / no host port: this service is scaled via deploy.replicas, and both
     # would collide on the second replica. Replicas are reached inside the compose network
     # by the DNS name `api-es` (round-robin A records); nginx is the single published entry
