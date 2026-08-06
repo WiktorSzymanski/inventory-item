@@ -12,10 +12,10 @@
 # order, and guarantees each one starts from a clean stack. Knobs can also be pinned for a
 # whole campaign in workload.env, which this sources; the shell environment still wins.
 #
-# RESERVE_DELAY_MS is implemented on ES-4 and TO-3 ONLY. The other six branches have no
-# `reserveDelayMs` on CreateItemRequest, k6 sends it anyway, and Spring ignores unknown
-# properties — so it is silently discarded there while meta.json still records the requested
-# value. Sweep it with `--only ES-4,TO-3`; the suite warns if you do otherwise.
+# PAYLOAD_BYTES is honoured on all eight branches. RESERVE_DELAY_MS is not: ES-1, ES-2 and
+# ES-3 have no `reserveDelayMs` on CreateItemRequest, k6 sends it anyway, and Spring ignores
+# unknown properties — so it is silently discarded there while meta.json still records the
+# requested value. The suite warns and names them; variants.env is the source of truth.
 #
 # Options:
 #   --only V1,V2         subset of variants.env (validated; order still follows the registry)

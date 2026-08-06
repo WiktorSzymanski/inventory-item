@@ -83,27 +83,28 @@ Every knob `bench.sh` understands is passed straight through — `RATE`, `DURATI
 `DISTINCT_ITEMS`, `ITEMS_PER_ORDER`, `PAYLOAD_BYTES`, `WARMUP_ITERATIONS`, `STEP_*` and the
 rest. Set them per invocation, or pin them for a campaign in `workload.env`.
 
-**`RESERVE_DELAY_MS` is implemented on `ES-4` and `TO-3` only.** It adds an artificial sleep
-inside the aggregate on every successful reserve — the domain-work cost axis, and the
-counterpart to the `PAYLOAD_BYTES` sweep. The other six branches have no `reserveDelayMs`
-field on `CreateItemRequest` and no sleep in the aggregate.
+**`PAYLOAD_BYTES` is honoured everywhere. `RESERVE_DELAY_MS` is not — `ES-1`, `ES-2` and
+`ES-3` still lack it.**
 
-The trap is that this fails *silently*. `k6/` is byte-identical on all eight branches, so k6
-sends the field everywhere; Spring ignores unknown JSON properties, so the seed still returns
-201 and the run still passes. And `meta.json` records the **requested** `reserveDelayMs` on
-every variant, because it records what k6 was told, not what the server honoured — so
-`compare.py`'s `reserveMs` column shows the same number for all eight while only two of them
-actually slept. Nothing downstream can distinguish them.
+| Knob | What it costs | Honoured on |
+|---|---|---|
+| `PAYLOAD_BYTES` | padding on the row/aggregate that every reserve rewrites | all eight |
+| `RESERVE_DELAY_MS` | a sleep on the reserve path, under the row/aggregate lock | all four `TO-*`, plus `ES-4` |
 
-So sweep it against the two branches that implement it:
+The trap is that a missing knob fails *silently*. `k6/` is byte-identical on all eight
+branches, so k6 sends the field everywhere; Spring ignores unknown JSON properties, so the
+seed still returns 201 and the run still passes. And `meta.json` records the **requested**
+value on every variant, because it records what k6 was told, not what the server honoured —
+so `compare.py`'s `reserveMs` column shows the same number for all eight while only some of
+them actually slept. Nothing downstream can distinguish them.
+
+`run-suite.sh` warns and names the affected variants if a non-zero value is set for a branch
+that cannot honour it. `variants.env`'s fourth column is the source of truth, and the
+warning's "honoured on" list is derived from it rather than hardcoded.
 
 ```bash
-RESERVE_DELAY_MS=25 RATE=10 scripts/run-suite.sh --only ES-4,TO-3
+RESERVE_DELAY_MS=25 RATE=10 scripts/run-suite.sh --only TO-3,ES-4
 ```
-
-`run-suite.sh` warns and names the affected variants if a non-zero value is set for any
-branch that cannot honour it. `variants.env` is where that capability is recorded, as the
-`reserve-delay` flag in the fourth column.
 
 Lower `RATE` / `STEP_START` when you raise the delay: the sleep is held while the DB row lock
 (TO) or the pessimistic aggregate lock (ES) is held, so the throughput ceiling is roughly

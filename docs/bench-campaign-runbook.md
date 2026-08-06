@@ -15,27 +15,25 @@ block in phase 1 collapses to a single command here.
 ### What is still blocked
 
 The campaign design assumes `RESERVE_DELAY_MS` and `PAYLOAD_BYTES` are honoured on **all
-eight** branches. They are not, and nothing at run time will tell you:
+eight** branches. As of 2026-08-06 one of them is:
 
 | Knob | Honoured on | Ignored on |
 |---|---|---|
-| `RESERVE_DELAY_MS` | `ES-4`, `TO-3` | `TO-1`, `TO-2`, `TO-4`, `ES-1`, `ES-2`, `ES-3` |
-| `PAYLOAD_BYTES` | all four `ES-*`, `TO-3` | `TO-1`, `TO-2`, `TO-4` |
+| `PAYLOAD_BYTES` | all eight | — |
+| `RESERVE_DELAY_MS` | all four `TO-*`, `ES-4` | `ES-1`, `ES-2`, `ES-3` |
 
 k6 sends both fields to every branch, Spring ignores unknown JSON properties, and `meta.json`
-records what k6 was *told* rather than what the server applied — so `compare.py` prints the
-requested value for all eight while only some slept or padded. `run-suite.sh` warns and names
-the affected variants before the first run; do not ignore it.
+records what k6 was *told* rather than what the server applied — so `compare.py` would print
+the requested value for all eight while only some slept. `run-suite.sh` warns and names the
+affected variants before the first run; do not ignore it.
 
-**Consequence for §6.** Cells `C01`, `C10` and `C11` are only meaningful if the winners are
-`ES-4` and `TO-3`. If phase 1 selects any other TO winner, its `C01`/`C10`/`C11` runs measure
-the `C00` binary and the comparison is void. Either finish the outstanding phase-0
-application work first, or record the winner constraint explicitly.
+**Consequence for §6.** The TO side is now unconstrained: any variant can be `<TO-WIN>` and
+its `C01`/`C11` runs will apply the delay. On the ES side, cells `C01` and `C11` are only
+meaningful if `<ES-WIN>` is `ES-4`. If phase 1 selects `ES-1`, `ES-2` or `ES-3`, those two
+cells measure the `C00` binary for the ES winner and the comparison is void — port the knob
+to that branch first, or record the constraint explicitly.
 
-`PAYLOAD_BYTES` on `TO-1`/`TO-2`/`TO-4` is the subtler case: the field is accepted and rides
-`InventoryCreatedEvent`, but those branches have no `additional_bytes` migration, so there is
-no column on the row each reserve rewrites — the copy-on-write cost the lever exists to
-measure never happens.
+`C10` (payload only) is unaffected on both sides.
 
 ### Runs go through `scripts/run-suite.sh`
 

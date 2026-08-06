@@ -72,18 +72,24 @@ has_cap() {
 warn_unsupported_knobs() {
     local variants="$1"
     _warn_knob "$variants" RESERVE_DELAY_MS "${RESERVE_DELAY_MS:-}" reserve-delay \
-        "a per-reserve sleep in the aggregate" "ES-4,TO-3"
+        "a per-reserve sleep in the aggregate"
     _warn_knob "$variants" PAYLOAD_BYTES "${PAYLOAD_BYTES:-}" payload-bytes \
-        "aggregate padding on the row each reserve rewrites" "ES-1,ES-2,ES-3,ES-4,TO-3"
+        "aggregate padding on the row each reserve rewrites"
 }
 
 _warn_knob() {
-    local variants="$1" name="$2" value="$3" cap="$4" what="$5" ok="$6" v missing=""
+    local variants="$1" name="$2" value="$3" cap="$4" what="$5" v missing="" ok=""
     [ -n "$value" ] && [ "$value" != "0" ] || return 0
     for v in $variants; do
         has_cap "$v" "$cap" || missing="$missing $v"
     done
     [ -n "$missing" ] || return 0
+    # Derived from the registry, never hardcoded: the supported set moves as branches gain
+    # the knob, and a stale literal here would misdirect exactly when the warning matters.
+    for v in $(read_variants | awk '{print $1}'); do
+        has_cap "$v" "$cap" && ok="$ok $v"
+    done
+    ok="${ok# }"; ok="${ok// /, }"
     log ""
     log "WARNING: $name=$value is $what, and these selected variants do not implement it:"
     log "        $missing"
