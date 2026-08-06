@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""Generate both Grafana dashboards from scripts/dashboards/spec.py.
+
+    python3 -m scripts.dashboards.build
+
+Writes monitoring/grafana/provisioning/dashboards/{the-dashboard,bench-replay}.json.
+Never edit those files by hand — edit spec.py and re-run this.
+"""
+import json
+import os
+
+from . import spec
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+OUT_DIR = os.path.join(REPO_ROOT, "monitoring", "grafana", "provisioning", "dashboards")
+DS = {"type": "prometheus", "uid": "prometheus"}
+DS_VAR = {"type": "prometheus", "uid": "${ds}"}
+DS_REPLAY = {"type": "prometheus", "uid": "prometheus-replay"}
+ANCHOR_ISO = "2026-01-01T00:00:00.000Z"
+
+
+def _timeseries(panel, targets, datasource, panel_id, x, y):
+    return {
+        "id": panel_id,
+        "title": panel.title,
+        "description": panel.description,
+        "type": panel.type,
+        "gridPos": {"x": x, "y": y, "w": panel.w, "h": panel.h},
+        "datasource": datasource,
+        "fieldConfig": {
+            "defaults": {
+                "unit": panel.unit,
+                "min": 0,
+                **({"max": panel.max} if panel.max is not None else {}),
+                "color": {"mode": "palette-classic"},
+                "custom": {
+                    "drawStyle": "line",
+                    "lineInterpolation": "linear",
+                    "lineWidth": 2,
+                    "fillOpacity": 0,
+                    "showPoints": "auto",
+                    "spanNulls": False,
+                },
+            },
+            "overrides": [],
+        },
+        "options": {
+            "legend": {"displayMode": "table", "placement": "bottom",
+                       "calcs": ["mean", "max", "lastNotNull"], "showLegend": True},
+            "tooltip": {"mode": "multi", "sort": "desc"},
+        },
+        "targets": [
+            {"datasource": datasource, "expr": t.expr, "legendFormat": t.legend,
+             "refId": chr(ord("A") + i)}
+            for i, t in enumerate(targets)
+        ],
+    }
+
+
+def _row(title, panel_id, y):
+    return {"id": panel_id, "type": "row", "title": title, "collapsed": False,
+            "gridPos": {"x": 0, "y": y, "w": 24, "h": 1}, "panels": []}
+
+
+def _layout(sections, pick, datasource):
+    """Lay panels out left-to-right, wrapping at 24 columns, one row header per section."""
+    panels, panel_id, y, skipped = [], 1, 0, []
+    for section in sections:
+        chosen = [(p, pick(p)) for p in section.panels]
+        chosen = [(p, t) for p, t in chosen if t]
+        skipped += [p.title for p in section.panels if not pick(p)]
+        if not chosen:
+            continue
+        panels.append(_row(section.title, panel_id, y))
+        panel_id += 1
+        y += 1
+        x = 0
+        for panel, targets in chosen:
+            if x + panel.w > 24:
+                x, y = 0, y + panel.h
+            panels.append(_timeseries(panel, targets, datasource, panel_id, x, y))
+            panel_id += 1
+            x += panel.w
+        y += max(p.h for p, _ in chosen)
+    return panels, panel_id, y, skipped
+
+
+def _base(uid, title, description, time_from, time_to, templating):
+    return {
+        "uid": uid, "title": title, "description": description,
+        "editable": False, "graphTooltip": 1, "refresh": "", "schemaVersion": 39,
+        "tags": ["inventory"], "timezone": "browser",
+        "time": {"from": time_from, "to": time_to}, "timepicker": {},
+        "annotations": {"list": []}, "links": [], "version": 1,
+        "templating": {"list": templating},
+    }
+
+
+def _var(name, label, query, datasource, multi=False):
+    return {"name": name, "label": label, "type": "query", "datasource": datasource,
+            "query": {"query": query, "refId": f"{name}-variable"}, "definition": query,
+            "refresh": 2, "sort": 1, "includeAll": multi, "multi": multi,
+            "current": {}, "options": []}
+
+
+def _ds_var():
+    # Datasource-type variable, not query-type: lets the SAME dashboard JSON be pointed at
+    # either the live Prometheus or the replay archive from the dropdown, which is how a
+    # snapshotted run (Task 8) actually gets viewed at full fidelity -- switch this to
+    # "Prometheus Replay" and set the time range to the run's window. `current` is set
+    # explicitly to the live datasource so the default is unambiguous rather than left to
+    # Grafana's "first option" behaviour. Archived dashboard (build_archived) deliberately
+    # does NOT get this variable -- it must always stay pinned to prometheus-replay.
+    return {"name": "ds", "label": "Data source", "type": "datasource",
+            "query": "prometheus", "refresh": 1, "hide": 0,
+            "current": {"type": "prometheus", "uid": "prometheus", "text": "Prometheus"},
+            "options": []}
+
+
+def build_live():
+    dash = _base(
+        "the-dashboard", "Inventory — Full Stack",
+        "Generated by scripts/dashboards/build.py from scripts/dashboards/spec.py — do not edit by hand. "
+        "Merges the former 'Metrics to compare', 'PostgreSQL Metrics' and 'JVM & Spring' dashboards. "
+        "Panels for the other variant family render empty by design. Use the 'Data source' dropdown "
+        "to view a snapshotted run archived by scripts/prom_archive.sh: switch it to 'Prometheus "
+        "Replay' and set the time range to that run's window.",
+        "now-15m", "now",
+        [_ds_var(),
+         _var("job", "API job", "label_values(up, job)", DS),
+         _var("db", "Database", "label_values(pg_database_size_bytes, datname)", DS),
+         _var("dbc", "DB container", "label_values(container_memory_rss, name)", DS),
+         _var("apic", "API container", "label_values(container_memory_rss, name)", DS)])
+    dash["refresh"] = "5s"
+    panels, _, _, _ = _layout(spec.SECTIONS, lambda p: p.targets, DS_VAR)
+    dash["panels"] = panels
+    return dash
+
+
+def build_archived():
+    dash = _base(
+        "bench-replay", "Bench Replay (archived runs)",
+        "Generated by scripts/dashboards/build.py — do not edit by hand. Rebuilt from "
+        "bench-results/<run_id>/dump.json by scripts/replay_run.py; NOT the original Prometheus data. "
+        "All runs are anchored to a common origin so several can be overlaid: the time axis is elapsed "
+        "time since each run's window_full start, displayed from " + ANCHOR_ISO + ".",
+        ANCHOR_ISO, "2026-01-01T02:00:00.000Z",
+        [_var("runs", "Runs", "label_values(replay_series, run_id)", DS_REPLAY, multi=True)])
+    panels, next_id, y, skipped = _layout(spec.SECTIONS, lambda p: p.archived, DS_REPLAY)
+    panels.insert(0, _summary_table(next_id, 0))
+    for p in panels[1:]:
+        p["gridPos"]["y"] += 8
+    panels.append({
+        "id": next_id + 1, "type": "text", "title": "Not available for archived runs",
+        "gridPos": {"x": 0, "y": y + 8, "w": 24, "h": 6},
+        "options": {"mode": "markdown", "content":
+                    "dump.json does not carry these signals, so no panel can exist for them:\n\n"
+                    + "\n".join(f"- {t}" for t in skipped)},
+    })
+    dash["panels"] = panels
+    return dash
+
+
+def _summary_table(panel_id, y):
+    """One row per selected run, one column per dump.json derived/scalar key."""
+    return {
+        "id": panel_id, "title": "Run summary (dump.json derived + scalars)", "type": "table",
+        "gridPos": {"x": 0, "y": y, "w": 24, "h": 8}, "datasource": DS_REPLAY,
+        "fieldConfig": {"defaults": {"custom": {"align": "right"}}, "overrides": []},
+        "options": {"showHeader": True},
+        "targets": [{"datasource": DS_REPLAY,
+                     "expr": 'last_over_time(replay_summary{run_id=~"$runs"}[$__range])',
+                     "format": "table", "instant": True, "refId": "A"}],
+        "transformations": [
+            {"id": "organize", "options": {"excludeByName": {"Time": True, "__name__": True}}},
+            {"id": "groupingToMatrix",
+             "options": {"columnField": "key", "rowField": "run_id", "valueField": "Value"}},
+        ],
+    }
+
+
+def main():
+    for name, dashboard in (("the-dashboard", build_live()), ("bench-replay", build_archived())):
+        path = os.path.join(OUT_DIR, f"{name}.json")
+        with open(path, "w") as fh:
+            json.dump(dashboard, fh, indent=2, sort_keys=False)
+            fh.write("\n")
+        print(f"wrote {path} ({len(dashboard['panels'])} panels)")
+
+
+if __name__ == "__main__":
+    main()
