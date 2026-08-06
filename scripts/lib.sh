@@ -70,21 +70,28 @@ has_cap() {
 # delay and did not. Nothing else in the pipeline can tell the difference, which is why the
 # check has to live here, before the first run starts.
 warn_unsupported_knobs() {
-    local variants="$1" v missing=""
-    if [ -n "${RESERVE_DELAY_MS:-}" ] && [ "${RESERVE_DELAY_MS}" != "0" ]; then
-        for v in $variants; do
-            has_cap "$v" reserve-delay || missing="$missing $v"
-        done
-        if [ -n "$missing" ]; then
-            log ""
-            log "WARNING: RESERVE_DELAY_MS=$RESERVE_DELAY_MS is implemented on ES-4 and TO-3 only."
-            log "         These selected variants will SILENTLY IGNORE it:$missing"
-            log "         Their meta.json will still record reserveDelayMs=$RESERVE_DELAY_MS,"
-            log "         because that is what k6 was told, not what the server applied."
-            log "         For a valid sweep use: --only ES-4,TO-3"
-            log ""
-        fi
-    fi
+    local variants="$1"
+    _warn_knob "$variants" RESERVE_DELAY_MS "${RESERVE_DELAY_MS:-}" reserve-delay \
+        "a per-reserve sleep in the aggregate" "ES-4,TO-3"
+    _warn_knob "$variants" PAYLOAD_BYTES "${PAYLOAD_BYTES:-}" payload-bytes \
+        "aggregate padding on the row each reserve rewrites" "ES-1,ES-2,ES-3,ES-4,TO-3"
+}
+
+_warn_knob() {
+    local variants="$1" name="$2" value="$3" cap="$4" what="$5" ok="$6" v missing=""
+    [ -n "$value" ] && [ "$value" != "0" ] || return 0
+    for v in $variants; do
+        has_cap "$v" "$cap" || missing="$missing $v"
+    done
+    [ -n "$missing" ] || return 0
+    log ""
+    log "WARNING: $name=$value is $what, and these selected variants do not implement it:"
+    log "        $missing"
+    log "         k6 sends the field to every branch and Spring ignores unknown properties, so"
+    log "         it is discarded there with no error, while meta.json still records $value —"
+    log "         it records what k6 was told, not what the server applied."
+    log "         Branches that honour it: $ok"
+    log ""
 }
 
 # Resolve a --only/-o list against the registry, preserving REGISTRY order (not the order

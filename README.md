@@ -42,6 +42,7 @@ when iterating, not the workload.
 | `scripts/run-suite.sh` | Runs each variant's own `k6/bench/bench.sh` in turn, on a clean stack, collecting results centrally. |
 | `scripts/compare.py` | Renders a set of run directories as one comparison table. Copy of the branches' own. |
 | `scripts/lib.sh` | Shared worktree / teardown / registry helpers. |
+| `docs/bench-campaign-runbook.md` | The 66-run thesis campaign, in execution order. Start here for a full campaign rather than a one-off run. |
 
 ## How it works, and why
 
