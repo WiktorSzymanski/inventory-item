@@ -187,6 +187,21 @@ SECTIONS = [
             targets=[Target("{{eventType}}", 'sum by (eventType) (rate(es_events_processed_total{job="$job"}[1m]))')],
             archived=[Target("{{run_id}} {{dim}}", 'replay_step{run_id=~"$runs",metric="events_processed"}')],
         ),
+        # Absorbed from ES-1's inventory-es-dashboard.json (Task 9 deleted it; Task 10 merges its
+        # signal). Plotted in seconds, not ms: despite the metric name, the histogram is already
+        # in seconds, consistent with every other latency panel here. Placed here (before
+        # "Publish lag by event type") rather than after so the w=24 insertion splits the
+        # surrounding run of w=12 panels evenly (8/8) instead of unevenly (9/7), keeping every
+        # row in the section packed to exactly 24 with no gaps.
+        Panel(
+            title="Aggregate state fetch latency (ES family)",
+            unit="s", w=24,
+            description="KurrentDB stream replay time. Empty on the TO family.",
+            targets=[Target("p50", _q(0.50, "data_state_fetch_ms_seconds_bucket", "le")),
+                     Target("p95", _q(0.95, "data_state_fetch_ms_seconds_bucket", "le")),
+                     Target("p99", _q(0.99, "data_state_fetch_ms_seconds_bucket", "le"))],
+            archived=None,
+        ),
         Panel(
             title="Publish lag by event type — p50 / p95 / p99",
             unit="s", w=12,
@@ -245,11 +260,16 @@ SECTIONS = [
                      Target("p95", _q(0.95, "outbox_write_time_seconds_bucket", "le"))],
             archived=None,
         ),
+        # Replaces "Order worker — queue depth & active threads (TO family)": a general executor
+        # panel covering pool size too, absorbed from TO-2's jvm-dashboard.json (Task 9 deleted
+        # it; Task 10 merges its signal). The pinned-name TO-only panel would otherwise sit
+        # alongside a superset of itself.
         Panel(
-            title="Order worker — queue depth & active threads (TO family)",
+            title="Executor pools — threads & queue",
             unit="short", w=12,
-            targets=[Target("queued", 'executor_queued_tasks{job="$job",name="orderWorkerExecutor"}'),
-                     Target("active", 'executor_active_threads{job="$job",name="orderWorkerExecutor"}')],
+            targets=[Target("{{name}} active", 'executor_active_threads{job="$job"}'),
+                     Target("{{name}} pool size", 'executor_pool_size_threads{job="$job"}'),
+                     Target("{{name}} queued", 'executor_queued_tasks{job="$job"}')],
             archived=None,
         ),
         Panel(
@@ -264,7 +284,8 @@ SECTIONS = [
     Section("JVM", [
         Panel(title="Heap memory", unit="bytes", w=12,
               targets=[Target("used", 'sum(jvm_memory_used_bytes{job="$job",area="heap"})'),
-                       Target("max", 'sum(jvm_memory_max_bytes{job="$job",area="heap"})')],
+                       Target("max", 'sum(jvm_memory_max_bytes{job="$job",area="heap"})'),
+                       Target("committed", 'sum(jvm_memory_committed_bytes{job="$job",area="heap"})')],
               archived=[Target("{{run_id}}", 'replay_series{run_id=~"$runs",metric="heap"}')]),
         Panel(title="Non-heap memory by pool", unit="bytes", w=12,
               targets=[Target("{{id}}", 'sum(jvm_memory_used_bytes{job="$job",area="nonheap"}) by (id)')],
@@ -277,7 +298,10 @@ SECTIONS = [
         Panel(title="GC pause duration — p50 / p95 / p99", unit="s", w=12,
               targets=[Target("p50", _q(0.50, "jvm_gc_pause_seconds_bucket", "le")),
                        Target("p95", _q(0.95, "jvm_gc_pause_seconds_bucket", "le")),
-                       Target("p99", _q(0.99, "jvm_gc_pause_seconds_bucket", "le"))],
+                       Target("p99", _q(0.99, "jvm_gc_pause_seconds_bucket", "le")),
+                       Target("avg",
+                             'rate(jvm_gc_pause_seconds_sum{job="$job"}[1m]) / rate(jvm_gc_pause_seconds_count{job="$job"}[1m])'),
+                       Target("max", 'jvm_gc_pause_seconds_max{job="$job"}')],
               archived=None),
         Panel(title="JVM threads", unit="short", w=8,
               targets=[Target("live", 'jvm_threads_live_threads{job="$job"}'),
@@ -290,6 +314,35 @@ SECTIONS = [
         Panel(title="Process uptime", unit="s", w=8,
               targets=[Target("uptime", 'process_uptime_seconds{job="$job"}')],
               archived=None),
+        # Absorbed from TO-2's jvm-dashboard.json (Task 9 deleted it; Task 10 merges its signals).
+        Panel(title="System load vs CPU cores", unit="short", w=8,
+              targets=[Target("load 1m", 'system_load_average_1m{job="$job"}'),
+                       Target("cpu cores", 'system_cpu_count{job="$job"}')],
+              archived=None),
+        Panel(title="Threads by state", unit="short", w=8,
+              targets=[Target("{{state}}", 'jvm_threads_states_threads{job="$job"}')],
+              archived=None),
+        Panel(title="In-flight HTTP requests", unit="short", w=8,
+              targets=[Target("in-flight", 'sum(http_server_requests_active_seconds_gcount{job="$job"})')],
+              archived=None),
+        Panel(title="GC allocation & promotion rate", unit="Bps", w=8,
+              targets=[Target("allocation", 'rate(jvm_gc_memory_allocated_bytes_total{job="$job"}[1m])'),
+                       Target("promotion", 'rate(jvm_gc_memory_promoted_bytes_total{job="$job"}[1m])')],
+              archived=None),
+        Panel(title="GC overhead", unit="percentunit", w=8, max=1,
+              targets=[Target("overhead", 'jvm_gc_overhead{job="$job"}')],
+              archived=None),
+        Panel(title="Live data after GC", unit="bytes", w=8,
+              targets=[Target("live data (old gen)", 'jvm_gc_live_data_size_bytes{job="$job"}'),
+                       Target("old gen max", 'jvm_gc_max_data_size_bytes{job="$job"}')],
+              archived=None),
+        Panel(title="Log events by level", unit="ops", w=12,
+              targets=[Target("{{level}}", 'sum by (level) (rate(logback_events_total{job="$job"}[1m]))')],
+              archived=None),
+        Panel(title="Spring Data repository invocations (top 10)", unit="ops", w=12,
+              targets=[Target("{{repository}}.{{method}}",
+                              'topk(10, sum by (repository, method) (rate(spring_data_repository_invocations_seconds_count{job="$job"}[1m])))')],
+              archived=None),
     ]),
     Section("Spring pools", [
         Panel(title="HikariCP connections", unit="short", w=12,
@@ -301,6 +354,26 @@ SECTIONS = [
               targets=[Target("busy", 'tomcat_threads_busy_threads{job="$job"}'),
                        Target("current", 'tomcat_threads_current_threads{job="$job"}'),
                        Target("max", 'tomcat_threads_config_max_threads{job="$job"}')],
+              archived=None),
+        # Absorbed from TO-2's jvm-dashboard.json and ES-1's inventory-es-dashboard.json
+        # (Task 9 deleted both; Task 10 merges their signals).
+        Panel(title="HikariCP — acquire & usage time", unit="s", w=12,
+              targets=[Target("acquire avg",
+                              'rate(hikaricp_connections_acquire_seconds_sum{job="$job"}[1m]) / rate(hikaricp_connections_acquire_seconds_count{job="$job"}[1m])'),
+                       Target("acquire max", 'hikaricp_connections_acquire_seconds_max{job="$job"}'),
+                       Target("usage avg",
+                              'rate(hikaricp_connections_usage_seconds_sum{job="$job"}[1m]) / rate(hikaricp_connections_usage_seconds_count{job="$job"}[1m])'),
+                       Target("usage max", 'hikaricp_connections_usage_seconds_max{job="$job"}')],
+              archived=None),
+        Panel(title="HikariCP — connection timeouts", unit="ops", w=12,
+              targets=[Target("timeouts", 'rate(hikaricp_connections_timeout_total{job="$job"}[1m])')],
+              archived=None),
+        Panel(title="R2DBC connection pool (ES family)", unit="short", w=24,
+              description="Reactive pool metrics; empty on the TO family, which uses HikariCP.",
+              targets=[Target("{{name}} acquired", 'r2dbc_pool_acquired_connections{job="$job"}'),
+                       Target("{{name}} pending", 'r2dbc_pool_pending_connections{job="$job"}'),
+                       Target("{{name}} idle", 'r2dbc_pool_idle_connections{job="$job"}'),
+                       Target("{{name}} max", 'r2dbc_pool_max_allocated_connections{job="$job"}')],
               archived=None),
     ]),
     Section("PostgreSQL", [
@@ -349,5 +422,10 @@ SECTIONS = [
               targets=[Target("{{name}} rss", 'container_memory_rss{name=~"$dbc|$apic"}'),
                        Target("{{name}} working set", 'container_memory_working_set_bytes{name=~"$dbc|$apic"}')],
               archived=[Target("{{run_id}} api rss", 'replay_step{run_id=~"$runs",metric="container_rss"}')]),
+        # Absorbed from TO-2's jvm-dashboard.json (Task 9 deleted it; Task 10 merges its signals).
+        Panel(title="Container network I/O", unit="Bps", w=24,
+              targets=[Target("{{name}} rx", 'sum by (name) (rate(container_network_receive_bytes_total{name=~"$dbc|$apic"}[1m]))'),
+                       Target("{{name}} tx", 'sum by (name) (rate(container_network_transmit_bytes_total{name=~"$dbc|$apic"}[1m]))')],
+              archived=None),
     ]),
 ]

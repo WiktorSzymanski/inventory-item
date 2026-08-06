@@ -1021,12 +1021,91 @@
     },
     {
       "id": 16,
+      "title": "Aggregate state fetch latency (ES family)",
+      "description": "KurrentDB stream replay time. Empty on the TO family.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 58,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${ds}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "histogram_quantile(0.5, sum(rate(data_state_fetch_ms_seconds_bucket{job=\"$job\"}[1m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "histogram_quantile(0.95, sum(rate(data_state_fetch_ms_seconds_bucket{job=\"$job\"}[1m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "histogram_quantile(0.99, sum(rate(data_state_fetch_ms_seconds_bucket{job=\"$job\"}[1m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 17,
       "title": "Publish lag by event type \u2014 p50 / p95 / p99",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 58,
+        "y": 66,
         "w": 12,
         "h": 8
       },
@@ -1099,13 +1178,13 @@
       ]
     },
     {
-      "id": 17,
+      "id": 18,
       "title": "State load time by phase \u2014 p50 / p95",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 58,
+        "y": 66,
         "w": 12,
         "h": 8
       },
@@ -1169,13 +1248,13 @@
       ]
     },
     {
-      "id": 18,
+      "id": 19,
       "title": "State persist time by source \u2014 p50 / p95 / p99",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 66,
+        "y": 74,
         "w": 12,
         "h": 8
       },
@@ -1248,13 +1327,13 @@
       ]
     },
     {
-      "id": 19,
+      "id": 20,
       "title": "Projection lag \u2014 p50 / p95 / p99",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 66,
+        "y": 74,
         "w": 12,
         "h": 8
       },
@@ -1327,13 +1406,13 @@
       ]
     },
     {
-      "id": 20,
+      "id": 21,
       "title": "Aggregate cache \u2014 hit vs miss vs catch-up",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 74,
+        "y": 82,
         "w": 12,
         "h": 8
       },
@@ -1406,13 +1485,13 @@
       ]
     },
     {
-      "id": 21,
+      "id": 22,
       "title": "Outbox backlog (TO family)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 74,
+        "y": 82,
         "w": 12,
         "h": 8
       },
@@ -1467,13 +1546,13 @@
       ]
     },
     {
-      "id": 22,
+      "id": 23,
       "title": "Outbox write time \u2014 p50 / p95 (TO family)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 82,
+        "y": 90,
         "w": 12,
         "h": 8
       },
@@ -1537,13 +1616,13 @@
       ]
     },
     {
-      "id": 23,
-      "title": "Order worker \u2014 queue depth & active threads (TO family)",
+      "id": 24,
+      "title": "Executor pools \u2014 threads & queue",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 82,
+        "y": 90,
         "w": 12,
         "h": 8
       },
@@ -1591,8 +1670,8 @@
             "type": "prometheus",
             "uid": "${ds}"
           },
-          "expr": "executor_queued_tasks{job=\"$job\",name=\"orderWorkerExecutor\"}",
-          "legendFormat": "queued",
+          "expr": "executor_active_threads{job=\"$job\"}",
+          "legendFormat": "{{name}} active",
           "refId": "A"
         },
         {
@@ -1600,20 +1679,29 @@
             "type": "prometheus",
             "uid": "${ds}"
           },
-          "expr": "executor_active_threads{job=\"$job\",name=\"orderWorkerExecutor\"}",
-          "legendFormat": "active",
+          "expr": "executor_pool_size_threads{job=\"$job\"}",
+          "legendFormat": "{{name}} pool size",
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "executor_queued_tasks{job=\"$job\"}",
+          "legendFormat": "{{name}} queued",
+          "refId": "C"
         }
       ]
     },
     {
-      "id": 24,
+      "id": 25,
       "title": "Saga outcome \u2014 completed vs failed (ES family)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 90,
+        "y": 98,
         "w": 24,
         "h": 8
       },
@@ -1677,26 +1765,26 @@
       ]
     },
     {
-      "id": 25,
+      "id": 26,
       "type": "row",
       "title": "JVM",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 99,
+        "y": 107,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 26,
+      "id": 27,
       "title": "Heap memory",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 100,
+        "y": 108,
         "w": 12,
         "h": 8
       },
@@ -1756,17 +1844,26 @@
           "expr": "sum(jvm_memory_max_bytes{job=\"$job\",area=\"heap\"})",
           "legendFormat": "max",
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "sum(jvm_memory_committed_bytes{job=\"$job\",area=\"heap\"})",
+          "legendFormat": "committed",
+          "refId": "C"
         }
       ]
     },
     {
-      "id": 27,
+      "id": 28,
       "title": "Non-heap memory by pool",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 100,
+        "y": 108,
         "w": 12,
         "h": 8
       },
@@ -1821,13 +1918,13 @@
       ]
     },
     {
-      "id": 28,
+      "id": 29,
       "title": "CPU",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 108,
+        "y": 116,
         "w": 12,
         "h": 8
       },
@@ -1892,13 +1989,13 @@
       ]
     },
     {
-      "id": 29,
+      "id": 30,
       "title": "GC pause duration \u2014 p50 / p95 / p99",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 108,
+        "y": 116,
         "w": 12,
         "h": 8
       },
@@ -1967,17 +2064,35 @@
           "expr": "histogram_quantile(0.99, sum(rate(jvm_gc_pause_seconds_bucket{job=\"$job\"}[1m])) by (le))",
           "legendFormat": "p99",
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "rate(jvm_gc_pause_seconds_sum{job=\"$job\"}[1m]) / rate(jvm_gc_pause_seconds_count{job=\"$job\"}[1m])",
+          "legendFormat": "avg",
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "jvm_gc_pause_seconds_max{job=\"$job\"}",
+          "legendFormat": "max",
+          "refId": "E"
         }
       ]
     },
     {
-      "id": 30,
+      "id": 31,
       "title": "JVM threads",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 116,
+        "y": 124,
         "w": 8,
         "h": 8
       },
@@ -2050,13 +2165,13 @@
       ]
     },
     {
-      "id": 31,
+      "id": 32,
       "title": "Loaded classes",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 116,
+        "y": 124,
         "w": 8,
         "h": 8
       },
@@ -2111,13 +2226,13 @@
       ]
     },
     {
-      "id": 32,
+      "id": 33,
       "title": "Process uptime",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 116,
+        "y": 124,
         "w": 8,
         "h": 8
       },
@@ -2172,26 +2287,542 @@
       ]
     },
     {
-      "id": 33,
+      "id": 34,
+      "title": "System load vs CPU cores",
+      "description": "",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 132,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${ds}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "system_load_average_1m{job=\"$job\"}",
+          "legendFormat": "load 1m",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "system_cpu_count{job=\"$job\"}",
+          "legendFormat": "cpu cores",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "title": "Threads by state",
+      "description": "",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 132,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${ds}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "jvm_threads_states_threads{job=\"$job\"}",
+          "legendFormat": "{{state}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "title": "In-flight HTTP requests",
+      "description": "",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 16,
+        "y": 132,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${ds}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "sum(http_server_requests_active_seconds_gcount{job=\"$job\"})",
+          "legendFormat": "in-flight",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "title": "GC allocation & promotion rate",
+      "description": "",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 140,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${ds}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "rate(jvm_gc_memory_allocated_bytes_total{job=\"$job\"}[1m])",
+          "legendFormat": "allocation",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "rate(jvm_gc_memory_promoted_bytes_total{job=\"$job\"}[1m])",
+          "legendFormat": "promotion",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 38,
+      "title": "GC overhead",
+      "description": "",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 140,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${ds}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "jvm_gc_overhead{job=\"$job\"}",
+          "legendFormat": "overhead",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 39,
+      "title": "Live data after GC",
+      "description": "",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 16,
+        "y": 140,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${ds}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "jvm_gc_live_data_size_bytes{job=\"$job\"}",
+          "legendFormat": "live data (old gen)",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "jvm_gc_max_data_size_bytes{job=\"$job\"}",
+          "legendFormat": "old gen max",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "title": "Log events by level",
+      "description": "",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 148,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${ds}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "sum by (level) (rate(logback_events_total{job=\"$job\"}[1m]))",
+          "legendFormat": "{{level}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "title": "Spring Data repository invocations (top 10)",
+      "description": "",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 148,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${ds}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "topk(10, sum by (repository, method) (rate(spring_data_repository_invocations_seconds_count{job=\"$job\"}[1m])))",
+          "legendFormat": "{{repository}}.{{method}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 42,
       "type": "row",
       "title": "Spring pools",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 124,
+        "y": 156,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 34,
+      "id": 43,
       "title": "HikariCP connections",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 125,
+        "y": 157,
         "w": 12,
         "h": 8
       },
@@ -2264,13 +2895,13 @@
       ]
     },
     {
-      "id": 35,
+      "id": 44,
       "title": "Tomcat HTTP threads",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 125,
+        "y": 157,
         "w": 12,
         "h": 8
       },
@@ -2343,26 +2974,263 @@
       ]
     },
     {
-      "id": 36,
+      "id": 45,
+      "title": "HikariCP \u2014 acquire & usage time",
+      "description": "",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 165,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${ds}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "rate(hikaricp_connections_acquire_seconds_sum{job=\"$job\"}[1m]) / rate(hikaricp_connections_acquire_seconds_count{job=\"$job\"}[1m])",
+          "legendFormat": "acquire avg",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "hikaricp_connections_acquire_seconds_max{job=\"$job\"}",
+          "legendFormat": "acquire max",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "rate(hikaricp_connections_usage_seconds_sum{job=\"$job\"}[1m]) / rate(hikaricp_connections_usage_seconds_count{job=\"$job\"}[1m])",
+          "legendFormat": "usage avg",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "hikaricp_connections_usage_seconds_max{job=\"$job\"}",
+          "legendFormat": "usage max",
+          "refId": "D"
+        }
+      ]
+    },
+    {
+      "id": 46,
+      "title": "HikariCP \u2014 connection timeouts",
+      "description": "",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 165,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${ds}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "rate(hikaricp_connections_timeout_total{job=\"$job\"}[1m])",
+          "legendFormat": "timeouts",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 47,
+      "title": "R2DBC connection pool (ES family)",
+      "description": "Reactive pool metrics; empty on the TO family, which uses HikariCP.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 173,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${ds}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "r2dbc_pool_acquired_connections{job=\"$job\"}",
+          "legendFormat": "{{name}} acquired",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "r2dbc_pool_pending_connections{job=\"$job\"}",
+          "legendFormat": "{{name}} pending",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "r2dbc_pool_idle_connections{job=\"$job\"}",
+          "legendFormat": "{{name}} idle",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "r2dbc_pool_max_allocated_connections{job=\"$job\"}",
+          "legendFormat": "{{name}} max",
+          "refId": "D"
+        }
+      ]
+    },
+    {
+      "id": 48,
       "type": "row",
       "title": "PostgreSQL",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 133,
+        "y": 181,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 37,
+      "id": 49,
       "title": "Database size",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 134,
+        "y": 182,
         "w": 8,
         "h": 8
       },
@@ -2417,13 +3285,13 @@
       ]
     },
     {
-      "id": 38,
+      "id": 50,
       "title": "WAL size",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 134,
+        "y": 182,
         "w": 8,
         "h": 8
       },
@@ -2478,13 +3346,13 @@
       ]
     },
     {
-      "id": 39,
+      "id": 51,
       "title": "Active connections by state",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 134,
+        "y": 182,
         "w": 8,
         "h": 8
       },
@@ -2539,13 +3407,13 @@
       ]
     },
     {
-      "id": 40,
+      "id": 52,
       "title": "Transaction rate",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 142,
+        "y": 190,
         "w": 8,
         "h": 8
       },
@@ -2609,13 +3477,13 @@
       ]
     },
     {
-      "id": 41,
+      "id": 53,
       "title": "Tuple operations rate",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 142,
+        "y": 190,
         "w": 8,
         "h": 8
       },
@@ -2697,13 +3565,13 @@
       ]
     },
     {
-      "id": 42,
+      "id": 54,
       "title": "Buffer cache hit ratio",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 142,
+        "y": 190,
         "w": 8,
         "h": 8
       },
@@ -2759,13 +3627,13 @@
       ]
     },
     {
-      "id": 43,
+      "id": 55,
       "title": "Live rows by table",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 150,
+        "y": 198,
         "w": 8,
         "h": 8
       },
@@ -2820,13 +3688,13 @@
       ]
     },
     {
-      "id": 44,
+      "id": 56,
       "title": "Per-table write rate",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 150,
+        "y": 198,
         "w": 8,
         "h": 8
       },
@@ -2899,13 +3767,13 @@
       ]
     },
     {
-      "id": 45,
+      "id": 57,
       "title": "Locks by mode",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 150,
+        "y": 198,
         "w": 8,
         "h": 8
       },
@@ -2960,13 +3828,13 @@
       ]
     },
     {
-      "id": 46,
+      "id": 58,
       "title": "Checkpoint activity",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 158,
+        "y": 206,
         "w": 12,
         "h": 8
       },
@@ -3039,13 +3907,13 @@
       ]
     },
     {
-      "id": 47,
+      "id": 59,
       "title": "Container CPU",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 158,
+        "y": 206,
         "w": 6,
         "h": 8
       },
@@ -3100,13 +3968,13 @@
       ]
     },
     {
-      "id": 48,
+      "id": 60,
       "title": "Container memory",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 18,
-        "y": 158,
+        "y": 206,
         "w": 6,
         "h": 8
       },
@@ -3165,6 +4033,76 @@
           },
           "expr": "container_memory_working_set_bytes{name=~\"$dbc|$apic\"}",
           "legendFormat": "{{name}} working set",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 61,
+      "title": "Container network I/O",
+      "description": "",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 214,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${ds}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "sum by (name) (rate(container_network_receive_bytes_total{name=~\"$dbc|$apic\"}[1m]))",
+          "legendFormat": "{{name}} rx",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${ds}"
+          },
+          "expr": "sum by (name) (rate(container_network_transmit_bytes_total{name=~\"$dbc|$apic\"}[1m]))",
+          "legendFormat": "{{name}} tx",
           "refId": "B"
         }
       ]
