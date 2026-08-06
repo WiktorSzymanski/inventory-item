@@ -81,7 +81,12 @@ trailing `.*` are required.
 
 ### What `main` gains
 
-One copy each, taken from `ES-4` (the current reference):
+**Source of truth is `TO-3` ∪ `ES-4`, not `ES-4` alone.** The campaign plan
+(`docs/superpowers/plans/2026-08-06-load-test-campaign-phase0.md`) names **`TO-3` the
+canonical harness**, while CLAUDE.md names `ES-4` the reference. For `k6/` the distinction
+is now moot — Task 4 of phase 0 converged every branch, and
+`git diff --stat TO-3 <branch> -- k6 docker-compose.bench.yml` is empty on all seven others
+(verified 2026-08-07). For `scripts/` it is not moot: `TO-3` is a strict superset.
 
 - `k6/` — `main.js`, `lib/`, `run.sh`, `bench/` (`bench.sh`, `common.sh`, `reset.sh`,
   `dump.py`, `evaluate.py`, `compare.py`, `queries.promql`, `thresholds.json`,
@@ -90,6 +95,28 @@ One copy each, taken from `ES-4` (the current reference):
 - `docker-compose.bench.yml`
 - `monitoring/` — `nginx/nginx.conf`, `prometheus/prometheus.yml`,
   `prometheus/prometheus-replay.yml`, `grafana/provisioning/`
+- `scripts/` — `dashboards/`, `tests/`, `replay_run.py`, `prom_snapshot.sh`,
+  `prom_archive.sh`, `verify_dashboard_metrics.py` (all on both), **plus `prom_restore.sh`
+  and `grafana_snapshot.py`, which exist only on `TO-3`**
+- `docs/superpowers/specs/2026-08-06-load-test-campaign-design.md` and
+  `docs/superpowers/plans/2026-08-06-load-test-campaign-phase0.md` — the campaign's
+  authority, currently `TO-3`-only. `main` executes the campaign, so `main` must carry them.
+
+**`scripts/bench_run.sh` is deliberately not carried over.** It is `bench.sh` plus a TSDB
+copy that survives `down -v`; `run-suite.sh` already inlines exactly that, and says so in
+its own comments. A single-variant run is `scripts/run-suite.sh --only <variant>`.
+
+**`prom_restore.sh` closes a live gap.** `docs/bench-replay.md` is byte-identical on `TO-3`
+and `ES-4` and references `prom_restore.sh`, but the script exists only on `TO-3` — the doc
+was propagated and the script was not. Sourcing `main` from `ES-4` alone would inherit a
+document pointing at a missing script.
+
+**`compare.py` is deduplicated.** `main:scripts/compare.py` is byte-identical to
+`ES-4:k6/bench/compare.py` (303 lines each). Once `k6/` moves to `main`, keeping both would
+recreate the drift this change exists to remove. `k6/bench/compare.py` is the one that
+stays, since the campaign runbook and `run-suite.sh`'s closing hint both name a
+`compare.py` path; `scripts/compare.py` becomes a thin shim or is dropped, and the README
+and runbook are updated to one path.
 
 The superset environment is safe: Spring Boot ignores an environment variable with no
 matching property, so passing `AXON_JDBC_POOL_SIZE`, `CACHE_TTL` and `CACHE_MAXIMUM_SIZE`
@@ -149,6 +176,45 @@ NetBeans stanzas become dead. `.worktrees/`, `bench-results/`, `__pycache__/`, `
 `README.md` is rewritten: drop "the `src/` tree here is an early legacy prototype, kept
 only for history", document the unified harness, add `run-tests.sh`.
 
+## Relationship to the load-test campaign plan
+
+The campaign design (`2026-08-06-load-test-campaign-design.md`, on `TO-3`) is the latest
+and governing plan. Its phase 0 is **complete**, verified 2026-08-07:
+
+| Phase-0 item | State |
+|---|---|
+| 2a `reserveDelayMs` on all eight | done — `variants.env` records `reserve-delay` for all 8 |
+| 2b `additional_bytes` on TO | done — `V6__additional_bytes.sql` on TO-1/2/4, `TO-3` already had it |
+| 2c `stress` scenario | done — `profiles.js`, `thresholds.json` and `evaluate.py` on all 8; covered by the `StressWiring` tests |
+| 2d `RUN_LABEL` | done — present in `bench.sh` on all 8 |
+| 2e harness re-synchronisation | done — the invariant holds on all seven non-`TO-3` branches |
+
+This design **supersedes the §2e cross-branch invariant**. That invariant
+("everything under `k6/` byte-identical on all eight; `bench.env` the only per-branch
+file") exists to stop the eight copies drifting. One copy on `main` and no `bench.env`
+achieves the same end more strongly, so the invariant and its verification command retire
+rather than being carried forward. Nothing else in the campaign design is affected:
+workload points, staircases, selection rules, per-cell rates and the operational guards are
+all properties of the workload, not of where the harness lives.
+
+§8.3 "Branch hygiene" becomes largely obsolete — it exists because running a variant meant
+switching branches, which this change removes.
+
+### One tension worth deciding
+
+Campaign §4.2 says a mis-bracketed staircase must be caught early, and §7 groups phase 1 by
+workload point "precisely so this is discovered on the first variant" — run 1 of 8, not run
+24 of 24. `run-suite.sh` runs all eight unattended, so the earliest a bad staircase can be
+seen is after the whole block. `main`'s runbook already silently absorbed this, changing
+§2.1 from "apply after every **run**" (TO-3's wording) to "apply after every **block**".
+
+That is a real regression against the plan's stated intent, costing roughly five hours at
+W-base when a staircase is wrong. It is not introduced by this design — it arrived with
+`run-suite.sh` — but this design is the right moment to settle it. Options: accept the
+block-level bracketing as `main`'s runbook already does, or give `run-suite.sh` a mode that
+stops after the first variant for a bracketing check before continuing. **Left open; not a
+blocker for implementation.**
+
 ## Decisions taken
 
 **The variant branches keep their harness copies.** No commits are made to
@@ -159,6 +225,12 @@ by the suite but remain on the branches, leaving thesis history untouched.
 350 per replica (Hikari 50 plus Axon 300); 300 would starve it. TO needs about 50 per
 replica, so 600 is harmless headroom. The re-baselining this forces on TO is in the safe
 direction: more headroom, not less.
+
+**Existing `bench-results/` are expendable.** Confirmed by the author on 2026-08-07: no
+current run directory needs to remain comparable, so the change is free to alter the stack.
+The campaign has not started measuring — phase 0 is complete but phase 1 has not run — so
+there is nothing to invalidate. Every number the thesis reports will come from the unified
+harness.
 
 ## Defects this fixes
 
@@ -180,10 +252,11 @@ describing it, are retired.
 
 ## Risks and costs
 
-**Re-baselining.** A single `max_connections` changes the TO stack, so new results are not
-comparable to existing `bench-results/` TO runs. Any thesis table mixing pre- and
-post-change TO numbers must say so. This is a correctness fix that invalidates prior
-numbers.
+**Re-baselining — accepted, and cheap.** A single `max_connections` changes the TO stack,
+so new results are not comparable to existing `bench-results/` TO runs. The author has
+confirmed those are expendable and the campaign has not begun measuring, so the cost is
+zero in practice. The one rule that survives: never mix pre- and post-change TO numbers in
+one table.
 
 **Eight orphaned harness copies.** By decision above, the branches keep `k6/`, `bench.env`
 and their compose files. Anyone running `./k6/bench/bench.sh` directly on a branch gets a
