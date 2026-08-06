@@ -1,9 +1,13 @@
 # Bench replay — viewing archived runs in Grafana
 
 The benchmark harness (`k6/bench/bench.sh`, see [`k6/README.md`](../k6/README.md)) keeps no
-Prometheus TSDB: every run's raw metrics die with the `docker-compose.bench.yml` volume. What
-survives is `bench-results/<run_id>/dump.json` — pre-computed range series, per-step scalars, and
-run-level summary numbers extracted while the run was live — plus `report.pdf` and `meta.json`.
+Prometheus TSDB by itself: every run's raw metrics die with the `docker-compose.bench.yml` volume
+unless something copies them out before the next run resets it. What survives on its own is
+`bench-results/<run_id>/dump.json` — pre-computed range series, per-step scalars, and run-level
+summary numbers extracted while the run was live — plus `report.pdf` and `meta.json`. Sections 1-7
+below are about turning that `dump.json` back into something viewable. Section 8 covers the better
+option for any *future* run: keep the actual TSDB and get full panel parity, not the ~30 signals
+`dump.json` can carry.
 
 This is how you turn a `dump.json` back into something you can look at in Grafana, months after
 the run happened, side by side with other runs. `scripts/replay_run.py` rebuilds a *viewable, not
@@ -228,3 +232,73 @@ still-running benchmark). Confirm the current count rather than trusting this nu
 ```bash
 find bench-results -maxdepth 2 -name dump.json | wc -l
 ```
+
+---
+
+## 8. Per-run TSDB snapshots — full parity for future runs
+
+`replay_run.py` (sections 1-7) can only ever show what `dump.json` extracted — 23 of the merged
+dashboard's panels (every `pg_stat_*` metric, WAL size, locks, checkpoints, GC pause, JVM threads,
+HikariCP, Tomcat, executor queues, and on the TO family the outbox backlog and order-timing
+panels) have no archived equivalent at any effort, because that data was never captured into
+`dump.json` in the first place. For a run you are about to execute (not one already archived),
+there is a better option: snapshot the live Prometheus's actual TSDB right after the run and merge
+its blocks into `bench-replay-data`. Every panel then works for that run, exactly as it did live.
+
+This is a separate, opt-in step you run *after* `bench.sh` finishes — never inside it. `bench.sh`
+and everything under `k6/` must stay byte-identical across all eight variant branches (the
+acceptance test is `git diff --stat ES-2 HEAD -- k6 docker-compose.bench.yml` returning empty), so
+this can't be a step bolted onto the harness itself.
+
+```bash
+SCENARIO=steady DURATION=2m ./k6/bench/bench.sh          # produces bench-results/<run_id>/
+./scripts/prom_snapshot.sh <run_id>                       # -> bench-results/<run_id>/prom-snapshot/
+./scripts/prom_archive.sh bench-results/<run_id>/prom-snapshot
+```
+
+`prom_snapshot.sh` triggers the live Prometheus's admin API (`--web.enable-admin-api`, already on
+via `docker-compose.bench.yml`) to flush the WAL and snapshot the on-disk TSDB, then `docker cp`s
+it out of the `prometheus` container. When its argument names an existing
+`bench-results/<run_id>` directory the snapshot lands inside that run's own directory, alongside
+`dump.json` and `report.pdf`; otherwise it falls back to its original label-based behaviour under
+`reports/prom-snapshot-<timestamp>[-label]/`.
+
+`prom_archive.sh` then copies that snapshot's block directories into the `bench-replay-data`
+volume with `cp -rn` (no-clobber) — never `rm -rf`, unlike `prom_restore.sh`. Benchmark runs never
+overlap in time, so blocks from many runs coexist in one Prometheus and a run is selected in
+Grafana purely by its time range; `prometheus-replay` is stopped for the copy (backfilled blocks
+must be older than the running head block) and always restarted afterwards, even if the copy
+fails.
+
+**Verified end to end** (2026-08-06, run `TO-3_steady_20260806T001945Z`, `SCENARIO=steady
+DURATION=2m`): after snapshot + archive, `pg_stat_activity_count{datname="inventory"}` and
+`pg_stat_database_xact_commit{datname="inventory"}` both returned real data for the run's own
+`[t_settle_end, t_load_end]` window when queried against the `prometheus-replay` datasource (port
+9091) — through both a direct Prometheus API query and Grafana's `/api/ds/query`, using the exact
+PromQL from the "Active connections by state" panel in `spec.py`. Those are two of the 23 panels
+that no `dump.json`-based archive can ever show.
+
+### Disk cost
+
+```
+$ du -sh bench-results/TO-3_steady_20260806T001945Z/prom-snapshot/
+30M
+```
+
+**This number is not "cost per 2-minute run."** A Prometheus TSDB snapshot always contains *every*
+block currently retained by the live Prometheus, not only the run just finished — in this
+measurement the two blocks covered 2026-08-05T20:28Z through 2026-08-06T00:23Z, i.e. everything
+the live `prometheus` container had retained since it was last started, roughly 4 hours, of which
+the actual measured run was 2 minutes. That is also why re-archiving after each run in a same-day
+session is cheap even though each snapshot is "full": `cp -rn` skips every block byte-identical to
+one already in `bench-replay-data`, so only the still-open head block (which changed since the
+last archive) actually gets copied each time — the older, already-archived 2-hour blocks are a
+no-op.
+
+The practical budget, then, is roughly **per hour of live-Prometheus uptime between restarts**,
+not per run: ~30M / ~4h ≈ 7-8 MB/hour at this scrape configuration, dominated by `postgres`,
+`cadvisor`, and API JVM metrics at their default scrape intervals. Restarting `prometheus` before
+a benchmarking session (fresh head block) and archiving right after each run keeps each
+incremental archive step small; letting many runs accumulate in one long-lived `prometheus`
+process before the first snapshot makes the *first* snapshot of that session proportionally
+larger, one-time only.
