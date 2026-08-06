@@ -28,6 +28,8 @@ Usage:
     python3 scripts/replay_run.py bench-results/ES-4_capacity_20260805T154022Z
     python3 scripts/replay_run.py bench-results/ES-4_* bench-results/TO-3_capacity_2026*
     python3 scripts/replay_run.py --dry-run <run-dir>          # write the .om file, stop there
+    python3 scripts/replay_run.py --all                        # replay every run with a dump.json
+    python3 scripts/replay_run.py --axis wall <run-dir>         # keep original wall-clock timestamps
 """
 import argparse
 import glob
