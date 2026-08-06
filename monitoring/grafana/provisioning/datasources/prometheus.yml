@@ -8,3 +8,13 @@ datasources:
     access: proxy
     isDefault: true
     editable: false
+
+  # Archive of replayed benchmark runs. Only the Bench Replay dashboard reads it; it is empty
+  # (and its panels error) unless docker-compose.replay.yml is up.
+  - name: Prometheus Replay
+    type: prometheus
+    uid: prometheus-replay
+    url: http://prometheus-replay:9090
+    access: proxy
+    isDefault: false
+    editable: false
