@@ -100,10 +100,39 @@ class MergeCoverage(unittest.TestCase):
         "r2dbc_pool_max_allocated_connections", "data_state_fetch_ms_seconds_bucket",
     }
 
+    # Names the deleted dashboards queried that NO branch has ever produced. They survived the
+    # merge because OLD_METRICS only proves a name was carried over, never that it resolves;
+    # scripts/verify_dashboard_metrics.py found them empty against a live stack, and each was
+    # then traced to a root cause that no dashboard edit can fix:
+    #
+    #   data_state_fetch_ms_seconds_bucket  no branch registers this meter (name is also
+    #                                       malformed — "_ms_seconds")
+    #   jvm_gc_pause_seconds_bucket         jvm.gc.pause is on no branch's
+    #                                       management.metrics.distribution.percentiles-histogram
+    #                                       list, so Micrometer emits only count/sum/max
+    #   tomcat_threads_*                    needs server.tomcat.mbeanregistry.enabled=true, which
+    #                                       no branch sets; only tomcat_sessions_* are exposed
+    #   r2dbc_pool_*                        no branch uses R2DBC (only main so much as mentions it)
+    #
+    # Recovering the first two would mean changing the application under measurement across all
+    # eight variant branches mid-campaign, so the panels were removed instead.
+    NEVER_COLLECTED = {
+        "data_state_fetch_ms_seconds_bucket", "jvm_gc_pause_seconds_bucket",
+        "tomcat_threads_busy_threads", "tomcat_threads_current_threads",
+        "tomcat_threads_config_max_threads", "r2dbc_pool_acquired_connections",
+        "r2dbc_pool_pending_connections", "r2dbc_pool_idle_connections",
+        "r2dbc_pool_max_allocated_connections",
+    }
+
     def test_no_old_metric_was_dropped(self):
         blob = " ".join(t.expr for s in spec.SECTIONS for p in s.panels for t in p.targets)
-        missing = sorted(m for m in self.OLD_METRICS if m not in blob)
+        missing = sorted(m for m in self.OLD_METRICS - self.NEVER_COLLECTED if m not in blob)
         self.assertEqual(missing, [], f"metrics lost in the merge: {missing}")
+
+    def test_never_collected_metrics_are_not_reintroduced(self):
+        blob = " ".join(t.expr for s in spec.SECTIONS for p in s.panels for t in p.targets)
+        back = sorted(m for m in self.NEVER_COLLECTED if m in blob)
+        self.assertEqual(back, [], f"metrics no branch produces are back in the spec: {back}")
 
 
 if __name__ == "__main__":
