@@ -18,10 +18,17 @@
 # value. Sweep it with `--only ES-4,TO-3`; the suite warns if you do otherwise.
 #
 # Options:
-#   --only V1,V2        subset of variants.env (validated; order still follows the registry)
-#   --no-build          use the images as they are; do not rebuild even if stale
-#   --continue-on-fail  run every variant even after one fails, and report at the end
-#   --snapshot-tsdb     preserve each run's raw Prometheus TSDB before teardown
+#   --only V1,V2         subset of variants.env (validated; order still follows the registry)
+#   --no-build           use the images as they are; do not rebuild even if stale
+#   --continue-on-fail   run every variant even after one fails, and report at the end
+#   --no-snapshot-tsdb   skip preserving the raw Prometheus TSDB (kept by default)
+#   --no-archive-tsdb    keep the host-side snapshot but skip the replay-volume merge
+#
+# TSDB preservation is on by default, and it has to be: `down -v` between variants destroys
+# the prometheus-data volume, and dump.json only extracts ~20 of the merged dashboard's 56
+# panels. Two copies are made, both immune to `down -v` — bench-results/<run_id>/prom-snapshot/
+# (an ordinary host directory) and the external `bench-replay-data` volume (for Grafana
+# replay). SNAPSHOT_TSDB=0 / ARCHIVE_TSDB=0 work too, matching bench_run.sh's knob names.
 #
 # WHY SEQUENTIAL. All eight variants publish the same host ports (8080 nginx, 9090
 # prometheus, 3000 grafana, 5432 postgres), so they physically cannot overlap — and even if
@@ -36,21 +43,32 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ONLY=""
 NO_BUILD=0
 CONTINUE=0
-SNAPSHOT_TSDB="${SNAPSHOT_TSDB:-0}"
+# TSDB preservation is ON by default, matching scripts/bench_run.sh on TO-3, whose contract
+# the campaign runbook is written against. Same two knob names, so a runbook command that
+# sets them keeps working.
+SNAPSHOT_TSDB="${SNAPSHOT_TSDB:-1}"
+ARCHIVE_TSDB="${ARCHIVE_TSDB:-1}"
 while [ $# -gt 0 ]; do
     case "$1" in
-        --only|-o)         ONLY="$2"; shift 2 ;;
-        --no-build)        NO_BUILD=1; shift ;;
+        --only|-o)          ONLY="$2"; shift 2 ;;
+        --no-build)         NO_BUILD=1; shift ;;
         --continue-on-fail) CONTINUE=1; shift ;;
-        --snapshot-tsdb)   SNAPSHOT_TSDB=1; shift ;;
-        -h|--help)         sed -n '2,30p' "$0" | sed 's/^# \?//'; exit 0 ;;
-        *)                 die "unknown argument: $1" ;;
+        --no-snapshot-tsdb) SNAPSHOT_TSDB=0; shift ;;
+        --no-archive-tsdb)  ARCHIVE_TSDB=0; shift ;;
+        -h|--help)          sed -n '2,36p' "$0" | sed 's/^# \?//'; exit 0 ;;
+        *)                  die "unknown argument: $1" ;;
     esac
 done
 
 require_not_root
 require_tools
 assert_ports_free
+
+# The archive volume is declared `external: true`, so Compose will not create it and the
+# merge would fail on a fresh machine. Creating it is a no-op when it already exists.
+if [ "$SNAPSHOT_TSDB" = "1" ] && [ "$ARCHIVE_TSDB" = "1" ]; then
+    docker volume create bench-replay-data >/dev/null 2>&1 || true
+fi
 
 # Sticky knobs. Every assignment in that file is written `VAR="${VAR:-value}"`, so anything
 # already in the environment wins and a one-off override on the command line still works.
@@ -138,12 +156,32 @@ run_one() {
     run_dir="$(ls -td "$RESULTS_DIR/${variant}_${SCENARIO}_"* 2>/dev/null | head -1 || true)"
     RUNDIR[$variant]="${run_dir:-(none)}"
 
-    # Must happen BEFORE teardown: `down -v` destroys the prometheus-data volume, and with
-    # it every raw series. dump.json keeps ~20 extracted series; the TSDB keeps all of them.
-    if [ "$SNAPSHOT_TSDB" = "1" ] && [ -n "$run_dir" ] && [ -x "$wt/scripts/prom_snapshot.sh" ]; then
-        log "$variant: snapshotting Prometheus TSDB"
-        ( cd "$wt" && ./scripts/prom_snapshot.sh "$(basename "$run_dir")" ) \
-            || log "$variant: TSDB snapshot failed (non-fatal; the run's own artifacts are intact)"
+    # Must happen BEFORE teardown: `down -v` destroys the prometheus-data volume, and with it
+    # every raw series. What survives unaided is dump.json's ~20 extracted series — 20 of the
+    # merged dashboard's 56 panels. Every pg_stat_* metric, WAL size, locks, checkpoints, GC
+    # pause, HikariCP, Tomcat, and on TO the outbox panels have no archived equivalent at any
+    # later effort, because they were never extracted in the first place.
+    #
+    # This is what scripts/bench_run.sh does on TO-3, inlined rather than delegated to it:
+    # prom_snapshot.sh and prom_archive.sh already exist on all eight branches, so calling
+    # them directly avoids propagating a per-branch wrapper and keeps one orchestrator.
+    #
+    # Non-fatal throughout. The run's own artifacts are already written and valid; losing the
+    # snapshot costs dashboard fidelity later, not the measurement.
+    if [ "$SNAPSHOT_TSDB" = "1" ] && [ -n "$run_dir" ]; then
+        local snap_dir="bench-results/$(basename "$run_dir")/prom-snapshot"
+        if [ ! -x "$wt/scripts/prom_snapshot.sh" ]; then
+            log "$variant: no scripts/prom_snapshot.sh on this branch — TSDB not preserved"
+        elif ! ( cd "$wt" && ./scripts/prom_snapshot.sh "$(basename "$run_dir")" >/dev/null ); then
+            log "$variant: TSDB snapshot FAILED — run artifacts intact, but this run will"
+            log "           only ever replay from dump.json (~20 of 56 panels)"
+        else
+            log "$variant: TSDB -> $snap_dir"
+            if [ "$ARCHIVE_TSDB" = "1" ] && [ -x "$wt/scripts/prom_archive.sh" ]; then
+                ( cd "$wt" && ./scripts/prom_archive.sh "$snap_dir" >/dev/null ) \
+                    || log "$variant: replay-archive merge failed — the host snapshot is intact and can be merged later with: ./scripts/prom_archive.sh $snap_dir"
+            fi
+        fi
     fi
 
     log "$variant: ${VERDICT[$variant]}"
