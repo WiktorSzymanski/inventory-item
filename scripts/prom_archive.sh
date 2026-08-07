@@ -81,10 +81,22 @@ echo "==> Copying blocks from ${SNAPSHOT_DIR} into bench-replay-data (no-clobber
 # new blocks (chiefly the still-open head block) actually land. Do not swap this for a
 # plain `cp -r`, which would overwrite an already-archived block with a same-named but
 # differently-compacted copy.
+#
+# The chown is required, not tidiness. This container runs as root, so everything it
+# copies lands root-owned — but prom/prometheus runs as `nobody` (65534) and needs to
+# WRITE into its data directory (it mmaps /prometheus/queries.active at startup). Without
+# this the archive fills up correctly and prometheus-replay then dies on boot with
+#
+#     Error opening query log file ... permission denied
+#     panic: Unable to create mmap-ed active query log
+#
+# which looks like a broken volume rather than a permissions problem. The whole directory
+# is chowned, not just the new blocks, so an archive written before this fix is repaired
+# the next time anything is archived into it.
 docker run --rm \
     -v bench-replay-data:/prometheus \
     -v "${SNAPSHOT_DIR}:/snapshot:ro" \
-    alpine sh -c 'cp -rn /snapshot/*/ /prometheus/'
+    alpine sh -c 'cp -rn /snapshot/*/ /prometheus/ && chown -R 65534:65534 /prometheus'
 
 echo ""
 echo "Archived: ${SNAPSHOT_DIR} -> bench-replay-data"

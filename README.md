@@ -161,6 +161,73 @@ rate high and the staircase saturates at step 0 and reads `INVALID`.
 The suite exits non-zero unless every variant passed. `--continue-on-fail` runs everything
 regardless and reports at the end.
 
+## Reading a run's results
+
+Every run writes `bench-results/<variant>_<scenario>[_<label>]_<timestamp>/`. Four ways in,
+cheapest first.
+
+### 1. The comparison table
+
+```bash
+python3 k6/bench/compare.py bench-results/ES-4_steady_*          # one or many runs
+python3 k6/bench/compare.py --knee bench-results/*_capacity_*    # staircases and knees
+python3 k6/bench/compare.py --cols saga bench-results/ES-*       # ES saga internals
+python3 k6/bench/compare.py --cols resource --baseline <run> <run>
+```
+
+Pass any number of run directories; each becomes a row. The `point` column shows the named
+workload point when one was used, and sits beside `items`/`lines`/`payloadB`/`reserveMs` so
+a table accidentally mixing workload points is visible rather than silent.
+
+### 2. `report.pdf`
+
+`bench-results/<run_id>/report.pdf` is a full render of the 53-panel dashboard for that
+run's window, produced at the end of the run. Nothing to start — just open it. On an ES run
+the TO-family panels render empty by design, and vice versa.
+
+### 3. Grafana, against the archived run
+
+This is the full-fidelity path: the complete Prometheus TSDB, not the ~20 series
+`dump.json` extracts. The archive volume is `external`, so `docker compose down -v` cannot
+touch it.
+
+```bash
+COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml up -d prometheus-replay
+```
+
+Used **standalone** — do not add `-f docker-compose.yml`, which demands `IMAGE_TAG` and
+contributes nothing here. `COMPOSE_PROJECT_NAME` must match the benchmark stack's so the
+two share a network and Grafana can resolve `prometheus-replay` by name.
+
+Then in Grafana (`http://localhost:3000`, admin/admin) open **Inventory — Full Stack** and:
+
+1. set the **Data source** dropdown to **Prometheus Replay**;
+2. set the time range to that run's window — `meta.json`'s `windows.full` gives it as epoch
+   seconds, and the run directory's timestamp is its start.
+
+```bash
+python3 -c "import json,datetime as dt; m=json.load(open('bench-results/<run_id>/meta.json'));
+print([dt.datetime.fromtimestamp(t, dt.timezone.utc).isoformat() for t in m['windows']['full']])"
+```
+
+Query the archive directly at `http://localhost:9091` if you would rather not use Grafana.
+
+### 4. The raw artifacts
+
+| File | What it holds |
+|---|---|
+| `meta.json` | resolved config, timeline, measurement windows, provenance (variant branch + commit, image id, `image_built_after_head`) |
+| `verdict.json` | every validity and SLO check with its actual value and limit |
+| `dump.json` | the extracted Prometheus series the tables are built from |
+| `summary.json` | k6's own client-side summary — **admission latency only**, see below |
+| `k6.log`, `seed/`, `warmup/` | per-phase k6 output |
+| `prom-snapshot/` | the full TSDB block for this run |
+
+**`summary.json` is not end-to-end latency.** `POST /inventory/orders` returns 202 after
+persisting only `OrderCreatedEvent`, so k6 measures admission — frequently three orders of
+magnitude below the truth. Real latency is `order_e2e_time`, which reaches you through
+`dump.json` and the `e2e p50/p95/p99` columns.
+
 ## Preserving raw metrics
 
 `down -v` destroys the `prometheus-data` volume, so unaided only `dump.json`'s ~20 extracted

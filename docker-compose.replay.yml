@@ -1,6 +1,13 @@
 # Archive Prometheus for replayed benchmark runs.
 #
-#   docker compose -f docker-compose.yml -f docker-compose.replay.yml up -d prometheus-replay
+#   COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml up -d prometheus-replay
+#
+# Used STANDALONE, without `-f docker-compose.yml`. That file's api service declares
+# `image: ${IMAGE_TAG:?...}` so a bare `docker compose up` cannot silently run whichever
+# variant was last built — which also means merging it here fails on the missing variable,
+# and it contributes nothing to this stack anyway. COMPOSE_PROJECT_NAME must match the
+# benchmark stack's so prometheus-replay joins the same default network (`iir_default`)
+# and Grafana can resolve it by container name.
 #
 # Deliberately NOT part of docker-compose.bench.yml: bench.sh must not start, stop or
 # depend on it, and its volume is external so `docker compose down -v` leaves it alone.
