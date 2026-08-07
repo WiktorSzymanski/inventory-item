@@ -44,6 +44,7 @@ when iterating, not the workload.
 | `docker-compose.yml` | The unified stack: services `api` and `postgres`, no family names. |
 | `scripts/build-images.sh` | Builds `inventory-reservation-<variant>:latest` from each branch's worktree. **The only script that touches branches.** |
 | `scripts/run-suite.sh` | Runs `main`'s harness against each variant's image, in turn. |
+| `scripts/run-campaign.sh` | Runs several (scenario, point) steps in turn, each across every variant. Resumable. |
 | `scripts/run-tests.sh` | Runs the harness test suite. |
 | `scripts/lib.sh` | Registry, worktree, teardown and point-resolution helpers. |
 | `docs/bench-campaign-runbook.md` | The thesis campaign in execution order. |
