@@ -130,19 +130,22 @@ other seven their runs. The end-of-suite table shows who failed.
 off different staircases are not comparable, and the selection in §5 rests on comparing them.
 Re-run a single variant with `--only <variant>`.
 
+> Staircase knobs (`STEP_START`, `STEP_INC`, `STEP_COUNT`) are *calibration*: `points.env`
+> supplies defaults and the shell overrides them silently, exactly so re-bracketing works.
+> The identity knobs cannot be overridden — a conflicting value aborts the run rather than
+> producing a mislabelled result.
+
 ### 2.2 W-base — staircase 40/40/10 (peak 400), ~35–50 min per run
 
 ```bash
-env SCENARIO=capacity RUN_LABEL=Wbase DISTINCT_ITEMS=100 ITEMS_PER_ORDER=4 \
-    STEP_START=40 STEP_INC=40 STEP_COUNT=10 DRAIN_TIMEOUT=3600 \
+env SCENARIO=capacity POINT=W-base DRAIN_TIMEOUT=3600 \
     scripts/run-suite.sh --continue-on-fail
 ```
 
 ### 2.3 W-hot — staircase 20/20/12 (peak 240), ~40–55 min per run
 
 ```bash
-env SCENARIO=capacity RUN_LABEL=Whot DISTINCT_ITEMS=8 ITEMS_PER_ORDER=4 \
-    STEP_START=20 STEP_INC=20 STEP_COUNT=12 DRAIN_TIMEOUT=3600 \
+env SCENARIO=capacity POINT=W-hot DRAIN_TIMEOUT=3600 \
     scripts/run-suite.sh --continue-on-fail
 ```
 
@@ -152,8 +155,7 @@ env SCENARIO=capacity RUN_LABEL=Whot DISTINCT_ITEMS=8 ITEMS_PER_ORDER=4 \
 lowest ES knees of phase 1 here.
 
 ```bash
-env SCENARIO=capacity RUN_LABEL=Wfan DISTINCT_ITEMS=100 ITEMS_PER_ORDER=16 \
-    STEP_START=10 STEP_INC=10 STEP_COUNT=12 DRAIN_TIMEOUT=3600 \
+env SCENARIO=capacity POINT=W-fan DRAIN_TIMEOUT=3600 \
     scripts/run-suite.sh --continue-on-fail
 ```
 
@@ -162,7 +164,7 @@ env SCENARIO=capacity RUN_LABEL=Wfan DISTINCT_ITEMS=100 ITEMS_PER_ORDER=16 \
 ## 3. Compute the common soak rate
 
 ```bash
-python3 scripts/compare.py --knee bench-results/*_capacity_Wbase_*
+python3 k6/bench/compare.py --knee bench-results/*_capacity_W-base_*
 ```
 
 Record every knee in §7 Table A, then:
@@ -181,15 +183,15 @@ is the headline head-to-head table. Write the number into Table A before running
 W-base, 45 min each, all at the single `RATE` from §3. Substitute the computed number:
 
 ```bash
-env SCENARIO=soak RUN_LABEL=Wbase RATE=<RATE> DISTINCT_ITEMS=100 ITEMS_PER_ORDER=4 \
-    DRAIN_TIMEOUT=1800 scripts/run-suite.sh --continue-on-fail
+env SCENARIO=soak POINT=W-base RATE=<RATE> DRAIN_TIMEOUT=1800 \
+    scripts/run-suite.sh --continue-on-fail
 ```
 
 Read the results:
 
 ```bash
-python3 scripts/compare.py bench-results/*_soak_Wbase_*
-python3 scripts/compare.py --cols saga bench-results/ES-*_soak_Wbase_*
+python3 k6/bench/compare.py bench-results/*_soak_W-base_*
+python3 k6/bench/compare.py --cols saga bench-results/ES-*_soak_W-base_*
 ```
 
 ---
@@ -246,29 +248,26 @@ Staircases are first guesses; §2.1 applies, and within a cell both winners must
 
 ```bash
 # C01 - delay only - staircase 10/15/10 (peak 145)
-env SCENARIO=capacity RUN_LABEL=C01 DISTINCT_ITEMS=100 ITEMS_PER_ORDER=4 \
-    RESERVE_DELAY_MS=25 STEP_START=10 STEP_INC=15 STEP_COUNT=10 DRAIN_TIMEOUT=3600 \
+env SCENARIO=capacity POINT=W-base,C01 DRAIN_TIMEOUT=3600 \
     scripts/run-suite.sh --only <TO-WIN>,<ES-WIN> --continue-on-fail
 
 # C10 - payload only - staircase 5/5/10 (peak 50)
-env SCENARIO=capacity RUN_LABEL=C10 DISTINCT_ITEMS=100 ITEMS_PER_ORDER=4 \
-    PAYLOAD_BYTES=1048576 WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m \
-    STEP_START=5 STEP_INC=5 STEP_COUNT=10 DRAIN_TIMEOUT=3600 \
+env SCENARIO=capacity POINT=W-base,C10 \
+    WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m DRAIN_TIMEOUT=3600 \
     scripts/run-suite.sh --only <TO-WIN>,<ES-WIN> --continue-on-fail
 
 # C11 - both - staircase 2/3/10 (peak 29)
-env SCENARIO=capacity RUN_LABEL=C11 DISTINCT_ITEMS=100 ITEMS_PER_ORDER=4 \
-    PAYLOAD_BYTES=1048576 RESERVE_DELAY_MS=25 WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m \
-    STEP_START=2 STEP_INC=3 STEP_COUNT=10 DRAIN_TIMEOUT=3600 \
+env SCENARIO=capacity POINT=W-base,C11 \
+    WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m DRAIN_TIMEOUT=3600 \
     scripts/run-suite.sh --only <TO-WIN>,<ES-WIN> --continue-on-fail
 ```
 
 ### 6.2 Compute `K` per cell
 
 ```bash
-python3 scripts/compare.py --knee bench-results/*_capacity_C01_*
-python3 scripts/compare.py --knee bench-results/*_capacity_C10_*
-python3 scripts/compare.py --knee bench-results/*_capacity_C11_*
+python3 k6/bench/compare.py --knee bench-results/*_capacity_W-base-C01_*
+python3 k6/bench/compare.py --knee bench-results/*_capacity_W-base-C10_*
+python3 k6/bench/compare.py --knee bench-results/*_capacity_W-base-C11_*
 ```
 
 `K = min(knee of the TO winner, knee of the ES winner)` per cell. `K_C00` comes from the two
@@ -286,31 +285,33 @@ the other soaks nearly idle there — the accepted price of a common rate.
 ### 6.3–6.6 The four cells (24 runs)
 
 Three tests per cell. `<Sxx>` = `round(0.6 x K)`, `<Bxx>` = `round(0.4 x K)`,
-`<Xxx>` = `round(1.25 x K)`. `CELL_ARGS` is the cell's knob pair:
+`<Xxx>` = `round(1.25 x K)`. `POINT=W-base,<CELL>` supplies `DISTINCT_ITEMS`,
+`ITEMS_PER_ORDER`, `PAYLOAD_BYTES` and `RESERVE_DELAY_MS` together; `CELL_ARGS` is only what
+a point cannot carry:
 
 | Cell | `CELL_ARGS` |
 |---|---|
 | C00 | *(none)* |
-| C01 | `RESERVE_DELAY_MS=25` |
-| C10 | `PAYLOAD_BYTES=1048576 WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m` |
-| C11 | `PAYLOAD_BYTES=1048576 RESERVE_DELAY_MS=25 WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m` |
+| C01 | *(none)* |
+| C10 | `WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m` |
+| C11 | `WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m` |
 
 Soak is 45 min at C00 and C01, and **15 min** at C10 and C11 (add `SOAK_DURATION=15m`).
 
 ```bash
 # soak
-env SCENARIO=soak RUN_LABEL=<CELL> RATE=<Sxx> DISTINCT_ITEMS=100 ITEMS_PER_ORDER=4 \
+env SCENARIO=soak POINT=W-base,<CELL> RATE=<Sxx> \
     <CELL_ARGS> DRAIN_TIMEOUT=1800 \
     scripts/run-suite.sh --only <TO-WIN>,<ES-WIN> --continue-on-fail
 
 # spike
-env SCENARIO=spike RUN_LABEL=<CELL> SPIKE_BASE=<Bxx> SPIKE_FACTOR=4 \
-    DISTINCT_ITEMS=100 ITEMS_PER_ORDER=4 <CELL_ARGS> DRAIN_TIMEOUT=1800 \
+env SCENARIO=spike POINT=W-base,<CELL> SPIKE_BASE=<Bxx> SPIKE_FACTOR=4 \
+    <CELL_ARGS> DRAIN_TIMEOUT=1800 \
     scripts/run-suite.sh --only <TO-WIN>,<ES-WIN> --continue-on-fail
 
 # stress
-env SCENARIO=stress RUN_LABEL=<CELL> RATE=<Xxx> DURATION=10m \
-    DISTINCT_ITEMS=100 ITEMS_PER_ORDER=4 <CELL_ARGS> DRAIN_TIMEOUT=1800 \
+env SCENARIO=stress POINT=W-base,<CELL> RATE=<Xxx> DURATION=10m \
+    <CELL_ARGS> DRAIN_TIMEOUT=1800 \
     scripts/run-suite.sh --only <TO-WIN>,<ES-WIN> --continue-on-fail
 ```
 
@@ -326,17 +327,20 @@ The one place the campaign asks whether contention and fan-out compound with the
 levers. Breakpoints only, at the most-stressed cell. Staircases start very low — expect to apply
 §2.1 here more than anywhere else.
 
+Both staircases below override C11's own 2/3/10 default — the calibration knobs are for
+exactly this, per the note in §2.1.
+
 ```bash
 # W-hot at C11 - staircase 2/2/10 (peak 20)
-env SCENARIO=capacity RUN_LABEL=C11-Whot DISTINCT_ITEMS=8 ITEMS_PER_ORDER=4 \
-    PAYLOAD_BYTES=1048576 RESERVE_DELAY_MS=25 WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m \
+env SCENARIO=capacity POINT=W-hot,C11 \
+    WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m \
     STEP_START=2 STEP_INC=2 STEP_COUNT=10 DRAIN_TIMEOUT=3600 \
     scripts/run-suite.sh --only <TO-WIN>,<ES-WIN> --continue-on-fail
 
 # W-fan at C11 - staircase 1/1/10 (peak 10)
 # 16 lines x 1 MiB per order - the heaviest run in the campaign. Check df -h / first.
-env SCENARIO=capacity RUN_LABEL=C11-Wfan DISTINCT_ITEMS=100 ITEMS_PER_ORDER=16 \
-    PAYLOAD_BYTES=1048576 RESERVE_DELAY_MS=25 WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m \
+env SCENARIO=capacity POINT=W-fan,C11 \
+    WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m \
     STEP_START=1 STEP_INC=1 STEP_COUNT=10 DRAIN_TIMEOUT=3600 \
     scripts/run-suite.sh --only <TO-WIN>,<ES-WIN> --continue-on-fail
 ```
@@ -413,10 +417,10 @@ env SCENARIO=capacity RUN_LABEL=C11-Wfan DISTINCT_ITEMS=100 ITEMS_PER_ORDER=16 \
 ## 8. Reading the results
 
 ```bash
-python3 scripts/compare.py --knee bench-results/*_capacity_*        # staircases and knees
-python3 scripts/compare.py bench-results/*_soak_Wbase_*             # phase 1 head-to-head
-python3 scripts/compare.py --cols saga bench-results/ES-*           # ES saga internals
-python3 scripts/compare.py --cols resource --baseline <run> <run>   # resource deltas
+python3 k6/bench/compare.py --knee bench-results/*_capacity_*        # staircases and knees
+python3 k6/bench/compare.py bench-results/*_soak_W-base_*            # phase 1 head-to-head
+python3 k6/bench/compare.py --cols saga bench-results/ES-*           # ES saga internals
+python3 k6/bench/compare.py --cols resource --baseline <run> <run>   # resource deltas
 ```
 
 **End-to-end latency is not in the k6 output.** `POST /inventory/orders` returns 202 after

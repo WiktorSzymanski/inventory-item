@@ -2,12 +2,14 @@
 # Shared helpers for the cross-variant scripts on `main`. Sourced, never executed.
 #
 # The model: `main` carries no application code that anybody benchmarks. It carries the
-# registry (variants.env) and the orchestration. Each variant is built and run from its own
-# git worktree, using that branch's OWN harness — its docker-compose.yml, prometheus.yml,
-# queries.promql and evaluate.py. That is deliberate: the TO and ES families genuinely
-# differ (service names api-to/api-es, job labels, saga queries that exist on one side
-# only), and re-implementing a unified version on `main` would mean maintaining a third
-# copy that drifts from both.
+# registry (variants.env), the one shared harness (k6/, docker-compose.yml) and the
+# orchestration. Building a variant still needs its branch — `ensure_worktree` checks out
+# `.worktrees/<variant>/` so `build-images.sh` can build that branch's `Dockerfile` and
+# `src/` — but running one does not: `run-suite.sh` runs `main`'s own harness against the
+# image that step produced, from `main`'s own working tree. The families' schemas and saga
+# queries still differ; what turned out to be reconcilable was everything the harness
+# itself touches — service names, job labels, the datasource URL — which `main` now names
+# uniformly (`api`, `postgres`) instead of keeping eight copies of `k6/` in step by hand.
 
 # Two different roots, and conflating them nests worktrees inside worktrees.
 #

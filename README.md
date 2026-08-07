@@ -4,16 +4,17 @@ A Master's thesis benchmark comparing **Traditional Ownership** (`TO-1`..`TO-4`)
 **Event Sourcing** (`ES-1`..`ES-4`) for the same inventory reservation domain. Each variant
 lives on its own branch and implements the same HTTP API.
 
-**`main` holds no application code that anyone benchmarks.** The `src/` tree here is an
-early legacy prototype, kept only for history. What `main` provides is the entry point for
-building and running the eight variants as a set.
+**`main` holds the only harness and no application code at all.** There is no `src/`, no
+Gradle build and no `Dockerfile` here — those live on the eight variant branches. What `main`
+provides is the entry point for building and running the eight variants as a set, plus the
+one shared `k6/` harness they are all measured with.
 
 ## Quick start
 
 ```bash
 scripts/build-images.sh                                   # one image per branch
 SCENARIO=steady RATE=60 DURATION=10m scripts/run-suite.sh  # benchmark all eight
-python3 scripts/compare.py bench-results/*_steady_*        # the thesis table
+python3 k6/bench/compare.py bench-results/*_steady_*       # the thesis table
 ```
 
 Narrow it down while iterating:
@@ -36,31 +37,49 @@ when iterating, not the workload.
 
 | Path | What it does |
 |---|---|
-| `variants.env` | The registry. One line per variant: `<variant> <branch> <family> <capabilities>`. Everything else reads it. |
-| `workload.env` | Optional sticky knobs for a campaign. Ships fully commented out; the shell environment always wins. |
-| `scripts/build-images.sh` | Builds `inventory-reservation-<variant>:latest` from each branch's worktree, plus `bench-results/images.json`. |
-| `scripts/run-suite.sh` | Runs each variant's own `k6/bench/bench.sh` in turn, on a clean stack, collecting results centrally. |
-| `scripts/compare.py` | Renders a set of run directories as one comparison table. Copy of the branches' own. |
-| `scripts/lib.sh` | Shared worktree / teardown / registry helpers. |
-| `docs/bench-campaign-runbook.md` | The 66-run thesis campaign, in execution order. Start here for a full campaign rather than a one-off run. |
+| `variants.env` | The registry. `<variant> <branch> <family> <capabilities>`. |
+| `points.env` | Named workload points (`W-base`, `C11`, …) binding a label to its knobs. |
+| `workload.env` | Optional sticky knobs for a campaign. Ships fully commented out. |
+| `k6/` | **The harness.** One copy, shared by all eight variants. |
+| `docker-compose.yml` | The unified stack: services `api` and `postgres`, no family names. |
+| `scripts/build-images.sh` | Builds `inventory-reservation-<variant>:latest` from each branch's worktree. **The only script that touches branches.** |
+| `scripts/run-suite.sh` | Runs `main`'s harness against each variant's image, in turn. |
+| `scripts/run-tests.sh` | Runs the harness test suite. |
+| `scripts/lib.sh` | Registry, worktree, teardown and point-resolution helpers. |
+| `docs/bench-campaign-runbook.md` | The thesis campaign in execution order. |
 
 ## How it works, and why
 
-**Each variant runs from its own git worktree, using that branch's own harness.** `main`
-does not carry a unified `docker-compose.yml` or `queries.promql`. The families genuinely
-differ — service names (`api-to` vs `api-es`), Prometheus job labels, and saga queries that
-exist on the ES side only — and a third unified copy on `main` would drift from both.
-Worktrees live in `.worktrees/<variant>/` (gitignored) and are created on demand. Nothing
-fetches or checks out: the branches are local, and silently moving one would change what is
+> **One harness, on `main`.** Every variant is measured by the same `k6/`, the same
+> `docker-compose.yml` and the same `queries.promql`. This used to be eight copies kept in
+> step by hand; the families were thought to differ irreconcilably, but `queries.promql` is
+> identical across TO and ES, `reset.sh` discovers its tables from `pg_tables`, and both
+> families read the datasource from `${DB_JDBC_URL}`. Everything genuinely family-specific
+> was a *name*, and `main` now chooses those names: services are `api` and `postgres`.
+>
+> The variant branches keep their own `k6/` and `bench.env`. They are **no longer used** —
+> running `./k6/bench/bench.sh` on a branch produces a different stack than `main` does.
+> `main` is the only supported entry point.
+
+**Building still needs a branch; running does not.** `build-images.sh` is the only script
+that touches branches — it creates `.worktrees/<variant>/` (gitignored, on demand) to build
+`inventory-reservation-<variant>:latest` from that branch's own `Dockerfile` and `src/`.
+`run-suite.sh` never checks a branch out: it runs `main`'s own `k6/bench/bench.sh` against
+whichever image `build-images.sh` produced, from `main`'s own working tree. Nothing fetches
+or pulls either way — the branches are local, and silently moving one would change what is
 being measured without saying so.
 
-**Artifacts are central.** Each worktree's `bench-results/` is a symlink to `main`'s, so
-every run lands in one directory regardless of which variant produced it.
+**Artifacts land in one place.** `run-suite.sh` runs `main`'s harness from `main`'s own
+working tree, so every variant's `bench.sh` invocation writes straight into `main`'s own
+`bench-results/`. `ensure_results_link` only has to do anything when `main` itself is
+checked out as a worktree, in which case it symlinks that worktree's `bench-results/` to the
+primary tree's.
 
 **Images are per variant, not per family.** They used to be per family, so `ES-2` and `ES-4`
-overwrote each other and `TO-1`..`TO-4` shared a single image. Each branch's `bench.env` now
-sets a unique `IMAGE_TAG`, and its `docker-compose.yml` substitutes the same variable, so the
-harness and a bare `docker compose up` always agree on which image runs.
+overwrote each other and `TO-1`..`TO-4` shared a single image. `scripts/lib.sh`'s
+`image_tag()` derives `inventory-reservation-<variant>:latest` from `variants.env`, and
+`docker-compose.yml` requires `IMAGE_TAG` with no default, so the harness and a bare
+`docker compose up` always agree on which image runs.
 
 `build-images.sh` stamps the commit SHA as a label in a second one-instruction build. That is
 not cosmetic: `evaluate.py` treats `image_fresh` as a **validity** check, and a commit
@@ -70,9 +89,11 @@ produces a fresh timestamp.
 
 **Runs are sequential and each starts from a full teardown.** All eight variants publish the
 same host ports, so they cannot overlap. `run-suite.sh` pins one Compose project name (`iir`)
-for every variant and runs `down -v --remove-orphans` before each — which is also what makes
-a `TO`↔`ES` switch safe, since the two families' service names differ and the Prometheus
-config is a bind mount that a running container never re-reads.
+for every variant and runs `down -v --remove-orphans` before each. The `-v` matters more than
+it looks: `reset.sh` only truncates tables, so without it a `TO`↔`ES` switch would inherit
+the previous run's Postgres volume under a schema that does not match, and the bind-mounted
+Prometheus config is never re-read by a running container either. `--remove-orphans` catches
+anything left by the pre-unification layout, where TO and ES used different service names.
 
 **`SKIP_BUILD=1` is passed to `bench.sh`.** Otherwise it would rebuild and retag the image
 itself, discarding the provenance stamp and running something the suite never recorded.

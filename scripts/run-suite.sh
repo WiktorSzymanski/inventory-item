@@ -203,7 +203,7 @@ for v in $VARIANTS; do
         "$(basename "${RUNDIR[$v]:-}" 2>/dev/null)"
 done
 echo
-echo "  compare:  python3 scripts/compare.py bench-results/*_${SCENARIO}_*"
+echo "  compare:  python3 k6/bench/compare.py bench-results/*_${SCENARIO}_*"
 echo
 
 for v in $VARIANTS; do

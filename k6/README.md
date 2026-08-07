@@ -24,9 +24,10 @@ arrives as a literal tilde and gradle rejects it.
 running elevated makes `bench-results/` root-owned, which blocks every later run. The
 harness refuses to start as root.
 
-**Check `bench.env`** — the only per-branch file. On `ES-3-pesimistic-scaling` it must set
-`EXPECTED_REPLICAS` to the replica count, or every run fails the `targets_scraped`
-validity check.
+**There is no `bench.env`.** `main` owns the only harness now; `EXPECTED_REPLICAS` is
+derived from `REPLICAS` in `.env` — the file Compose itself acts on — by
+`k6/bench/common.sh`. If it disagrees with the running container count, every run fails the
+`targets_scraped` validity check.
 
 ---
 
@@ -189,13 +190,12 @@ Add the contention sweep for the lock A/B and you have the thesis' core claims c
 | `bench-results/ is not writable` | Left root-owned by an earlier `sudo` run; the error prints the `chown` |
 | `INVALID` on `git_clean` | Uncommitted `src/` changes. Commit |
 | `INVALID` on `backlog_drained` | Backlog never cleared — the e2e histogram is truncated. The variant is saturated; lower `RATE` |
-| `INVALID` on `targets_scraped` | `EXPECTED_REPLICAS` in `bench.env` disagrees with reality |
+| `INVALID` on `targets_scraped` | `EXPECTED_REPLICAS` (derived from `REPLICAS` in `.env`) disagrees with reality |
 | `e2e_p95` is `-` in the table | No orders completed in the window, or the run is INVALID |
 | `drain_seconds = 0`, `drain_service_rate` null | Rate too low to build a backlog. Expected below the knee |
 
-**Cross-branch invariant** — everything under `k6/` and `docker-compose.bench.yml` must be
-byte-identical on every branch; `bench.env` is the only per-branch file:
-
-```bash
-git diff --stat harness-v1 <branch> -- k6 docker-compose.bench.yml    # must be empty
-```
+**Single harness, on `main`.** `k6/`, `docker-compose.yml` and `docker-compose.bench.yml`
+now live in exactly one place — this worktree — shared by all eight variants; there is no
+`bench.env` and no per-branch copy left to keep in step. The variant branches still carry
+their own `k6/` and `bench.env`, but those are unsupported: running `./k6/bench/bench.sh`
+from a variant branch produces a different stack than `scripts/run-suite.sh` on `main` does.
