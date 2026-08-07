@@ -31,18 +31,43 @@ if [[ ! -d "$SNAPSHOT_DIR" ]]; then
     exit 1
 fi
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$HERE/.." && pwd)"
-COMPOSE=(docker compose -f "$REPO_ROOT/docker-compose.yml" -f "$REPO_ROOT/docker-compose.replay.yml")
+REPLAY_CONTAINER=prometheus-replay
 
-echo "==> Stopping prometheus-replay (backfilled blocks must not overlap the running head block)..."
-"${COMPOSE[@]}" stop prometheus-replay
+# Plain `docker`, not `docker compose`, and deliberately so — the same choice
+# scripts/replay_run.py makes for the same operation:
+#
+#   * docker-compose.yml declares `image: ${IMAGE_TAG:?...}`, so ANY compose invocation
+#     naming it fails outright unless IMAGE_TAG happens to be set. Nothing about archiving
+#     TSDB blocks knows or cares which variant's image exists, and run-suite.sh calls this
+#     in a subshell where IMAGE_TAG is not set. That is why this step failed on every run.
+#   * A compose invocation also only sees containers in ITS project. prometheus-replay is
+#     brought up by hand (see docs/bench-replay.md) and may well carry a different project
+#     name than the suite's `iir`, in which case `compose stop` would find nothing, report
+#     success, and leave blocks being copied in underneath a live head block. Matching on
+#     the container_name that docker-compose.replay.yml pins cannot miss it.
+running() {
+    [ "$(docker inspect -f '{{.State.Running}}' "$REPLAY_CONTAINER" 2>/dev/null || true)" = "true" ]
+}
 
-# Mirrors the try/finally in scripts/replay_run.py: prometheus-replay must come back up
-# even if the copy fails partway through, so it never gets left down after this script exits.
+WAS_RUNNING=0
+if running; then
+    WAS_RUNNING=1
+    echo "==> Stopping ${REPLAY_CONTAINER} (backfilled blocks must not overlap the running head block)..."
+    docker stop "$REPLAY_CONTAINER" >/dev/null
+else
+    # Not an error, and not something to fix by starting it: with no process attached to the
+    # volume there is no head block to overlap, so the copy below is safe as-is. Starting it
+    # here would also make this script a stack-management tool, which it is not.
+    echo "==> ${REPLAY_CONTAINER} is not running; copying straight into the volume."
+fi
+
+# Mirrors the try/finally in scripts/replay_run.py: prometheus-replay must come back up even
+# if the copy fails partway through, so it is never left down after this script exits. Only
+# restarts what this script stopped.
 restart_replay() {
-    echo "==> Starting prometheus-replay..."
-    "${COMPOSE[@]}" start prometheus-replay
+    [ "$WAS_RUNNING" = "1" ] || return 0
+    echo "==> Starting ${REPLAY_CONTAINER}..."
+    docker start "$REPLAY_CONTAINER" >/dev/null
 }
 trap restart_replay EXIT
 
@@ -65,3 +90,10 @@ echo ""
 echo "Archived: ${SNAPSHOT_DIR} -> bench-replay-data"
 echo ""
 echo "View at:  http://localhost:3000 (datasource uid: prometheus-replay, port 9091)"
+if [ "$WAS_RUNNING" = "0" ]; then
+    # COMPOSE_PROJECT_NAME must match the benchmark stack's, so prometheus-replay joins the
+    # same default network and Grafana can resolve it by name. Do NOT add
+    # `-f docker-compose.yml`: it demands IMAGE_TAG and contributes nothing here.
+    echo "          (start it first: COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-iir} \\"
+    echo "           docker compose -f docker-compose.replay.yml up -d ${REPLAY_CONTAINER})"
+fi

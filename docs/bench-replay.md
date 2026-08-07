@@ -28,17 +28,40 @@ create it first or `up` fails outright:
 
 ```bash
 docker volume create bench-replay-data
-docker compose -f docker-compose.yml -f docker-compose.replay.yml up -d prometheus-replay
+COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml up -d prometheus-replay
 ```
 
 Both commands are idempotent — safe to run again on a machine that already has the archive.
+`run-suite.sh` creates the volume itself, so in practice only the second line is ever needed.
+
+**Two details in that command are load-bearing.**
+
+`docker-compose.replay.yml` is used **alone**, not merged with `docker-compose.yml`. The
+latter declares `image: ${IMAGE_TAG:?…}` with no default — deliberately, so a bare
+`docker compose up` cannot silently benchmark whichever variant was last built — and Compose
+interpolates the whole merged file before it looks at which service you asked for. So any
+command naming both files fails outright with `required variable IMAGE_TAG is missing a
+value`. Nothing about the archive Prometheus needs anything from `docker-compose.yml`; it
+declares its own image, config mount and external volume.
+
+`COMPOSE_PROJECT_NAME=iir` is what the merge used to provide implicitly. Compose's default
+network is `<project>_default`, so matching the benchmark stack's project name (`iir`, pinned
+by `scripts/lib.sh`) puts `prometheus-replay` on `iir_default`, where Grafana can resolve it
+by name — which is what the provisioned `prometheus-replay` datasource requires.
 
 `prometheus-replay` is deliberately outside the bench compose overlay, so running
 `docker compose -f docker-compose.yml -f docker-compose.bench.yml up --remove-orphans` (which
 treats any container not defined in that overlay as an orphan) will stop it. That looks alarming —
 "the archive vanished" — but the external volume is never deleted by that command, so the data is
-intact; bring the container back with `docker compose -f docker-compose.yml -f
-docker-compose.replay.yml up -d prometheus-replay` (or a plain `docker start prometheus-replay`).
+intact; bring the container back with the `up -d` line above, or a plain
+`docker start prometheus-replay`.
+
+`scripts/prom_archive.sh` and `scripts/replay_run.py` both use plain `docker stop` /
+`docker start` on the `prometheus-replay` container name rather than Compose. Besides the
+`IMAGE_TAG` problem, a Compose invocation only sees containers in *its own* project — so if
+the archive was brought up under a different project name, `compose stop` would find nothing,
+report success, and leave blocks being copied in underneath a live head block. The container
+name is pinned by `docker-compose.replay.yml`, so matching on it cannot miss.
 
 ---
 
