@@ -1285,6 +1285,27 @@ conflicting identity knob aborts before a single container starts."
 `scripts/compare.py` is byte-identical to `k6/bench/compare.py` (303 lines each). Keeping
 both would recreate exactly the drift this change removes.
 
+- [ ] **Step 0: Fix the `bench-results` ignore pattern**
+
+`.gitignore` line 19 is `bench-results/`. A trailing slash matches **directories only**.
+Task 8's `ensure_results_link` makes `bench-results` a *symlink* whenever `main` is checked
+out as a worktree, and a symlink is not a directory — so it shows up as untracked
+(`?? bench-results`) and any `git add -A` would commit an environment-specific symlink
+whose relative target (`../../bench-results`) only resolves at one particular worktree
+nesting depth.
+
+Drop the trailing slash so the pattern matches both forms:
+
+```gitignore
+# central benchmark artifacts: every variant's run lands here.
+# No trailing slash — ensure_results_link makes this a SYMLINK when main is a worktree,
+# and `bench-results/` would match only a real directory, leaving the symlink untracked.
+bench-results
+```
+
+Verify: `git check-ignore -v bench-results` must now print a match, and
+`git status --short` must not list `bench-results`.
+
 - [ ] **Step 1: Confirm the two files are still identical before deleting either**
 
 Run:
