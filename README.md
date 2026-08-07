@@ -81,11 +81,21 @@ overwrote each other and `TO-1`..`TO-4` shared a single image. `scripts/lib.sh`'
 `docker-compose.yml` requires `IMAGE_TAG` with no default, so the harness and a bare
 `docker compose up` always agree on which image runs.
 
-`build-images.sh` stamps the commit SHA as a label in a second one-instruction build. That is
-not cosmetic: `evaluate.py` treats `image_fresh` as a **validity** check, and a commit
-touching only docs reuses every cached layer, leaving the image's `Created` older than `HEAD`
-and reporting a good run `INVALID`. The label's cache key is the SHA, so a new commit always
-produces a fresh timestamp.
+`build-images.sh` stamps the commit SHA as a **`RUN` layer** in a second one-instruction
+build. That is not cosmetic: `evaluate.py` treats `image_fresh` as a **validity** check, and
+a commit touching only docs reuses every cached layer, leaving the image's `Created` older
+than `HEAD` and reporting a good run `INVALID`. The `RUN`'s cache key contains the SHA, so a
+new commit always produces a new layer — and a new layer is what dates the image now.
+
+**It has to be `RUN`, not `LABEL`.** A metadata-only instruction yields a new image ID but
+BuildKit inherits `Created` from the base, so a `LABEL` stamp does not refresh the timestamp
+at all — measured: label applied, `Created` unchanged. The `LABEL` in `build-images.sh` rides
+along for machine-readable provenance only; it is not what makes the check work.
+
+`image_fresh` compares the image against **the variant branch's** `HEAD`, which `run-suite.sh`
+resolves from `.worktrees/<variant>/` and passes to `bench.sh`. Comparing against `main`'s
+`HEAD` — as `bench.sh` did on its own, since its `REPO_ROOT` is now `main` — is two unrelated
+clocks, and one docs-only commit here reported all eight variants `INVALID`.
 
 **Runs are sequential and each starts from a full teardown.** All eight variants publish the
 same host ports, so they cannot overlap. `run-suite.sh` pins one Compose project name (`iir`)

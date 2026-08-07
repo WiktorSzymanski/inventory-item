@@ -36,8 +36,11 @@ RESULTS_DIR="$REPO_ROOT/bench-results"
 # `down -v --remove-orphans` provably clears whatever ran last, including across a TO->ES
 # switch where even the service names differ (--remove-orphans is what catches those).
 #
-# Container names become iir-api-es-1 etc. That is fine: API_CONTAINER_RE is `.*api-es.*`,
-# unanchored, and every cadvisor query in queries.promql matches on it.
+# Container names become iir-api-1, iir-api-2, ... — the api service carries no
+# container_name (it is scaled by deploy.replicas), so Compose names it <project>-api-N.
+# That is fine: k6/bench/common.sh sets API_CONTAINER_RE to `.*-api-.*`, and every cadvisor
+# query in queries.promql matches on it. The leading and trailing `.*` are required because
+# Prometheus anchors regexes fully; the hyphens keep it off sibling containers.
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-iir}"
 
 log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }

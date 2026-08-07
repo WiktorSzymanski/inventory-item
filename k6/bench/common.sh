@@ -37,6 +37,14 @@ EXPECTED_REPLICAS="${REPLICAS:-1}"
 export EXPECTED_REPLICAS
 
 : "${VARIANT:?VARIANT must be set (scripts/run-suite.sh sets it from variants.env)}"
+# Guarded here for the same reason VARIANT is, and just as loudly. docker-compose.yml
+# declares `image: ${IMAGE_TAG:?…}` with no default so a bare `docker compose up` cannot
+# silently benchmark whichever variant was last built — but without this line the first
+# symptom under `set -u` was a bare `IMAGE_TAG: unbound variable` from bench.sh, naming
+# neither the cause nor the fix. Exported, not merely checked: docker compose reads it from
+# the ENVIRONMENT, so a set-but-unexported value would pass the check and still fail there.
+: "${IMAGE_TAG:?IMAGE_TAG must be set (scripts/run-suite.sh derives it from variants.env, e.g. inventory-reservation-es-4:latest)}"
+export IMAGE_TAG
 
 # Compose invocation as a function over an array, not a string. A string variable used as
 # `dc run ...` depends on unquoted word-splitting, which breaks outright under zsh and is
