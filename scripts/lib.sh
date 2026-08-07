@@ -269,9 +269,28 @@ known_points() {
 }
 
 # Expand $POINT (comma-separated, composable) into the workload knobs and RUN_LABEL.
+#
+# TWO conflicts have to be caught here, not one. The shell-vs-point check below compares
+# against __SHELL_$key, captured before anything expanded — but that is empty for a knob no
+# point has touched yet, so once point A set an identity knob, point B saw an empty prior and
+# silently overwrote it. Measured before the fix:
+#
+#     POINT=C01,C11      -> PAYLOAD_BYTES=1048576  label C01-C11   rc=0
+#     POINT=W-base,W-hot -> DISTINCT_ITEMS=8       label W-base-W-hot  rc=0
+#
+# i.e. a typo (POINT=C01,C11 for the intended POINT=W-base,C11) produced a run labelled
+# C01-C11 while only C11's knobs applied — precisely the mislabelled run points.env exists to
+# make impossible. So identity knobs also carry the point that set them, and a LATER point
+# offering a DIFFERENT value is fatal. The same value is fine, and composition of points that
+# do not overlap (POINT=W-base,C11, a documented campaign command) is untouched.
 resolve_point() {
     [ -n "${POINT:-}" ] || return 0
-    local p kv key val prior label=""
+    local p kv key val prior label="" owner owner_val
+    # Clear any residue, so a second resolve_point in one shell cannot inherit the first's
+    # ownership records and reject a legitimate re-resolution.
+    for key in $POINT_IDENTITY_KNOBS; do
+        unset "__POINT_OWNER_$key" "__POINT_VALUE_$key"
+    done
     for p in ${POINT//,/ }; do
         # Checked here, not left to read_point's own die(): that call runs inside the
         # < <(...) process substitution below, a subshell whose exit status this loop
@@ -291,6 +310,11 @@ resolve_point() {
                     if [ -n "$prior" ] && [ "$prior" != "$val" ]; then
                         die "POINT=$p defines $key=$val but the environment sets $key=$prior. $key is an identity knob: honouring the override would make the run label '$label' describe a workload it did not run. Drop the override, or drop POINT and set every knob by hand."
                     fi
+                    eval "owner=\"\${__POINT_OWNER_$key:-}\"; owner_val=\"\${__POINT_VALUE_$key:-}\""
+                    if [ -n "$owner" ] && [ "$owner_val" != "$val" ]; then
+                        die "POINT=$POINT composes '$owner' and '$p', which disagree on $key ('$owner' sets $key=$owner_val, '$p' sets $key=$val). $key is an identity knob, so the later value would win while the run label '$label' still named both points — the run would be labelled for a workload it did not run. Compose points that do not overlap, or name a single point."
+                    fi
+                    eval "__POINT_OWNER_$key=\"\$p\"; __POINT_VALUE_$key=\"\$val\""
                     export "$key=$val" ;;
                 *)
                     [ -n "$prior" ] || export "$key=$val" ;;

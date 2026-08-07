@@ -64,6 +64,19 @@ fi
 for tool in docker python3 curl git; do
     command -v "$tool" >/dev/null || die "required tool not on PATH: $tool"
 done
+
+# >>> point-guard
+# A point is expanded by resolve_point() in scripts/lib.sh, which scripts/run-suite.sh calls
+# — the single resolution path, and the only place that knows points.env exists. bench.sh
+# never expands one. So POINT arriving here without POINT_RESOLVED means the knobs it names
+# were NEVER applied: `POINT=W-hot ./k6/bench/bench.sh` ran at config.js's defaults
+# (DISTINCT_ITEMS=6, ITEMS_PER_ORDER=4) while meta.json claimed `point: W-hot`, which means 8
+# — and compare.py then grouped that run with genuine W-hot runs. Refusing is better than
+# recording nothing, because the run itself is not the one the operator asked for.
+if [ -n "${POINT:-}" ] && [ -z "${POINT_RESOLVED:-}" ]; then
+    die "POINT=$POINT was never resolved. Points are expanded by scripts/run-suite.sh (points.env), not by bench.sh, so this run would use the default workload while recording '$POINT' in meta.json. Use: POINT=$POINT scripts/run-suite.sh --only \$VARIANT — or set DISTINCT_ITEMS/ITEMS_PER_ORDER/PAYLOAD_BYTES/RESERVE_DELAY_MS here by hand and drop POINT."
+fi
+# <<< point-guard
 docker info >/dev/null 2>&1 || die "cannot reach the docker daemon (is it running, and are you in the docker group?)"
 
 if [ -d "$REPO_ROOT/bench-results" ] && [ ! -w "$REPO_ROOT/bench-results" ]; then
@@ -265,7 +278,7 @@ meta = {
     "variant_family": "${VARIANT_FAMILY:-}",
     "scenario": "$SCENARIO",
     "run_label": "${RUN_LABEL:-}",
-    "point": "${POINT_RESOLVED:-${POINT:-}}",
+    "point": "${POINT_RESOLVED:-}",
     "branch": "$GIT_BRANCH",
     "commit": "$GIT_COMMIT",
     "git_dirty": int("$GIT_DIRTY"),

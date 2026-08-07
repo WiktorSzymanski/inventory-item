@@ -205,10 +205,47 @@ class MetaRecordsThePoint(unittest.TestCase):
     def test_meta_json_has_a_point_field(self):
         self.assertIn('"point":', self.script)
 
-    def test_point_field_prefers_the_resolved_value(self):
-        # POINT_RESOLVED is normalised ("W-base,C11" -> "W-base-C11"); raw POINT is the
-        # fallback for a hand-run that never went through resolve_point.
-        self.assertIn('${POINT_RESOLVED:-${POINT:-}}', self.script)
+    def test_point_field_records_only_the_resolved_value(self):
+        # POINT_RESOLVED is normalised ("W-base,C11" -> "W-base-C11"). There is deliberately
+        # NO fallback to raw POINT: see UnresolvedPointIsRefused below.
+        self.assertIn('"point": "${POINT_RESOLVED:-}"', self.script)
+        self.assertNotIn('${POINT_RESOLVED:-${POINT:-}}', self.script)
+
+
+class UnresolvedPointIsRefused(unittest.TestCase):
+    """`POINT=W-hot ./k6/bench/bench.sh` used to run the DEFAULT workload.
+
+    resolve_point() lives in scripts/lib.sh and its only caller is scripts/run-suite.sh, so
+    a direct bench.sh invocation — which k6/README.md documents — expanded nothing. The run
+    used config.js's defaults (DISTINCT_ITEMS=6) while meta.json recorded `point: W-hot`,
+    which means 8, and compare.py grouped it with genuine W-hot runs. Keeping one resolution
+    path means bench.sh must refuse, not guess.
+    """
+
+    def guard(self, **env_overrides):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("POINT", "POINT_RESOLVED")}
+        env.update(env_overrides)
+        # die() is defined in common.sh, which this block does not source; stub it so the
+        # block's own control flow is what decides the exit status.
+        script = ('die() { printf "FATAL: %s\\n" "$*" >&2; exit 1; }\n'
+                  + block("point-guard") + '\necho ok')
+        return subprocess.run(["bash", "-c", script], env=env,
+                              capture_output=True, text=True)
+
+    def test_unresolved_point_aborts(self):
+        r = self.guard(POINT="W-hot")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("W-hot", r.stderr)
+
+    def test_resolved_point_proceeds(self):
+        r = self.guard(POINT="W-base,C11", POINT_RESOLVED="W-base-C11")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_no_point_at_all_proceeds(self):
+        """The overwhelmingly common case: bench.sh run with no point in sight."""
+        r = self.guard()
+        self.assertEqual(r.returncode, 0, r.stderr)
 
 
 class MetaHeredocRendersCorrectly(unittest.TestCase):
@@ -228,9 +265,18 @@ class MetaHeredocRendersCorrectly(unittest.TestCase):
         rendered = render_meta_heredoc(POINT_RESOLVED="W-hot", POINT="W-raw")
         self.assertIn('"point": "W-hot"', rendered)
 
-    def test_point_falls_back_to_raw_when_resolved_is_empty(self):
+    def test_an_unresolved_point_is_never_recorded(self):
+        """This asserted the opposite until the raw-POINT fallback was removed.
+
+        The fallback fired exactly when resolve_point had NOT run — a direct bench.sh
+        invocation — so it recorded a point whose knobs were never applied. It could not be
+        made correct by tightening the fallback either: the failure is that the run used the
+        wrong workload, and no meta.json value fixes that. bench.sh now refuses the run
+        outright (UnresolvedPointIsRefused), and this asserts the recording side.
+        """
         rendered = render_meta_heredoc(POINT_RESOLVED="", POINT="W-raw")
-        self.assertIn('"point": "W-raw"', rendered)
+        self.assertIn('"point": ""', rendered)
+        self.assertNotIn("W-raw", rendered)
 
     def test_point_is_empty_when_both_are_empty(self):
         rendered = render_meta_heredoc(POINT_RESOLVED="", POINT="")
