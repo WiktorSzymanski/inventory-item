@@ -46,6 +46,7 @@ when iterating, not the workload.
 | `scripts/run-suite.sh` | Runs `main`'s harness against each variant's image, in turn. |
 | `scripts/run-campaign.sh` | Runs several (scenario, point) steps in turn, each across every variant. Resumable. |
 | `scripts/run-tests.sh` | Runs the harness test suite. |
+| `scripts/replay_url.sh` | Prints the Grafana URL for an archived run, with its time window preset. |
 | `scripts/lib.sh` | Registry, worktree, teardown and point-resolution helpers. |
 | `docs/bench-campaign-runbook.md` | The thesis campaign in execution order. |
 
@@ -205,18 +206,27 @@ never collide with a benchmark that is running, and both may be up at once. Use 
 contributes nothing here. `COMPOSE_PROJECT_NAME` must match the benchmark stack's so the
 two share a network.
 
-Then open **Inventory — Full Stack** at `http://localhost:3001`, set the **Data source**
-dropdown to **Prometheus Replay**, and set the time range to the run's window.
-
-Or skip both steps with a deep link, which this prints for any run:
+Then get the URL for a run — this is the reliable way in:
 
 ```bash
-python3 -c "
-import json,sys
-m=json.load(open(sys.argv[1] + '/meta.json')); a,b = m['windows']['full']
-print(f'http://localhost:3001/d/the-dashboard/?from={a}000&to={b}000&var-ds=prometheus-replay')
-" bench-results/ES-4_steady_20260807T101745Z
+scripts/replay_url.sh                    # newest run
+scripts/replay_url.sh bench-results/ES-4_steady_20260807T101745Z
+scripts/replay_url.sh --open             # and open it in a browser
 ```
+
+**Opening the dashboard without an explicit time range shows nothing, and it is not
+obvious why.** `Inventory — Full Stack` defaults to `from=now-15m&to=now` with a 5-second
+refresh, because its first job is watching a run happen. An archived run is a fixed window
+in the past, so those defaults point at a stretch of time the archive has no samples for —
+and the refresh slides the window further away every 5 seconds. It looks like an empty
+archive; the data is fine. `replay_url.sh` reads the window out of the run's own
+`meta.json` and pins the refresh off, so the question does not arise.
+
+The manual equivalent, if you would rather: open `http://localhost:3001`, set the **Data
+source** dropdown to **Prometheus Replay**, turn auto-refresh **off**, and set an absolute
+time range from `meta.json`'s `windows.full` (epoch seconds — load through end of drain;
+the drain tail matters, because `order_e2e_time` is recorded when the projection handles
+the terminal event, which under load lags the load phase).
 
 The archive volume is `external`, so `docker compose down -v` cannot touch it. With the
 benchmark stack down the plain **Prometheus** datasource has nothing to resolve — only
