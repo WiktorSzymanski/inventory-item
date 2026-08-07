@@ -77,12 +77,33 @@ if [ "${SKIP_BUILD:-0}" != "1" ] && [ -n "${JAVA_HOME:-}" ] && [ ! -d "$JAVA_HOM
 fi
 
 # ---------------------------------------------------------------- provenance guards
-GIT_BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)"
-GIT_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-GIT_DIRTY="$(git -C "$REPO_ROOT" status --porcelain -- src/ | wc -l | tr -d ' ')"
+#
+# The code under test is the VARIANT's, not this tree's. $REPO_ROOT is two levels above
+# k6/bench/, which since the harness moved to `main` is `main` — a tree that holds no
+# application code at all. Every provenance fact derived from it therefore describes the
+# harness rather than the thing being measured, and two of them are VALIDITY checks in
+# evaluate.py:
+#
+#   image_fresh  compared the image's Created against `main`'s HEAD. The image is built
+#                from a variant branch, so those are two unrelated clocks: one docs-only
+#                commit on `main` dated every one of the eight images "stale" and a whole
+#                campaign returned INVALID x8 after hours of machine time.
+#   git_clean    counted changes under src/, which `main` does not have — unconditionally
+#                zero, so an uncommitted edit baked into a benchmarked image passed silently.
+#
+# scripts/run-suite.sh knows which worktree the image came from and exports these four from
+# there. The fallbacks are what keeps a direct `./k6/bench/bench.sh` working — including on
+# a variant branch, where $REPO_ROOT really is the tree under test and `-- src/` is right.
+# Do not "simplify" either half away: neither alone is correct for both callers.
+# >>> provenance
+GIT_BRANCH="${VARIANT_GIT_BRANCH:-$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)}"
+GIT_COMMIT="${VARIANT_GIT_COMMIT:-$(git -C "$REPO_ROOT" rev-parse HEAD)}"
+GIT_DIRTY="${VARIANT_GIT_DIRTY:-$(git -C "$REPO_ROOT" status --porcelain -- src/ | wc -l | tr -d ' ')}"
+HEAD_EPOCH="${VARIANT_HEAD_EPOCH:-$(git -C "$REPO_ROOT" log -1 --format=%ct)}"
+# <<< provenance
 
 if [ "$GIT_DIRTY" != "0" ] && [ "${ALLOW_DIRTY:-0}" != "1" ]; then
-    die "src/ has $GIT_DIRTY uncommitted change(s); results would not be reproducible. Commit, or set ALLOW_DIRTY=1."
+    die "the tree the image was built from has $GIT_DIRTY uncommitted change(s) under its build inputs; results would not be reproducible. Commit them in that worktree, or set ALLOW_DIRTY=1."
 fi
 
 # Rebuild by default. `image: <tag>:latest` with no build step means a bare
@@ -104,7 +125,8 @@ log "artifacts -> bench-results/$RUN_NAME"
 
 IMAGE_ID="$(docker image inspect "$IMAGE_TAG" --format '{{.Id}}' 2>/dev/null || echo unknown)"
 IMAGE_CREATED="$(docker image inspect "$IMAGE_TAG" --format '{{.Created}}' 2>/dev/null || echo unknown)"
-HEAD_EPOCH="$(git -C "$REPO_ROOT" log -1 --format=%ct)"
+# HEAD_EPOCH is resolved in the provenance block above, against the tree the image was
+# actually built from — not against whatever tree this script happens to live in.
 IMAGE_EPOCH="$(date -d "$IMAGE_CREATED" +%s 2>/dev/null || echo 0)"
 IMAGE_FRESH=$([ "$IMAGE_EPOCH" -ge "$HEAD_EPOCH" ] && echo true || echo false)
 

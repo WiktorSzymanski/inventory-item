@@ -127,6 +127,40 @@ sys.exit(subprocess.call(["docker", "image", "inspect", tag],
 PY
 }
 
+# Provenance of the code under test, resolved from the variant's own worktree.
+#
+# bench.sh derives branch/commit/dirty/HEAD-time from ITS repo root, which is now `main` —
+# a tree with no application code in it. See the provenance block in k6/bench/bench.sh for
+# what that broke; the short version is that `image_fresh` compared the image against an
+# unrelated clock and `git_clean` counted a directory that does not exist. bench.sh prefers
+# these four when they are set and falls back to its own tree when they are not, so a direct
+# invocation still works.
+variant_provenance() {
+    local variant="$1" wt
+    # Never carry the previous variant's facts forward: a variant with no worktree must fall
+    # back to bench.sh's own tree, not silently inherit its predecessor's commit.
+    unset VARIANT_GIT_BRANCH VARIANT_GIT_COMMIT VARIANT_GIT_DIRTY VARIANT_HEAD_EPOCH
+    wt="$(worktree_path "$variant")"
+    if [ ! -e "$wt/.git" ]; then
+        log "$variant: no worktree at $wt — meta.json provenance will describe main, not $variant"
+        return 0
+    fi
+    VARIANT_GIT_BRANCH="$(git -C "$wt" rev-parse --abbrev-ref HEAD)"
+    VARIANT_GIT_COMMIT="$(git -C "$wt" rev-parse HEAD)"
+    # The commit the image was built FROM, which is the only clock `image Created` can
+    # sensibly be compared against.
+    VARIANT_HEAD_EPOCH="$(git -C "$wt" log -1 --format=%ct)"
+    # Exactly the paths the variant Dockerfile COPYs into the build context, so this counts
+    # what could actually end up inside the image and nothing else. `-- src/` alone would
+    # miss an edited build.gradle.kts; the whole tree would flag the bench-results symlink
+    # ensure_worktree plants, and the .worktrees/ directory when the variant IS the primary
+    # checkout. A pathspec entry that does not exist matches nothing rather than erroring.
+    VARIANT_GIT_DIRTY="$(git -C "$wt" status --porcelain -- \
+        src/ gradle/ gradlew gradlew.bat settings.gradle.kts build.gradle.kts \
+        gradle.properties Dockerfile | wc -l | tr -d ' ')"
+    export VARIANT_GIT_BRANCH VARIANT_GIT_COMMIT VARIANT_GIT_DIRTY VARIANT_HEAD_EPOCH
+}
+
 run_one() {
     local variant="$1" rc=0 run_dir
 
@@ -138,6 +172,9 @@ run_one() {
         log "$variant: image missing or behind branch head — building"
         "$HERE/build-images.sh" --only "$variant"
     fi
+
+    # After the build, so a worktree created by it is visible here.
+    variant_provenance "$variant"
 
     log "=== $variant: $SCENARIO ${POINT_RESOLVED:+($POINT_RESOLVED)} ==="
 

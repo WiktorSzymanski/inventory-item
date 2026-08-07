@@ -57,9 +57,20 @@ and `ARCHIVE_TSDB=0` also work, matching `bench_run.sh`'s names.
 
 ### Do **not** pass `ALLOW_DIRTY=1`
 
-It lets `bench.sh` start with uncommitted changes under `src/`, but `evaluate.py` still counts
-`git_dirty` as a **validity** check, so every such run reports `INVALID` and is unusable.
-Commit `src/` in the variant's worktree instead — `git_dirty` only counts changes under `src/`.
+It lets `bench.sh` start with an uncommitted change inside the image it is about to measure,
+but `evaluate.py` still counts `git_dirty` as a **validity** check, so every such run reports
+`INVALID` and is unusable. Commit in the variant's worktree instead.
+
+`run-suite.sh` counts the dirty paths in **`.worktrees/<variant>/`**, not in `main` — `main`
+has no application code, so a count taken there was unconditionally zero and the check was
+vacuous. The pathspec is exactly what the variant `Dockerfile` COPYs (`src/`, `gradle/`, the
+wrapper and build scripts, `Dockerfile` itself), so it answers "could an uncommitted edit be
+inside the image?" and ignores everything that cannot be — including the `bench-results`
+symlink the harness plants in each worktree.
+
+Note the trap this replaces: when the primary checkout happens to sit on a variant branch,
+`worktree_path` returns that checkout and `build-images.sh` builds from it, so a stray edit
+there really does get baked into the benchmarked image.
 
 ### Shell
 
@@ -91,8 +102,18 @@ build above is only to get the cold-cache cost out of the way before a long camp
   valid but it will only ever replay from `dump.json`.
 - **the knob warning**, if you set `RESERVE_DELAY_MS` or `PAYLOAD_BYTES`.
 
-`image_fresh` no longer needs watching: `build-images.sh` stamps the commit SHA as a `RUN`
-layer, so a docs-only commit can no longer leave the image dated before `HEAD`.
+`image_fresh` compares the image's `Created` against the HEAD of **the branch it was built
+from**, which `run-suite.sh` resolves from `.worktrees/<variant>/` and passes to `bench.sh`.
+Two things had to be true for that to be meaningful, and both are:
+
+- `build-images.sh` stamps the commit SHA as a **`RUN`** layer, so a docs-only commit on the
+  *variant* branch cannot leave the image dated before that branch's `HEAD`.
+- The comparison is against the variant's `HEAD`, not `main`'s. It used to be `main`'s, which
+  is a completely unrelated clock — one docs-only commit here marked all eight images stale
+  and returned `INVALID` × 8 after a full campaign's worth of machine time.
+
+It is still worth a glance when you pass `--no-build`: an image left behind its branch head
+is exactly what the check exists to catch.
 
 ---
 

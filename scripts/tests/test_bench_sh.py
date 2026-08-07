@@ -3,7 +3,34 @@ import subprocess
 import unittest
 
 HERE = os.path.dirname(__file__)
+ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 BENCH_SH = os.path.join(HERE, "..", "..", "k6", "bench", "bench.sh")
+
+PROVENANCE_VARS = ("VARIANT_GIT_BRANCH", "VARIANT_GIT_COMMIT",
+                   "VARIANT_GIT_DIRTY", "VARIANT_HEAD_EPOCH")
+
+
+def block(marker):
+    """Execute one marked block out of the shipped bench.sh, so these tests bind to the
+    real code rather than to a copy of it that can drift."""
+    with open(BENCH_SH) as fh:
+        script = fh.read()
+    return script.split(f"# >>> {marker}")[1].split(f"# <<< {marker}")[0]
+
+
+def provenance_block(**overrides):
+    """Run bench.sh's provenance block with $REPO_ROOT pointed at this checkout of `main`
+    and report the four values it settles on."""
+    env = {k: v for k, v in os.environ.items() if k not in PROVENANCE_VARS}
+    env["REPO_ROOT"] = ROOT
+    env.update(overrides)
+    script = (block("provenance")
+              + '\nprintf "%s\\n%s\\n%s\\n%s\\n" '
+                '"$GIT_BRANCH" "$GIT_COMMIT" "$GIT_DIRTY" "$HEAD_EPOCH"')
+    result = subprocess.run(["bash", "-c", script], env=env,
+                            capture_output=True, text=True, check=True)
+    return dict(zip(("branch", "commit", "dirty", "head_epoch"),
+                    result.stdout.split("\n")))
 
 
 def run_label_block(run_label=None):
@@ -114,6 +141,51 @@ class RunLabel(unittest.TestCase):
 
     def test_dots_dashes_and_underscores_survive(self):
         self.assertEqual("_p1.0MiB_d25-ms", run_label_block("p1.0MiB_d25-ms"))
+
+
+class Provenance(unittest.TestCase):
+    """meta.json must describe the code UNDER TEST, not the harness.
+
+    bench.sh's $REPO_ROOT is `main`, which carries no application code, so every fact
+    derived from it describes the wrong tree. Two of them are validity checks in
+    evaluate.py: `image_fresh` compared the image against `main`'s HEAD (an unrelated
+    clock — one docs-only commit here returned INVALID for all eight variants) and
+    `git_clean` counted `main/src/`, which does not exist, so it was always 0.
+    """
+
+    def test_variant_values_win_when_run_suite_supplies_them(self):
+        got = provenance_block(VARIANT_GIT_BRANCH="ES-4",
+                               VARIANT_GIT_COMMIT="0123456789abcdef",
+                               VARIANT_GIT_DIRTY="3",
+                               VARIANT_HEAD_EPOCH="1700000000")
+        self.assertEqual(got, {"branch": "ES-4", "commit": "0123456789abcdef",
+                               "dirty": "3", "head_epoch": "1700000000"})
+
+    def test_a_dirty_variant_worktree_is_visible_here(self):
+        """The whole point of I4: a non-zero count must survive into GIT_DIRTY so the
+        guard below it can abort. Before the fix this was pinned to `main`'s absent src/."""
+        self.assertEqual(provenance_block(VARIANT_GIT_DIRTY="1")["dirty"], "1")
+
+    def test_falls_back_to_its_own_tree_for_a_direct_invocation(self):
+        """k6/README.md documents running bench.sh by hand, and the variant branches carry
+        their own copy where $REPO_ROOT really is the tree under test. Dropping the
+        fallback would break both."""
+        got = provenance_block()
+        expected_commit = subprocess.run(
+            ["git", "-C", ROOT, "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True).stdout.strip()
+        expected_epoch = subprocess.run(
+            ["git", "-C", ROOT, "log", "-1", "--format=%ct"],
+            capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(got["commit"], expected_commit)
+        self.assertEqual(got["head_epoch"], expected_epoch)
+
+    def test_head_epoch_is_not_recomputed_after_the_provenance_block(self):
+        """A second `HEAD_EPOCH=$(git ... log)` further down would silently reinstate the
+        bug for image_fresh while every test above still passed."""
+        with open(BENCH_SH) as fh:
+            script = fh.read()
+        self.assertEqual(script.count("HEAD_EPOCH="), 1)
 
 
 class MetaRecordsThePoint(unittest.TestCase):
