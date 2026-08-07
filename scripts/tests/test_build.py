@@ -155,6 +155,30 @@ class GeneratedDashboards(unittest.TestCase):
                 self.assertEqual(target["datasource"], {"type": "prometheus", "uid": "${ds}"},
                                   f"the-dashboard/{panel.get('title')}: target not on ${{ds}}")
 
+    def test_live_query_variables_follow_the_datasource_picker(self):
+        """The QUERY variables must resolve against ${ds} too, not a fixed uid.
+
+        The sibling test above covers panels and targets, and that was not enough. With the
+        variables pinned to `uid: "prometheus"`, switching Data source -> "Prometheus Replay"
+        repoints every panel at the archive while the variables keep asking the LIVE
+        Prometheus for their options — and after a benchmark that container is gone
+        (`run-suite.sh` ends with `down -v`). label_values() returns nothing, `current` stays
+        {}, `$job` expands empty, and every panel that filters on a variable renders "No data"
+        while the unfiltered ones render normally.
+
+        That half-empty dashboard reads as a corrupt archive rather than an unresolved
+        variable, and it is invisible during a live run: the live Prometheus is up at the
+        moment report.pdf is rendered, so the PDF looks perfect. Only viewing an archived run
+        exposes it.
+        """
+        for var in self.live["templating"]["list"]:
+            if var["type"] != "query":
+                continue
+            self.assertEqual(
+                var.get("datasource"), {"type": "prometheus", "uid": "${ds}"},
+                f"the-dashboard variable ${var['name']} is pinned to "
+                f"{var.get('datasource')} — it will not resolve against the replay archive")
+
     def test_archived_dashboard_stays_pinned_to_the_replay_datasource(self):
         """bench-replay must never expose the switch: it only ever holds replayed
         dump.json data, so pointing it at live Prometheus would be nonsensical."""

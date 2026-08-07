@@ -14,6 +14,21 @@ from . import spec
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUT_DIR = os.path.join(REPO_ROOT, "monitoring", "grafana", "provisioning", "dashboards")
 DS = {"type": "prometheus", "uid": "prometheus"}
+
+# The datasource the live dashboard's QUERY VARIABLES resolve against.
+#
+# It must follow the `ds` picker, not pin to the live Prometheus. Panels all use
+# `{"uid": "${ds}"}`, so switching Data source -> "Prometheus Replay" repoints every panel
+# at the archive — but a variable pinned to `uid: "prometheus"` keeps asking the LIVE
+# Prometheus for its options, and after a benchmark that container is gone
+# (`run-suite.sh` ends with `down -v`). label_values() then returns nothing, `current`
+# stays {}, `$job` expands empty, and every panel filtering on it renders "No data" while
+# the unfiltered ones render normally — which looks like a half-broken archive rather than
+# an unresolved variable.
+#
+# This does not show up during a live run, because the live Prometheus is up at the moment
+# report.pdf is rendered. It is specific to viewing an archived run.
+DS_VAR = {"type": "prometheus", "uid": "${ds}"}
 DS_VAR = {"type": "prometheus", "uid": "${ds}"}
 DS_REPLAY = {"type": "prometheus", "uid": "prometheus-replay"}
 ANCHOR_ISO = "2026-01-01T00:00:00.000Z"
@@ -159,10 +174,10 @@ def build_live():
          #   apic   the api service is scaled by deploy.replicas and so has no container_name;
          #          cadvisor sees `<project>-api-N`. The project name is a knob
          #          (COMPOSE_PROJECT_NAME, `iir` by default), so match the shape, not `iir`.
-         _var("job", "API job", "label_values(up, job)", DS, regex="/^inventory$/"),
-         _var("db", "Database", "label_values(pg_database_size_bytes, datname)", DS, regex="/^inventory$/"),
-         _var("dbc", "DB container", "label_values(container_memory_rss, name)", DS, regex="/^postgres$/"),
-         _var("apic", "API container", "label_values(container_memory_rss, name)", DS, regex="/^.*-api-[0-9]+$/")])
+         _var("job", "API job", "label_values(up, job)", DS_VAR, regex="/^inventory$/"),
+         _var("db", "Database", "label_values(pg_database_size_bytes, datname)", DS_VAR, regex="/^inventory$/"),
+         _var("dbc", "DB container", "label_values(container_memory_rss, name)", DS_VAR, regex="/^postgres$/"),
+         _var("apic", "API container", "label_values(container_memory_rss, name)", DS_VAR, regex="/^.*-api-[0-9]+$/")])
     dash["refresh"] = "5s"
     panels, _, _, _ = _layout(spec.SECTIONS, lambda p: p.targets, DS_VAR)
     dash["panels"] = panels
