@@ -1,6 +1,118 @@
+import json
+import os
+import re
 import unittest
 
 from scripts.dashboards import build
+
+# What the unified stack actually emits, per label the live dashboard filters on.
+#
+# job     monitoring/prometheus/prometheus.yml declares exactly these three scrape jobs.
+# datname pg_database_size_bytes reports every database in the cluster.
+# name    cadvisor's container name label. Every service in docker-compose.yml pins a
+#         container_name except `api`, which is scaled by deploy.replicas and so gets
+#         `<project>-api-N` from Compose (project `iir` by default, per scripts/lib.sh).
+STACK_LABEL_VALUES = {
+    "job": ["cadvisor", "inventory", "postgres"],
+    "datname": ["inventory", "postgres", "template0", "template1"],
+    "name": ["cadvisor", "grafana", "grafana-renderer", "grafana-reporter", "iir-api-1",
+             "iir-api-2", "k6", "nginx", "postgres", "postgres-exporter", "prometheus"],
+}
+
+# Which label each query variable draws its options from.
+VAR_LABEL = {"job": "job", "db": "datname", "dbc": "name", "apic": "name"}
+
+# The option Grafana must land on for `current: {}` to resolve usefully. `apic` is a list
+# because the api service scales, and every replica is a legitimate option.
+VAR_EXPECTED = {"job": ["inventory"], "db": ["inventory"], "dbc": ["postgres"],
+                "apic": ["iir-api-1", "iir-api-2"]}
+
+
+def grafana_filter(regex, values):
+    """Apply a Grafana variable `regex` the way Grafana does: strip the /.../ delimiters,
+    keep an option when the pattern is found anywhere in it. These patterns carry their own
+    ^...$ anchors, so JS RegExp and Python re agree on every one of them."""
+    body = regex
+    if body.startswith("/") and body.rfind("/") > 0:
+        body = body[1:body.rfind("/")]
+    pattern = re.compile(body)
+    return [v for v in values if pattern.search(v)]
+
+
+class LiveVariableRegexesSelectRealValues(unittest.TestCase):
+    """The regexes must match the label values the stack EMITS.
+
+    Asserting only that a regex is non-empty (which is all the older test did) passes
+    happily on a regex that matches nothing -- and a regex matching nothing is the worse
+    failure of the two. Grafana leaves `current` as {}, `$job` expands to the empty string,
+    every panel queries {job=""} and returns no data, and each run's report.pdf renders
+    blank with nothing logged anywhere. That is what shipped when the stack's names were
+    unified: `/^inventory-.*/` demanded a hyphen after "inventory", `/^postgres-(?:to|es)$/`
+    a family suffix on the DB container, and `/api-(?:to|es)-[0-9]+$/` one on the API
+    containers -- 3 of the 4 selected nothing.
+    """
+
+    def setUp(self):
+        self.vars = {v["name"]: v for v in build.build_live()["templating"]["list"]
+                     if v.get("type") == "query"}
+
+    def test_every_query_variable_is_covered_by_this_test(self):
+        """A new query variable must arrive with its expected label values, or the rest of
+        this class silently stops covering it."""
+        self.assertEqual(set(self.vars), set(VAR_EXPECTED))
+
+    def test_each_regex_selects_exactly_the_expected_options(self):
+        for name, expected in VAR_EXPECTED.items():
+            with self.subTest(var=name):
+                selected = grafana_filter(self.vars[name]["regex"],
+                                          STACK_LABEL_VALUES[VAR_LABEL[name]])
+                self.assertEqual(selected, expected)
+
+    def test_no_regex_selects_nothing(self):
+        """Stated separately from the equality above because it is the specific failure
+        that shipped, and it is the one with no visible symptom."""
+        for name in VAR_EXPECTED:
+            with self.subTest(var=name):
+                selected = grafana_filter(self.vars[name]["regex"],
+                                          STACK_LABEL_VALUES[VAR_LABEL[name]])
+                self.assertTrue(selected, f"${name}: regex selects no option, $%s expands "
+                                          "empty and every panel using it goes blank" % name)
+
+    def test_db_container_regex_excludes_the_exporter(self):
+        """`postgres-exporter` sorts after `postgres`, so an unanchored /^postgres/ would
+        still default correctly and only misbehave in the dropdown -- catch it here."""
+        self.assertNotIn("postgres-exporter",
+                         grafana_filter(self.vars["dbc"]["regex"], STACK_LABEL_VALUES["name"]))
+
+    def test_api_container_regex_is_not_pinned_to_one_project_name(self):
+        """COMPOSE_PROJECT_NAME is a knob; the regex must match the shape, not `iir`."""
+        selected = grafana_filter(self.vars["apic"]["regex"],
+                                  ["otherproj-api-1", "cadvisor", "nginx"])
+        self.assertEqual(selected, ["otherproj-api-1"])
+
+    def test_no_regex_uses_a_capturing_group(self):
+        """Grafana substitutes the FIRST capturing group's match for the option's value when
+        one is present, so `(to|es)` turned the option "postgres-to" into "to"."""
+        for name, var in self.vars.items():
+            with self.subTest(var=name):
+                self.assertEqual(re.compile(var["regex"].strip("/")).groups, 0)
+
+
+class CommittedJsonMatchesTheGenerator(unittest.TestCase):
+    """monitoring/grafana/provisioning/dashboards/*.json is generated output. A hand-edit
+    there is invisible until the next `python3 -m scripts.dashboards.build` silently reverts
+    it -- or, worse, until it does not and the file and the generator disagree forever."""
+
+    def committed(self, name):
+        path = os.path.join(build.OUT_DIR, f"{name}.json")
+        with open(path) as fh:
+            return json.load(fh)
+
+    def test_the_dashboard_json_is_current(self):
+        self.assertEqual(self.committed("the-dashboard"), build.build_live())
+
+    def test_bench_replay_json_is_current(self):
+        self.assertEqual(self.committed("bench-replay"), build.build_archived())
 
 
 class GeneratedDashboards(unittest.TestCase):

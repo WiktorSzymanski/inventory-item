@@ -49,7 +49,7 @@
           "refId": "job-variable"
         },
         "definition": "label_values(up, job)",
-        "regex": "/^inventory-.*/",
+        "regex": "/^inventory$/",
         "refresh": 2,
         "sort": 1,
         "includeAll": false,
@@ -91,7 +91,7 @@
           "refId": "dbc-variable"
         },
         "definition": "label_values(container_memory_rss, name)",
-        "regex": "/^postgres-(?:to|es)$/",
+        "regex": "/^postgres$/",
         "refresh": 2,
         "sort": 1,
         "includeAll": false,
@@ -112,7 +112,7 @@
           "refId": "apic-variable"
         },
         "definition": "label_values(container_memory_rss, name)",
-        "regex": "/api-(?:to|es)-[0-9]+$/",
+        "regex": "/^.*-api-[0-9]+$/",
         "refresh": 2,
         "sort": 1,
         "includeAll": false,

@@ -104,13 +104,20 @@ def _base(uid, title, description, time_from, time_to, templating):
 def _var(name, label, query, datasource, multi=False, regex=""):
     # `regex` filters the label_values() result before Grafana computes `current` from an empty
     # `{}` (it takes the first option under `sort: 1`, alphabetical). Without a regex that leaves
-    # single-variant-family variables ($job/$db/$dbc/$apic) resolving to whatever sorts first
-    # across BOTH families' containers (e.g. "cadvisor" before "inventory-to"), which is empty for
-    # every panel. A regex that narrows the options to exactly one per family fixes the default
-    # without pinning the file to either family -- it still matches on all eight variant branches.
-    # Any capturing group in this regex must be non-capturing ((?:...)): Grafana uses the FIRST
-    # capturing group's match as the option's value/text when one is present, not the full match
-    # -- `(to|es)` would turn the option "postgres-to" into just "to", which then matches nothing.
+    # single-valued variables ($job/$db/$dbc/$apic) resolving to whatever sorts first across every
+    # scrape target and container (e.g. "cadvisor" before "inventory"), which is empty for every
+    # panel that filters on them.
+    #
+    # A regex that matches NOTHING is just as broken and far quieter: `current` stays {}, `$job`
+    # expands to the empty string, and all 58 panels query {job=""} -- so every report.pdf renders
+    # blank with no error anywhere. That is exactly what shipped when the stack's names were
+    # unified (`inventory-es` -> `inventory`, `postgres-es` -> `postgres`, `api-es-1` ->
+    # `<project>-api-1`) and these regexes kept demanding the old family suffixes. Anything
+    # changed here must be checked against the values the stack really emits; test_build.py's
+    # LiveVariableRegexesSelectRealValues does that.
+    #
+    # Any capturing group must be non-capturing ((?:...)): Grafana uses the FIRST capturing
+    # group's match as the option's value/text when one is present, not the full match.
     return {"name": name, "label": label, "type": "query", "datasource": datasource,
             "query": {"query": query, "refId": f"{name}-variable"}, "definition": query,
             "regex": regex, "refresh": 2, "sort": 1, "includeAll": multi, "multi": multi,
@@ -141,10 +148,21 @@ def build_live():
         "Replay' and set the time range to that run's window.",
         "now-15m", "now",
         [_ds_var(),
-         _var("job", "API job", "label_values(up, job)", DS, regex="/^inventory-.*/"),
+         # The unified stack emits exactly one value for each of these, so every regex is an
+         # exact anchored match on it -- no family suffix, because there are no longer two
+         # families' names to tell apart.
+         #   job    prometheus.yml scrapes jobs `inventory`, `postgres` and `cadvisor`;
+         #          only `inventory` carries the application metrics.
+         #   db     pg_database_size_bytes also reports postgres/template0/template1.
+         #   dbc    the DB container is named `postgres`. Must NOT catch `postgres-exporter`,
+         #          hence the trailing anchor.
+         #   apic   the api service is scaled by deploy.replicas and so has no container_name;
+         #          cadvisor sees `<project>-api-N`. The project name is a knob
+         #          (COMPOSE_PROJECT_NAME, `iir` by default), so match the shape, not `iir`.
+         _var("job", "API job", "label_values(up, job)", DS, regex="/^inventory$/"),
          _var("db", "Database", "label_values(pg_database_size_bytes, datname)", DS, regex="/^inventory$/"),
-         _var("dbc", "DB container", "label_values(container_memory_rss, name)", DS, regex="/^postgres-(?:to|es)$/"),
-         _var("apic", "API container", "label_values(container_memory_rss, name)", DS, regex="/api-(?:to|es)-[0-9]+$/")])
+         _var("dbc", "DB container", "label_values(container_memory_rss, name)", DS, regex="/^postgres$/"),
+         _var("apic", "API container", "label_values(container_memory_rss, name)", DS, regex="/^.*-api-[0-9]+$/")])
     dash["refresh"] = "5s"
     panels, _, _, _ = _layout(spec.SECTIONS, lambda p: p.targets, DS_VAR)
     dash["panels"] = panels
