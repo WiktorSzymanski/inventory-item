@@ -30,6 +30,37 @@ services:
       - --web.enable-admin-api
       - --web.enable-lifecycle
 
+  # Grafana lives in docker-compose.yml, which run-suite.sh tears down with `down -v` after
+  # every run — so after a benchmark there is no Grafana to view anything in. This one makes
+  # the replay stack self-contained: `up -d` here gives you both halves and needs nothing
+  # from the benchmark stack.
+  #
+  # Separate container_name and port (3001, not 3000) so it can never collide with the
+  # benchmark stack's Grafana. Both may run at once; :3000 is the live run, :3001 is the
+  # archive. The same provisioning directory is mounted, so it carries the same dashboards
+  # and both datasources — but with the benchmark stack down, the "Prometheus" datasource
+  # has nothing to resolve and only "Prometheus Replay" will return data. That is expected.
+  grafana-replay:
+    image: grafana/grafana:11.0.0
+    container_name: grafana-replay
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-replay-data:/var/lib/grafana
+    depends_on:
+      - prometheus-replay
+
 volumes:
   bench-replay-data:
     external: true
+  # Not external: this is only Grafana's own state (preferences, starred dashboards). The
+  # dashboards and datasources come from provisioning on every start, so losing it costs
+  # nothing. Keeping it out of the benchmark stack's grafana-data also means a `down -v`
+  # there cannot disturb the archive viewer.
+  grafana-replay-data:

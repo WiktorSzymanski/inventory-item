@@ -188,29 +188,47 @@ the TO-family panels render empty by design, and vice versa.
 ### 3. Grafana, against the archived run
 
 This is the full-fidelity path: the complete Prometheus TSDB, not the ~20 series
-`dump.json` extracts. The archive volume is `external`, so `docker compose down -v` cannot
-touch it.
+`dump.json` extracts.
+
+**The replay stack is self-contained — it brings its own Grafana.** The benchmark stack's
+Grafana lives in `docker-compose.yml`, which `run-suite.sh` tears down with `down -v` after
+every run, so after a benchmark there is nothing on `:3000` to look at.
 
 ```bash
-COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml up -d prometheus-replay
+COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml up -d
 ```
 
-Used **standalone** — do not add `-f docker-compose.yml`, which demands `IMAGE_TAG` and
+That starts both halves: `prometheus-replay` (`:9091`) and `grafana-replay` (**`:3001`**).
+Note the different port — the archive viewer is deliberately kept off `:3000` so it can
+never collide with a benchmark that is running, and both may be up at once. Use it
+**standalone**: do not add `-f docker-compose.yml`, which demands `IMAGE_TAG` and
 contributes nothing here. `COMPOSE_PROJECT_NAME` must match the benchmark stack's so the
-two share a network and Grafana can resolve `prometheus-replay` by name.
+two share a network.
 
-Then in Grafana (`http://localhost:3000`, admin/admin) open **Inventory — Full Stack** and:
+Then open **Inventory — Full Stack** at `http://localhost:3001`, set the **Data source**
+dropdown to **Prometheus Replay**, and set the time range to the run's window.
 
-1. set the **Data source** dropdown to **Prometheus Replay**;
-2. set the time range to that run's window — `meta.json`'s `windows.full` gives it as epoch
-   seconds, and the run directory's timestamp is its start.
+Or skip both steps with a deep link, which this prints for any run:
 
 ```bash
-python3 -c "import json,datetime as dt; m=json.load(open('bench-results/<run_id>/meta.json'));
-print([dt.datetime.fromtimestamp(t, dt.timezone.utc).isoformat() for t in m['windows']['full']])"
+python3 -c "
+import json,sys
+m=json.load(open(sys.argv[1] + '/meta.json')); a,b = m['windows']['full']
+print(f'http://localhost:3001/d/the-dashboard/?from={a}000&to={b}000&var-ds=prometheus-replay')
+" bench-results/ES-4_steady_20260807T101745Z
 ```
 
-Query the archive directly at `http://localhost:9091` if you would rather not use Grafana.
+The archive volume is `external`, so `docker compose down -v` cannot touch it. With the
+benchmark stack down the plain **Prometheus** datasource has nothing to resolve — only
+**Prometheus Replay** returns data, which is expected. Query the archive directly at
+`http://localhost:9091` if you would rather not use Grafana at all.
+
+Stop it when you are done; it holds `:9091` and `:3001`, neither of which the benchmark
+needs:
+
+```bash
+COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml down
+```
 
 ### 4. The raw artifacts
 
