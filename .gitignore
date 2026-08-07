@@ -15,7 +15,9 @@ CLAUDE.md
 # per-variant git worktrees created by scripts/build-images.sh
 .worktrees/
 
-# central benchmark artifacts: every variant's run lands here
-bench-results/
+# central benchmark artifacts: every variant's run lands here.
+# No trailing slash — ensure_results_link makes this a SYMLINK when main is a worktree,
+# and `bench-results/` would match only a real directory, leaving the symlink untracked.
+bench-results
 
 __pycache__/
