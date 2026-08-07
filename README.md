@@ -146,16 +146,19 @@ rate high and the staircase saturates at step 0 and reads `INVALID`.
 - **FAIL** — the system missed an SLO. A real result.
 - **INVALID** — the *measurement* was broken (backlog never drained, scrape gap, API
   restarted mid-run, orders that never reached a terminal event). Not the same as slow.
-- **SKIPPED** — that branch carries no harness.
 
-The suite exits non-zero unless every variant passed or was skipped. `--continue-on-fail`
-runs everything regardless and reports at the end.
+The suite exits non-zero unless every variant passed. `--continue-on-fail` runs everything
+regardless and reports at the end.
 
 ## Preserving raw metrics
 
-`down -v` destroys the `prometheus-data` volume, so only `dump.json`'s ~20 extracted series
-and `report.pdf` survive a run by default. Pass `--snapshot-tsdb` to copy each run's full
-TSDB into `bench-results/<run_id>/prom-snapshot/` before teardown.
+`down -v` destroys the `prometheus-data` volume, so unaided only `dump.json`'s ~20 extracted
+series and `report.pdf` would survive a run. TSDB preservation guards against exactly that,
+and it is **on by default** (`SNAPSHOT_TSDB=1`, `ARCHIVE_TSDB=1`) — every run copies its full
+TSDB into `bench-results/<run_id>/prom-snapshot/` before teardown, and also merges it into
+the external `bench-replay-data` volume for Grafana replay. Pass `--no-snapshot-tsdb` to skip
+both, or `--no-archive-tsdb` to keep the host-side snapshot but skip the replay-volume merge.
+`SNAPSHOT_TSDB=0` / `ARCHIVE_TSDB=0` work the same way as environment variables.
 
 ## Per-branch details
 
