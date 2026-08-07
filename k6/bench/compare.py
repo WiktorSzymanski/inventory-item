@@ -21,6 +21,7 @@ COLUMNS = {
         ("variant", "meta.variant", "s"),
         ("scenario", "meta.scenario", "s"),
         ("rate", "meta.config.rate", "d"),
+        ("point", "meta.point", "s"),
         ("items", "meta.config.distinctItems", "d"),
         ("lines", "meta.config.itemsPerOrder", "d"),
         ("payloadB", "meta.config.payloadBytes", "d"),
