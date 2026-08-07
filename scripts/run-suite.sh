@@ -66,6 +66,17 @@ require_not_root
 require_tools
 assert_ports_free
 
+# Order matters. The shell snapshot must be taken before any point expands, because
+# afterwards a point-set knob and a shell-set knob are indistinguishable. workload.env is
+# sourced afterwards and uses the ${VAR:-value} form throughout, so it fills only what is
+# still unset and can never silently contradict a named point.
+snapshot_shell_knobs
+resolve_point
+
+# Must run before the first bench.sh invocation: bench.sh resolves its own REPO_ROOT to
+# MAIN_ROOT and writes there, while this script looks for the run under RESULTS_DIR.
+ensure_results_link
+
 # The archive volume is declared `external: true`, so Compose will not create it and the
 # merge would fail on a fresh machine. Creating it is a no-op when it already exists.
 if [ "$SNAPSHOT_TSDB" = "1" ] && [ "$ARCHIVE_TSDB" = "1" ]; then
@@ -94,12 +105,13 @@ log "suite: scenario=$SCENARIO variants=$(tr '\n' ' ' <<<"$VARIANTS")"
 
 # Verdict codes are bench.sh's own: 0 PASS, 1 FAIL, 2 INVALID.
 declare -A VERDICT RUNDIR
-LAST_WT=""
 
 # The image is stale if the manifest has no record of it, the recorded commit no longer
 # matches the branch head, or the tag has since been deleted from the daemon.
 image_is_current() {
-    local variant="$1" wt="$2"
+    local variant="$1" wt
+    wt="$(worktree_path "$variant")"
+    [ -d "$wt" ] || return 1          # never built: no worktree yet
     python3 - "$RESULTS_DIR/images.json" "$variant" "$(git -C "$wt" rev-parse HEAD)" \
              "$(image_tag "$variant")" <<'PY'
 import json, subprocess, sys
@@ -116,36 +128,29 @@ PY
 }
 
 run_one() {
-    local variant="$1" wt rc=0 run_dir
-
-    wt="$(ensure_worktree "$variant")"
-
-    # Fail closed. A branch without bench.env has no harness, and common.sh would exit with
-    # a message that says nothing about which variant it was.
-    if [ ! -f "$wt/bench.env" ] || [ ! -x "$wt/k6/bench/bench.sh" ]; then
-        log "SKIP $variant: no benchmark harness on $(branch_of "$variant") (bench.env / k6/bench/bench.sh missing)"
-        VERDICT[$variant]="SKIPPED"
-        return 0
-    fi
+    local variant="$1" rc=0 run_dir
 
     # Clean slate before this variant starts, not after the previous one finished — so an
     # aborted earlier suite, or a stack left running by hand, is cleared too.
-    # Explicit `if`: under `set -e` a bare `[ -n "$X" ] && cmd` aborts the script on the
-    # very first variant, when LAST_WT is still empty.
-    if [ -n "$LAST_WT" ]; then teardown "$LAST_WT"; fi
-    teardown "$wt"
-    LAST_WT="$wt"
+    teardown
 
-    if [ "$NO_BUILD" = "0" ] && ! image_is_current "$variant" "$wt"; then
+    if [ "$NO_BUILD" = "0" ] && ! image_is_current "$variant"; then
         log "$variant: image missing or behind branch head — building"
         "$HERE/build-images.sh" --only "$variant"
     fi
 
-    log "=== $variant: $SCENARIO ==="
-    # SKIP_BUILD=1 is what makes the suite honest: bench.sh would otherwise rebuild and
-    # retag the image itself, discarding the provenance stamp build-images.sh applied and
-    # running something this script never recorded.
-    ( cd "$wt" && SKIP_BUILD=1 ./k6/bench/bench.sh ) || rc=$?
+    log "=== $variant: $SCENARIO ${POINT_RESOLVED:+($POINT_RESOLVED)} ==="
+
+    # main's own harness, against this variant's image. No worktree, no branch switch:
+    # the image is the only thing that differs between variants.
+    (
+        cd "$MAIN_ROOT"
+        VARIANT="$variant" \
+        VARIANT_FAMILY="$(family_of "$variant")" \
+        IMAGE_TAG="$(image_tag "$variant")" \
+        SKIP_BUILD=1 \
+        ./k6/bench/bench.sh
+    ) || rc=$?
 
     case "$rc" in
         0) VERDICT[$variant]="PASS" ;;
@@ -154,33 +159,24 @@ run_one() {
         *) VERDICT[$variant]="ERROR($rc)" ;;
     esac
 
-    # Newest run directory for this variant — bench.sh names it <variant>_<scenario>_<ts>.
-    run_dir="$(ls -td "$RESULTS_DIR/${variant}_${SCENARIO}_"* 2>/dev/null | head -1 || true)"
+    # Newest run directory for this variant. The label sits between scenario and
+    # timestamp, so the glob must tolerate it.
+    run_dir="$(ls -td "$RESULTS_DIR/${variant}_${SCENARIO}"*  2>/dev/null | head -1 || true)"
     RUNDIR[$variant]="${run_dir:-(none)}"
 
-    # Must happen BEFORE teardown: `down -v` destroys the prometheus-data volume, and with it
-    # every raw series. What survives unaided is dump.json's ~20 extracted series — 20 of the
-    # merged dashboard's 56 panels. Every pg_stat_* metric, WAL size, locks, checkpoints, GC
-    # pause, HikariCP, Tomcat, and on TO the outbox panels have no archived equivalent at any
-    # later effort, because they were never extracted in the first place.
-    #
-    # This is what scripts/bench_run.sh does on TO-3, inlined rather than delegated to it:
-    # prom_snapshot.sh and prom_archive.sh already exist on all eight branches, so calling
-    # them directly avoids propagating a per-branch wrapper and keeps one orchestrator.
-    #
-    # Non-fatal throughout. The run's own artifacts are already written and valid; losing the
-    # snapshot costs dashboard fidelity later, not the measurement.
+    # BEFORE teardown: `down -v` destroys prometheus-data and with it every raw series.
+    # What survives unaided is dump.json's ~20 extracted series, against the merged
+    # dashboard's 56 panels. Non-fatal throughout — the run's own artifacts are already
+    # written and valid.
     if [ "$SNAPSHOT_TSDB" = "1" ] && [ -n "$run_dir" ]; then
         local snap_dir="bench-results/$(basename "$run_dir")/prom-snapshot"
-        if [ ! -x "$wt/scripts/prom_snapshot.sh" ]; then
-            log "$variant: no scripts/prom_snapshot.sh on this branch — TSDB not preserved"
-        elif ! ( cd "$wt" && ./scripts/prom_snapshot.sh "$(basename "$run_dir")" >/dev/null ); then
+        if ! ( cd "$MAIN_ROOT" && ./scripts/prom_snapshot.sh "$(basename "$run_dir")" >/dev/null ); then
             log "$variant: TSDB snapshot FAILED — run artifacts intact, but this run will"
             log "           only ever replay from dump.json (~20 of 56 panels)"
         else
             log "$variant: TSDB -> $snap_dir"
-            if [ "$ARCHIVE_TSDB" = "1" ] && [ -x "$wt/scripts/prom_archive.sh" ]; then
-                ( cd "$wt" && ./scripts/prom_archive.sh "$snap_dir" >/dev/null ) \
+            if [ "$ARCHIVE_TSDB" = "1" ]; then
+                ( cd "$MAIN_ROOT" && ./scripts/prom_archive.sh "$snap_dir" >/dev/null ) \
                     || log "$variant: replay-archive merge failed — the host snapshot is intact and can be merged later with: ./scripts/prom_archive.sh $snap_dir"
             fi
         fi
@@ -196,7 +192,7 @@ for v in $VARIANTS; do
     run_one "$v" || { SUITE_RC=$?; break; }
 done
 
-if [ -n "$LAST_WT" ]; then teardown "$LAST_WT"; fi
+teardown
 
 # ---------------------------------------------------------------- report
 echo

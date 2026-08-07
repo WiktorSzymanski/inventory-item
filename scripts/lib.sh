@@ -168,27 +168,40 @@ ensure_worktree() {
     echo "$wt"
 }
 
-# ---------------------------------------------------------------- docker
-
-# Compose invocation for one variant, as a function over an array — a string variable here
-# would depend on unquoted word-splitting, which breaks on any path containing a space.
-dc_for() {
-    local wt="$1"; shift
-    docker compose -f "$wt/docker-compose.yml" -f "$wt/docker-compose.bench.yml" "$@"
+# Make $MAIN_ROOT/bench-results resolve to the central RESULTS_DIR.
+#
+# A no-op when main is the primary checkout (same directory). When main is a worktree the
+# two diverge, and without the link bench.sh writes its run somewhere run-suite.sh never
+# looks. Docker resolves the symlink host-side, so docker-compose.bench.yml's
+# `./bench-results` bind mount follows it too.
+ensure_results_link() {
+    mkdir -p "$RESULTS_DIR"
+    [ "$MAIN_ROOT" = "$REPO_ROOT" ] && return 0
+    local local_dir="$MAIN_ROOT/bench-results"
+    [ -L "$local_dir" ] && return 0
+    if [ -d "$local_dir" ]; then
+        rmdir "$local_dir" 2>/dev/null || die \
+            "$local_dir is a real directory with contents; move it aside so it can be linked to $RESULTS_DIR"
+    fi
+    ln -s "$RESULTS_DIR" "$local_dir"
+    log "bench-results -> $RESULTS_DIR"
 }
 
-# Full stop. -v is required, not tidiness: reset.sh only truncates tables, so without it a
-# TO run would inherit the previous ES run's postgres volume under a schema that does not
-# match. --remove-orphans is what clears the other family's containers, which are simply
-# unknown services from this compose file's point of view.
-#
-# This also fixes the Prometheus bind-mount staleness: prometheus.yml differs per family
-# (job label inventory-to vs inventory-es) and editing the file never reaches a running
-# container. `down` removes the container, so the next `up` provably re-reads it.
+# ---------------------------------------------------------------- docker
+
+# Compose invocation for the ONE stack main owns. Previously this took a worktree path,
+# because each branch had its own compose file; there is now a single file.
+dc_main() {
+    docker compose -f "$MAIN_ROOT/docker-compose.yml" \
+                   -f "$MAIN_ROOT/docker-compose.bench.yml" "$@"
+}
+
+# Full stop between variants. -v is required, not tidiness: reset.sh only truncates tables,
+# so without it a TO run would inherit the previous ES run's postgres volume under a schema
+# that does not match. --remove-orphans clears anything left by an older layout whose
+# service names differed.
 teardown() {
-    local wt="$1"
-    [ -d "$wt" ] || return 0
-    dc_for "$wt" down -v --remove-orphans --timeout 30 >/dev/null 2>&1 || true
+    dc_main down -v --remove-orphans --timeout 30 >/dev/null 2>&1 || true
 }
 
 # `down --remove-orphans` only reaches containers in OUR compose project. A stack brought
