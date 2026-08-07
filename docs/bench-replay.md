@@ -302,7 +302,8 @@ volume with `cp -rn` (no-clobber) — never `rm -rf`, unlike `prom_restore.sh`. 
 overlap in time, so blocks from many runs coexist in one Prometheus and a run is selected in
 Grafana purely by its time range; `prometheus-replay` is stopped for the copy (backfilled blocks
 must be older than the running head block) and always restarted afterwards, even if the copy
-fails.
+fails. If it was not running to begin with there is no head block to overlap, so the copy simply
+proceeds and nothing is started — `prom_archive.sh` archives blocks, it does not manage the stack.
 
 ### Viewing a snapshotted run: the "Data source" dropdown on `the-dashboard`
 
