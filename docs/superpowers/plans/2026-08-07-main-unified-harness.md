@@ -1044,6 +1044,54 @@ predating meta.point render an empty cell."
 
 `build-images.sh` is untouched and keeps using worktrees.
 
+- [ ] **Step 0: Keep `bench-results/` central when `main` is itself a worktree**
+
+Two different paths resolve to `bench-results/`, and until now a symlink hid the difference:
+
+- `lib.sh` sets `RESULTS_DIR="$REPO_ROOT/bench-results"`, where `REPO_ROOT` is the
+  **primary** working tree (derived from `git rev-parse --git-common-dir`). That is where
+  every historical run lives and where `run-suite.sh` looks for the directory a run
+  produced.
+- `k6/bench/common.sh` sets its own `REPO_ROOT` to two levels above `k6/bench/`, i.e.
+  **`MAIN_ROOT`**. So `bench.sh` writes to `$MAIN_ROOT/bench-results`, and
+  `docker-compose.bench.yml` bind-mounts `./bench-results` relative to the compose file,
+  also `MAIN_ROOT`.
+
+When `main` is the primary checkout the two are the same directory and nothing is needed.
+When `main` is checked out as a worktree they diverge, and the run's artifacts land
+somewhere `run-suite.sh` never looks — `RUNDIR` becomes `(none)` and the TSDB snapshot is
+silently skipped. The old code got this right for *variant* worktrees via
+`ensure_worktree`'s symlink; removing worktrees from the run path removed that guarantee
+for `main` itself.
+
+Add to `scripts/lib.sh`, and call it from `run-suite.sh`'s preamble (Step 4):
+
+```bash
+# Make $MAIN_ROOT/bench-results resolve to the central RESULTS_DIR.
+#
+# A no-op when main is the primary checkout (same directory). When main is a worktree the
+# two diverge, and without the link bench.sh writes its run somewhere run-suite.sh never
+# looks. Docker resolves the symlink host-side, so docker-compose.bench.yml's
+# `./bench-results` bind mount follows it too.
+ensure_results_link() {
+    mkdir -p "$RESULTS_DIR"
+    [ "$MAIN_ROOT" = "$REPO_ROOT" ] && return 0
+    local local_dir="$MAIN_ROOT/bench-results"
+    [ -L "$local_dir" ] && return 0
+    if [ -d "$local_dir" ]; then
+        rmdir "$local_dir" 2>/dev/null || die \
+            "$local_dir is a real directory with contents; move it aside so it can be linked to $RESULTS_DIR"
+    fi
+    ln -s "$RESULTS_DIR" "$local_dir"
+    log "bench-results -> $RESULTS_DIR"
+}
+```
+
+`rmdir` (not `rm -rf`) is deliberate: it succeeds only on an empty directory, so a real
+results directory is never destroyed by accident. It also succeeds on an empty
+**root-owned** directory left behind by an earlier `sudo` run, because directory removal
+needs write permission on the parent, not on the directory itself.
+
 - [ ] **Step 1: Point `dc_for` and `teardown` at `main`**
 
 In `scripts/lib.sh`, replace `dc_for()` and `teardown()` with:
@@ -1168,6 +1216,10 @@ In `scripts/run-suite.sh`, immediately after `require_not_root` / `require_tools
 # still unset and can never silently contradict a named point.
 snapshot_shell_knobs
 resolve_point
+
+# Must run before the first bench.sh invocation: bench.sh resolves its own REPO_ROOT to
+# MAIN_ROOT and writes there, while this script looks for the run under RESULTS_DIR.
+ensure_results_link
 ```
 
 Then delete the now-dead `LAST_WT` variable, the `if [ -n "$LAST_WT" ]; then teardown "$LAST_WT"; fi` lines, and the "branch has no harness" skip block (there is one harness and it is always present).
