@@ -82,12 +82,26 @@ done
 # ---------------------------------------------------------------- manifest
 # Records what was built, so run-suite.sh can tell whether an image still matches its
 # branch head without rebuilding to find out.
-python3 - "$MANIFEST" "$REPO_ROOT" "$MAIN_ROOT" $VARIANTS <<'PY'
+# Each argument after the manifest path and root is "<variant>:<branch>:<family>", resolved
+# by lib.sh's branch_of/family_of.
+#
+# This used to re-parse variants.env here with `if len(line) == 3`. That is a SECOND parser
+# for the registry, and it silently stopped matching the moment variants.env grew its
+# fourth column (capabilities): every line then had 4 fields, the registry dict came out
+# empty, and the first lookup raised KeyError — after all eight images had already been
+# built. lib.sh's read_variants tolerates the extra column; this copy never learned to.
+# Passing the values in removes the duplicate rather than teaching it the same lesson.
+ROWS=""
+for v in $VARIANTS; do
+    ROWS="$ROWS $v:$(branch_of "$v"):$(family_of "$v")"
+done
+
+# shellcheck disable=SC2086
+python3 - "$MANIFEST" "$REPO_ROOT" $ROWS <<'PY'
 import json, os, subprocess, sys, datetime
 
-# root: the PRIMARY working tree, which anchors .worktrees/. main_root: this checkout of
-# `main`, which holds variants.env. They differ whenever main is itself a worktree.
-manifest_path, root, main_root, variants = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+# root: the PRIMARY working tree, which anchors .worktrees/.
+manifest_path, root, rows = sys.argv[1], sys.argv[2], sys.argv[3:]
 
 # Merge rather than overwrite: a --only build must not erase the other variants' records.
 try:
@@ -102,14 +116,8 @@ def sh(*cmd):
     return subprocess.check_output(cmd, text=True).strip()
 
 
-registry = {}
-for line in open(os.path.join(main_root, "variants.env")):
-    line = line.split("#", 1)[0].split()
-    if len(line) == 3:
-        registry[line[0]] = (line[1], line[2])
-
-for v in variants:
-    branch, family = registry[v]
+for row in rows:
+    v, branch, family = row.split(":", 2)
     tag = f"inventory-reservation-{v.lower()}:latest"
     wt = root if sh("git", "-C", root, "rev-parse", "--abbrev-ref", "HEAD") == branch \
         else os.path.join(root, ".worktrees", v)
