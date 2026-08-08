@@ -16,7 +16,7 @@ spring:
     locations: classpath:db/migration
   modulith:
     events:
-      polling-interval: PT1S   # interval between polling runs; tune per your latency requirement
+      polling-interval:  ${POOLING_INTERVAL:PT100MS}  # interval between polling runs; tune per your latency requirement
   task:
     scheduling:
       pool:
