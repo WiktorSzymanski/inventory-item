@@ -55,6 +55,11 @@ class InventoryService(
 
     private val processingTimer: Timer = meterRegistry.timer("order.processing.time")
     private val queueWaitTimer: Timer = meterRegistry.timer("order.queue.wait")
+    // On this branch these count LOCK-acquisition failures (deadlock 40P01, lock timeout), not
+    // version conflicts: the reserve path takes the row lock at read time, so the @Version
+    // predicate cannot fail and the expected reading here is ~0. The names are deliberately left
+    // as "optimistic" — the dashboard, k6/bench/queries.promql and scripts/dashboards/spec.py all
+    // query them, and TO-3 vs TO-3-pessimistic must chart side by side without renaming.
     private val optimisticRetryCounter: Counter = meterRegistry.counter("inventory.optimistic.retry")
     private val optimisticExhaustedCounter: Counter = meterRegistry.counter("inventory.optimistic.exhausted")
 

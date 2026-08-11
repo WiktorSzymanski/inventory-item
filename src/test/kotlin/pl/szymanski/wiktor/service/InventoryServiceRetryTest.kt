@@ -13,6 +13,7 @@ import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Import
 import org.springframework.core.task.SyncTaskExecutor
 import org.springframework.core.task.TaskExecutor
+import org.springframework.dao.CannotAcquireLockException
 import org.springframework.dao.OptimisticLockingFailureException
 import org.springframework.resilience.annotation.EnableResilientMethods
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig
@@ -66,6 +67,37 @@ class InventoryServiceRetryTest {
             inventoryService.processOrder(event)
             fail("Expected OptimisticLockingFailureException")
         } catch (_: OptimisticLockingFailureException) {
+        }
+
+        verify(exactly = 5) { reserveOrderItemsCommandHandler.handle(event) }
+    }
+
+    // The pessimistic branch cannot lose a @Version race, but it can still fail to ACQUIRE a row
+    // lock (deadlock 40P01, lock timeout) — Spring maps both to CannotAcquireLockException, a
+    // PessimisticLockingFailureException. Those must go down the same retry-then-reject path.
+    @Test
+    fun `order processing retries lock acquisition failures`() {
+        val event = orderCreatedEvent()
+
+        every { reserveOrderItemsCommandHandler.handle(event) } throws
+            CannotAcquireLockException("deadlock detected") andThen Unit
+
+        inventoryService.processOrder(event)
+
+        verify(exactly = 2) { reserveOrderItemsCommandHandler.handle(event) }
+    }
+
+    @Test
+    fun `order processing throws after lock acquisition retries are exhausted`() {
+        val event = orderCreatedEvent()
+
+        every { reserveOrderItemsCommandHandler.handle(event) } throws
+            CannotAcquireLockException("deadlock detected")
+
+        try {
+            inventoryService.processOrder(event)
+            fail("Expected CannotAcquireLockException")
+        } catch (_: CannotAcquireLockException) {
         }
 
         verify(exactly = 5) { reserveOrderItemsCommandHandler.handle(event) }

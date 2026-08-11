@@ -27,6 +27,12 @@ data class ReserveItemCommand(
  *
  * Per-item load and save (rather than the previous batch I/O) mirror the ES branch's
  * per-aggregate command model; state_load_time/state_persist_time therefore become per-item.
+ *
+ * This branch's defining delta against TO-3: the load is `SELECT … FOR UPDATE`, so the row lock is
+ * taken at read time and held for the rest of the enclosing transaction. Concurrent reserves of
+ * the same item queue on the lock instead of racing to the write and losing on `@Version`, which
+ * means state_load_time{source=db_fetch} now includes lock-wait time — that measurement IS the
+ * cost of the strategy, so the timer deliberately still wraps the whole call.
  */
 @Service
 class ReserveItemCommandHandler(
@@ -47,7 +53,7 @@ class ReserveItemCommandHandler(
     @Transactional(propagation = Propagation.REQUIRED, rollbackFor = [Exception::class])
     fun handle(command: ReserveItemCommand) {
         val dbStartNs = System.nanoTime()
-        val item = inventoryRepo.findById(command.itemId)
+        val item = inventoryRepo.findForUpdateById(command.itemId)
             .orElseThrow { NotFoundException("Item ${command.itemId} not found") }
         dbFetchTimer.record(System.nanoTime() - dbStartNs, TimeUnit.NANOSECONDS)
 

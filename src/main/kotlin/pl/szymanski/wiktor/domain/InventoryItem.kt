@@ -28,6 +28,11 @@ data class InventoryItem(
     // reserve's read-modify-write carries it. The TO counterpart to ES rehydrating and
     // snapshotting the same bytes on every aggregate load.
     val additionalBytes: String = "",
+    // Kept on the pessimistic branch even though the row lock makes the `AND version = ?` predicate
+    // unfailable: it is what tells Spring Data JDBC an app-assigned String id is a new row (without
+    // it save() would issue a silent no-op UPDATE unless this became a Persistable), and it backs
+    // InventoryResponse.version. Leaving it in is also what keeps the diff against TO-3 a one-
+    // mechanism A/B — the optimistic check becomes vacuous rather than being removed.
     @Version
     val version: Long = 0L,
 ) {

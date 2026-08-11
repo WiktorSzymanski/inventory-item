@@ -45,13 +45,13 @@ class ReserveOrderItemsCommandHandler(
             return
         }
 
-        // Lines are reserved in itemId order, NOT in the order the client sent them. Every
-        // reserved line UPDATEs its inventory_state row, and Postgres holds that row's exclusive
-        // lock until this transaction commits — optimistic @Version decides who wins a conflict,
-        // it does not stop the row from being locked. With all lines in one transaction, two
-        // orders sharing items in opposite order deadlock (tx A holds item-3 and wants item-5
-        // while tx B holds item-5 and wants item-3). A global lock order makes that circular wait
-        // impossible. Semantically a no-op: same rows, same atomicity, same all-or-nothing rule.
+        // Lines are reserved in itemId order, NOT in the order the client sent them. On this
+        // branch each line's load is a SELECT … FOR UPDATE, so this loop IS the lock acquisition
+        // order, and Postgres holds every row lock until this transaction commits. With all lines
+        // in one transaction, two orders sharing items in opposite order would deadlock (tx A
+        // holds item-3 and wants item-5 while tx B holds item-5 and wants item-3). A global lock
+        // order makes that circular wait impossible; contenders simply queue. Semantically a
+        // no-op: same rows, same atomicity, same all-or-nothing rule.
         event.items.sortedBy { it.itemId }.forEach { line ->
             reserveItemCommandHandler.handle(
                 ReserveItemCommand(orderId, line.itemId, line.quantity, event.correlationId)
