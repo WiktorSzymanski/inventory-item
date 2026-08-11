@@ -164,7 +164,7 @@ regardless and reports at the end.
 
 ## Reading a run's results
 
-Every run writes `bench-results/<variant>_<scenario>[_<label>]_<timestamp>/`. Four ways in,
+Every run writes `bench-results/<variant>_<scenario>[_<label>]_<timestamp>/`. Five ways in,
 cheapest first.
 
 ### 1. The comparison table
@@ -180,13 +180,36 @@ Pass any number of run directories; each becomes a row. The `point` column shows
 workload point when one was used, and sits beside `items`/`lines`/`payloadB`/`reserveMs` so
 a table accidentally mixing workload points is visible rather than silent.
 
-### 2. `report.pdf`
+### 2. The tipping point of a staircase
+
+```bash
+python3 k6/bench/tipping_point.py bench-results                   # every capacity run
+python3 k6/bench/tipping_point.py --steps bench-results/ES-1_capacity_W-hot_*
+python3 k6/bench/tipping_point.py --basis terminal -f csv bench-results
+```
+
+Where order processing stopped keeping up with the offered rate, read off the per-step
+plateaus. Family-aware by design: ES is judged on `OrderCreatedEvent` against saga
+outcomes, TO on admitted orders against order outcomes, so both sides of the comparison
+are the same thing on both architectures.
+
+Four numbers per run — `sustained` (highest fully-serviced rate), `tipping` (where it fell
+behind and stayed behind), `peak good` and `plateau` (where throughput stopped increasing)
+— plus a shape: `tracking`, `plateau`, `collapse`, or `load-shed`. The default counts only
+successful outcomes, because TO sheds contention as rejections: on `--basis terminal` it
+keeps "terminating" orders at the offered rate right past the point where it stopped
+completing any.
+
+This complements `compare.py --knee`, which asks a different question — that knee is an
+admission-plus-latency-SLO knee, this one is throughput only and needs no SLO guess.
+
+### 3. `report.pdf`
 
 `bench-results/<run_id>/report.pdf` is a full render of the 53-panel dashboard for that
 run's window, produced at the end of the run. Nothing to start — just open it. On an ES run
 the TO-family panels render empty by design, and vice versa.
 
-### 3. Grafana, against the archived run
+### 4. Grafana, against the archived run
 
 This is the full-fidelity path: the complete Prometheus TSDB, not the ~20 series
 `dump.json` extracts.
@@ -240,7 +263,7 @@ needs:
 COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml down
 ```
 
-### 4. The raw artifacts
+### 5. The raw artifacts
 
 | File | What it holds |
 |---|---|
