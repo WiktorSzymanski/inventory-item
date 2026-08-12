@@ -29,8 +29,8 @@ RESULTS_DIR="$REPO_ROOT/bench-results"
 # One Compose project for every variant, rather than the per-directory default.
 #
 # Without this each worktree gets its own project name from its directory basename, so
-# `down` in one project cannot remove containers left by another — and since all eight
-# variants publish the same host ports (8080 nginx, 9090 prometheus, 3000 grafana, 5432
+# `down` in one project cannot remove containers left by another — and since every
+# variant publishes the same host ports (8080 nginx, 9090 prometheus, 3000 grafana, 5432
 # postgres), a leftover stack from the previous variant fails the next one with nothing but
 # a port conflict or a health timeout to go on. With a single project name, one
 # `down -v --remove-orphans` provably clears whatever ran last, including across a TO->ES
@@ -69,7 +69,7 @@ has_cap() {
 # Warn when a knob is set for variants whose branch does not implement it.
 #
 # This failure is silent by construction and cannot be caught downstream: k6 is
-# byte-identical on all eight branches and sends every knob, Spring ignores unknown JSON
+# the same for every variant and sends every knob, Spring ignores unknown JSON
 # properties, and meta.json records what k6 was TOLD rather than what the server honoured.
 # So a suite-wide RESERVE_DELAY_MS sweep produces six rows that look like they applied a
 # delay and did not. Nothing else in the pipeline can tell the difference, which is why the

@@ -5,8 +5,8 @@
 #   scripts/run-campaign.sh --dry-run soak:W-base:RATE=42
 #   scripts/run-campaign.sh --resume bench-results/campaign-20260807T040000Z.state
 #
-# One step = one `run-suite.sh` invocation = all eight variants on a clean stack. This
-# script adds no knob vocabulary of its own; it decides WHICH steps run, in what order,
+# One step = one `run-suite.sh` invocation = every variant in variants.env on a clean stack.
+# This script adds no knob vocabulary of its own; it decides WHICH steps run, in what order,
 # and keeps enough state that a campaign interrupted at step 12 of 21 does not restart at
 # step 1.
 #

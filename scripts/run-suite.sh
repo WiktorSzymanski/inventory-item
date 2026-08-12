@@ -12,7 +12,7 @@
 # order, and guarantees each one starts from a clean stack. Knobs can also be pinned for a
 # whole campaign in workload.env, which this sources; the shell environment still wins.
 #
-# PAYLOAD_BYTES and RESERVE_DELAY_MS are both honoured on all eight branches. If that ever
+# PAYLOAD_BYTES and RESERVE_DELAY_MS are both honoured on every registered branch. If that ever
 # stops being true the failure is silent — k6 sends the field regardless, Spring ignores
 # unknown properties, and meta.json records the requested value rather than what the server
 # applied — so the suite warns for any selected variant missing the capability in
@@ -32,7 +32,7 @@
 # (an ordinary host directory) and the external `bench-replay-data` volume (for Grafana
 # replay). SNAPSHOT_TSDB=0 / ARCHIVE_TSDB=0 work too, matching bench_run.sh's knob names.
 #
-# WHY SEQUENTIAL. All eight variants publish the same host ports (8080 nginx, 9090
+# WHY SEQUENTIAL. Every variant publishes the same host ports (8080 nginx, 9090
 # prometheus, 3000 grafana, 5432 postgres), so they physically cannot overlap — and even if
 # they could, sharing a machine would make every number a measure of contention with the
 # neighbour rather than of the variant.
@@ -233,10 +233,10 @@ teardown
 
 # ---------------------------------------------------------------- report
 echo
-printf '  %-8s  %-9s  %s\n' VARIANT VERDICT RUN
-printf '  %-8s  %-9s  %s\n' -------- --------- ---
+printf '  %-16s  %-9s  %s\n' VARIANT VERDICT RUN
+printf '  %-16s  %-9s  %s\n' ---------------- --------- ---
 for v in $VARIANTS; do
-    printf '  %-8s  %-9s  %s\n' "$v" "${VERDICT[$v]:-not-run}" \
+    printf '  %-16s  %-9s  %s\n' "$v" "${VERDICT[$v]:-not-run}" \
         "$(basename "${RUNDIR[$v]:-}" 2>/dev/null)"
 done
 echo
