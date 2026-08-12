@@ -17,6 +17,19 @@ topology now lives on every branch — see Scaling).
 `main` has no `k6/` directory. The architecture below describes the **ES-\*** branches;
 `TO-*` branches implement the same API over a classic mutable schema with an outbox.
 
+**This branch is `ES-2-NullLock`, not `ES-2`.** It is `ES-2` — the snapshotting, uncached ES
+baseline — with the aggregate lock removed: `AxonConfig` declares an `inventoryItemRepository`
+bean built with `NullLockFactory` and `InventoryItem` names it on `@Aggregate`, so nothing
+serialises concurrent commands on one item and conflicts are resolved by the event store's
+unique constraint plus `ConcurrencyRetryScheduler`. It exists to be run as a pair with `ES-2`
+(`scripts/run-suite.sh --only ES-2,ES-2-NullLock` from `main`, ideally at `DISTINCT_ITEMS=1`),
+which is the only way to read the lock's cost apart from the cache's.
+
+It departs from `ES-2` in **two** things, not one: the lock, and `ES-3`/`ES-4`'s gap-tracking
+tuning (`axon.eventstore.max-gap-offset` and friends), which is load-bearing here because
+lock-free rollbacks leave permanent `global_index` gaps at every replica count. Every `ES-2_*`
+run in `bench-results/` measured the other write path.
+
 ## Commands
 
 ```bash
@@ -60,11 +73,17 @@ REPLICAS=3 PG_MAX_CONNECTIONS=1300 docker compose up -d
 The infrastructure is verified at `REPLICAS=3`: nginx spreads load, Prometheus finds all
 targets, and the saga splits its 60 segments evenly (20/20/20, none unclaimed).
 
-**ES is still not multi-node write-*correct*.** The only thing serialising writers to an
-`InventoryItem` is a JVM-local `LockFactory`, so a second JVM removes it: two replicas load
-the same aggregate at sequence N and both append at N+1, leaving the
-`(aggregate_identifier, sequence_number)` unique constraint as the backstop. Horizontal
-write scale-out cannot be demonstrated without real distributed concurrency control.
+**ES is still not multi-node write-*correct*.** On `ES-1`/`ES-2`/`ES-3` the only thing
+serialising writers to an `InventoryItem` is a JVM-local `LockFactory`, so a second JVM
+removes it: two replicas load the same aggregate at sequence N and both append at N+1,
+leaving the `(aggregate_identifier, sequence_number)` unique constraint as the backstop.
+Horizontal write scale-out cannot be demonstrated without real distributed concurrency
+control.
+
+**This branch has no aggregate lock at all** — `inventoryItemRepository` is built with
+`NullLockFactory`, so that race exists between two threads in one JVM exactly as it does
+between two replicas. Everything below about lost races applies here at **every** replica
+count, including 1.
 
 **What changed is the outcome of losing that race.** It used to be permanent:
 
@@ -130,14 +149,22 @@ all of them alongside the contention-vs-stock split.
 
 **`REPLICAS=1` is still the measurement-grade configuration**, because at `REPLICAS>1` the
 rejection rate is an artefact of lost write races rather than of stock. Read multi-replica
-runs as a contention study, not as a throughput result. On any single-node run
-`saga_completed_total{outcome="command_failed"}` should be zero — the JVM-local
-`LockFactory` (Axon's default is pessimistic) prevents the `23505` entirely there. A non-zero
-value falsifies that assumption and means the baseline needs re-examining. `evaluate.py`
-enforces this as the `saga_command_failed_single_node` validity check, which is skipped
-whenever `EXPECTED_REPLICAS > 1` — above 1 the count is the contention signal itself.
+runs as a contention study, not as a throughput result. On a single-node run of a
+*lock-holding* branch (`ES-1`/`ES-2`/`ES-3`) `saga_completed_total{outcome="command_failed"}`
+should be zero — the JVM-local `LockFactory` prevents the `23505` entirely there — and a
+non-zero value falsifies that assumption and means the baseline needs re-examining.
+`evaluate.py` enforces this as the `saga_command_failed_single_node` validity check, which is
+skipped whenever `EXPECTED_REPLICAS > 1` — above 1 the count is the contention signal itself.
 The underlying series come from the `saga_completed` and `saga_cmd_failed` deltas and the
 `saga_lifetime` histogram in `queries.promql`, so they land in `dump.json` on every run.
+
+**That check is wrong for this branch and is knowingly left in place.** With `NullLockFactory`
+there is no lock to prevent a `23505`, so a single-node run in which any command exhausts its 5
+retries reports `INVALID` on `saga_command_failed_single_node` alone. That is an artefact of a
+harness assumption, not a broken measurement: read the rest of the check list, and treat the run
+as valid if `saga_command_failed_single_node` is its only failure. The check is not relaxed here
+because everything under `k6/` must stay byte-identical across all the variant branches, so the
+fix would have to land on all of them at once.
 
 **Single-node cost is not quite unchanged.** The `@SagaEventHandler` on `OrderFailedEvent`
 adds an `association_value_entry` lookup on the saga processor for *every* rejected order,
@@ -170,6 +197,15 @@ KurrentDB and no R2DBC on any current branch.
 - **`domain/InventoryItem.kt`** — aggregate. `CreateItemCommand`, `SagaReserveItemCommand`
   (emits `InventoryReservedEvent` or, on insufficient stock, a *persisted*
   `InventoryReservationFailedEvent` — not an exception), `ReleaseReservationCommand`.
+  `@Aggregate(repository = "inventoryItemRepository")`, which is what makes the lock-free bean
+  in `AxonConfig` take effect: `@Aggregate` registration wins over any manual
+  `configureAggregate(...)`, so a bean the annotation does not name is silently ignored and the
+  aggregate quietly keeps Axon's pessimistic default. The `snapshotTriggerDefinition` moved onto
+  that repository for the same reason — Axon ignores the annotation attribute once `repository`
+  is set, and leaving it there would have disabled snapshotting without a word.
+  `InventoryLockFreeConcurrencyTest` asserts all three: that
+  `Configuration.repository(InventoryItem::class)` *is* that bean, that concurrent reserves
+  actually produce optimistic retries, and that snapshots are still written.
 - **`domain/OrderAggregate.kt`** — `CreateOrderCommand` / `CompleteOrderCommand` /
   `FailOrderCommand`. Its `OrderStatus` enum is `PENDING/COMPLETED/FAILED`.
 - **`domain/saga/OrderReservationSaga.kt`** — started by `OrderCreatedEvent`. Reserves the
@@ -209,7 +245,18 @@ exception thrown anywhere in the app is `ItemAlreadyExistsException`, from `POST
 
 `src/main/resources/application.yaml`: `snapshot.event-count` (30), `cache.enabled`,
 `axon.saga.total-segments` (60), `axon.saga.replicas` (`${API_REPLICAS:1}`),
-`axon.jdbc.pool.size` (300), and the Micrometer `distribution` block.
+`axon.jdbc.pool.size` (300), `axon.eventstore.max-gap-offset` (500) and its two companions,
+and the Micrometer `distribution` block.
+
+**`axon.eventstore.max-gap-offset` is a correctness knob here, not just a token-size one.**
+`GapAwareTrackingToken` discards every gap more than that many indices behind the token, so an
+event whose row commits after the token has advanced that far past it is skipped by every
+tracking processor **permanently**. Rolled-back appends leave permanent gaps because
+`global_index` is a `BIGSERIAL` and appends autocommit on their own connection — and on this
+branch they are routine at every replica count, because `NullLockFactory` means ordinary in-JVM
+contention produces them. `ES-2` runs Axon's defaults (10000 / 60000); the tightened values here
+come from `ES-3`/`ES-4`. Treat a non-zero `completion_ratio_inverse` on any run as a reason to
+suspect this value first.
 
 **`axon.saga.total-segments` is 60 on every ES branch** and must stay that way — it is the
 fixed segment pool that `ceil(total-segments / replicas)` divides, and 60 splits evenly for
