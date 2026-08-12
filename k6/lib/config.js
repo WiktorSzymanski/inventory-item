@@ -29,6 +29,14 @@ export const CONFIG = {
     // the append path. It inflates snapshot rows and PessimisticCachingRepository's
     // per-command deep copy — i.e. it is a copy-on-write / snapshot-IO lever.
     payloadBytes: int('PAYLOAD_BYTES', 0),
+    // reserveDelayMs on POST /inventory: a Thread.sleep inside the aggregate on every
+    // successful reserve, standing in for expensive domain logic. Unlike PAYLOAD_BYTES this
+    // DOES ride the reserve path, and it caps achievable throughput hard — the lock (DB row on
+    // TO, aggregate on ES) is held for the whole sleep. Ceiling is roughly
+    // workers / (ITEMS_PER_ORDER x delay) on TO and DISTINCT_ITEMS / delay on ES, so at 4
+    // lines x 1000ms a run tops out near 2 orders/s. Sweep 5-50ms before anything larger, and
+    // lower STEP_START / RATE to match or the staircase saturates at step 0 and reads INVALID.
+    reserveDelayMs: int('RESERVE_DELAY_MS', 0),
     itemPrefix: str('ITEM_PREFIX', 'item'),
     allowDupLines: bool('ALLOW_DUP_LINES', false),
 
