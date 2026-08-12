@@ -41,6 +41,7 @@ services:
       # ES-1/ES-2/ES-3, which have no confirmed-state cache.
       AXON_JDBC_POOL_SIZE: "${AXON_JDBC_POOL_SIZE:-300}"
       API_REPLICAS:        "${REPLICAS:-1}"
+      POOLING_INTERVAL:    "${POOLING_INTERVAL:-PT0.1S}"
       CACHE_TTL:           "${CACHE_TTL:-10m}"
       CACHE_MAXIMUM_SIZE:  "${CACHE_MAXIMUM_SIZE:-10000}"
       DB_MAX_CONNECTIONS:  "${DB_MAX_CONNECTIONS:-300}"
