@@ -11,8 +11,8 @@ import pl.szymanski.wiktor.service.command.ReleaseReservationCommand
 import pl.szymanski.wiktor.service.command.SagaReserveItemCommand
 
 // ES-2: Jackson cannot access private Kotlin fields by default — field visibility lets it serialize all aggregate state into the snapshot
-// ES-4: routed to the cached copy-on-write "inventoryItemRepository" bean, which locks with
-// Axon's default PessimisticLockFactory; snapshot trigger is configured on that repository, not here.
+// ES-4: routed to the cached copy-on-write "inventoryItemRepository" bean, which is built LOCK-FREE
+// with NullLockFactory; snapshot trigger is configured on that repository, not here.
 @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
 @Aggregate(repository = "inventoryItemRepository")
 class InventoryItem {
@@ -57,8 +57,14 @@ class InventoryItem {
 
         // Paid only once the reserve is known to succeed, and inside the command handler rather
         // than the event-sourcing handler: the latter runs on every replay and snapshot load, which
-        // would make the delay a startup cost instead of a per-reserve one. The aggregate's
-        // pessimistic lock is held throughout — that is the point, it models slow domain logic.
+        // would make the delay a startup cost instead of a per-reserve one.
+        //
+        // NOTE the lever means something different here than on TO or on a lock-holding ES branch.
+        // This aggregate is loaded LOCK-FREE, so the sleep blocks nothing: concurrent commands on the
+        // same item sleep in parallel and then all try to append the same sequence number. It widens
+        // the conflict window rather than serialising anything, so raising it drives optimistic
+        // retries up, not queueing. k6/README's framing of RESERVE_DELAY_MS as ES's analogue of TO's
+        // held row lock does not apply to this branch.
         if (reserveDelayMs > 0) {
             Thread.sleep(reserveDelayMs.toLong())
         }

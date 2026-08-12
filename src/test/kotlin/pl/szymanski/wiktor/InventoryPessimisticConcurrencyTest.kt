@@ -29,12 +29,12 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Drives the cached [PessimisticCachingRepository] under real contention against a Postgres event
- * store: many concurrent reserve commands hit ONE aggregate. Unlike the ES-3-optimistic variant, the
- * per-aggregate pessimistic lock serialises them inside the JVM, so no two commands ever compete for
- * the same sequence number. Verifies the mirror-image outcome of that branch's test: a correct,
- * consistent result with no over-reservation AND no conflicts at all — zero optimistic retries, zero
- * commands failing with exhausted retries, every reserve honoured.
+ * Drives the cached, LOCK-FREE [PessimisticCachingRepository] under real contention against a
+ * Postgres event store: many concurrent reserve commands hit ONE aggregate and collide on the
+ * `UNIQUE (aggregate_identifier, sequence_number)` constraint. Verifies that optimistic concurrency
+ * plus the gateway retry produces a correct, consistent result with no over-reservation and no lost
+ * updates — and that the conflicts were actually exercised (retries > 0), i.e. nothing serialised
+ * them away. (The class name predates the switch to `NullLockFactory`; see the repository's KDoc.)
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @Testcontainers
@@ -47,7 +47,7 @@ class InventoryPessimisticConcurrencyTest {
     @Autowired @Qualifier("axonJdbcTemplate") lateinit var jdbc: NamedParameterJdbcTemplate
 
     @Test
-    fun `concurrent reserves on one item are serialised by the lock with no conflicts`() {
+    fun `concurrent reserves on one item stay consistent with no over-reservation`() {
         val itemId = UUID.randomUUID().toString()
         val initialStock = 100
         val concurrentReserves = 100
@@ -63,7 +63,9 @@ class InventoryPessimisticConcurrencyTest {
                 try {
                     gateway.sendAndWait<Any?>(SagaReserveItemCommand(id = itemId, quantity = 1))
                 } catch (e: Exception) {
-                    rejected.incrementAndGet() // must stay 0: the lock removes the conflicts entirely
+                    // Retries exhausted under contention. Acceptable without a lock — the command is
+                    // refused, never half-applied — so this is counted, not asserted to be zero.
+                    rejected.incrementAndGet()
                 } finally {
                     done.countDown()
                 }
@@ -101,28 +103,35 @@ class InventoryPessimisticConcurrencyTest {
         assertThat(reserved + failed).`as`("sequence integrity (no gaps/duplicates)").isEqualTo(head.toInt())
         // Cache holds only confirmed state and is advanced to the store head (never stale, never ahead).
         assertThat(inventoryItemRepository.cachedSequence(itemId)).`as`("cache == store head").isEqualTo(head)
-        // The lock, not a retry loop, resolved the contention: no ConcurrencyException was ever raised,
-        // so every one of the 100 reserves went through on the first attempt.
-        assertThat(retries).`as`("no optimistic retries under the lock").isEqualTo(0.0)
-        assertThat(exhausted).`as`("no command exhausted its retries").isEqualTo(0.0)
-        assertThat(rejected.get()).`as`("no reserve command failed").isEqualTo(0)
-        assertThat(reserved).`as`("every reserve honoured").isEqualTo(concurrentReserves)
+        // Contention actually happened and was resolved by optimistic retry, not by a lock. This is
+        // the assertion that fails if the repository is ever given a real LockFactory again.
+        assertThat(retries).`as`("optimistic retries were exercised").isGreaterThan(0.0)
+        // Stock covers every request, so nothing may be refused for lack of it: any command that did
+        // not land was a lost race, and it left no event behind.
+        assertThat(failed).`as`("no reserve refused for stock").isEqualTo(0)
+        assertThat(reserved + rejected.get())
+            .`as`("every command either appended exactly one event or failed outright")
+            .isEqualTo(concurrentReserves)
+        assertThat(rejected.get().toDouble())
+            .`as`("the only reason a command failed was exhausting its retries")
+            .isEqualTo(exhausted)
         // Regression guard: serving loads from cache must NOT starve the event-count snapshot trigger.
         // Preparing a fresh trigger per hit resets its counter to 0, so with 100 events and a
         // threshold of 30 no snapshot would ever be written — the cache must carry the live trigger.
         assertThat(awaitSnapshot(itemId)).`as`("snapshots still triggered while serving from cache").isTrue()
 
         println(
-            "[PES-IT] stock=$initialStock attempts=$concurrentReserves reserved=$reserved failed=$failed " +
+            "[OPT-IT] stock=$initialStock attempts=$concurrentReserves reserved=$reserved failed=$failed " +
                 "rejected=${rejected.get()} head=$head retries=$retries cacheSeq=${inventoryItemRepository.cachedSequence(itemId)}",
         )
     }
 
     /**
-     * The cache is never evicted and, after the first load, never misses — so [catchUp] on rollback
-     * is the ONLY path that can repair a stale entry. This drives the real sequence: another writer
-     * appends behind our back, our next command collides, the rollback runs catchUp, and the retry
-     * succeeds against the advanced state. Without catchUp the retry would target the same taken
+     * Without a lock this is the ordinary single-node path, not an exotic one, and it is what the
+     * previous test exercises in bulk — here it is driven deterministically. A hot entry is never
+     * evicted and never misses, so `catchUp` on rollback is the ONLY thing that can repair it: another
+     * writer appends behind our back, our next command collides, the rollback runs catchUp, and the
+     * retry succeeds against the advanced state. Without catchUp the retry would target the same taken
      * sequence number forever and the command would exhaust and REJECT.
      */
     @Test
@@ -136,8 +145,9 @@ class InventoryPessimisticConcurrencyTest {
         val catchupsBefore = meterRegistry.get("inventory.opt.catchup").counter().count()
         val failedBefore = meterRegistry.get("inventory.opt.catchup.failed").counter().count()
 
-        // Simulate a second node: append straight to the store at the sequence our cached aggregate
-        // will target next, leaving the cache one event behind the truth.
+        // Stand in for the command that wins the race (another thread here, another node in a
+        // multi-replica run): append straight to the store at the sequence our cached aggregate will
+        // target next, leaving the cache one event behind the truth.
         eventStore.publish(
             GenericDomainEventMessage(
                 "InventoryItem", itemId, seqBefore!! + 1,
@@ -218,7 +228,7 @@ class InventoryPessimisticConcurrencyTest {
 
     /**
      * Eviction must cost a replay, never correctness: the cache is a pure accelerator over the event
-     * store, so a dropped entry is just a miss that reloads authoritative state under the same lock.
+     * store, so a dropped entry is just a miss that reloads authoritative state from it.
      */
     @Test
     fun `an evicted entry reloads from the store and keeps reserving correctly`() {
