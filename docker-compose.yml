@@ -43,6 +43,7 @@ services:
       API_REPLICAS:        "${REPLICAS:-1}"
       CACHE_TTL:           "${CACHE_TTL:-10m}"
       CACHE_MAXIMUM_SIZE:  "${CACHE_MAXIMUM_SIZE:-10000}"
+      DB_MAX_CONNECTIONS:  "${DB_MAX_CONNECTIONS:-300}"
     expose:
       - "8080"
     deploy:
