@@ -55,6 +55,9 @@ class InventoryServiceRetryTest {
                 scheduledDelaysMs += delayMs
                 task.run()
             },
+            // Policy must hold under either topology; the pool choice is pinned by
+            // OrderRetryPoolTopologyTest instead.
+            executeRetriesOnRetryPool = true,
             meterRegistry = meterRegistry,
         )
     }

@@ -1,10 +1,15 @@
 package pl.szymanski.wiktor.config
 
+import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Configuration
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig
 import pl.szymanski.wiktor.service.OrderRetryPolicy
 import pl.szymanski.wiktor.service.OrderRetryScheduler
@@ -20,11 +25,21 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * Nothing here needs a database, so this stays a plain context test over [OrderWorkerConfig].
  */
-@SpringJUnitConfig(classes = [OrderWorkerConfig::class])
+@SpringJUnitConfig(classes = [OrderWorkerConfig::class, OrderRetrySchedulerWiringTest.TestBeans::class])
 class OrderRetrySchedulerWiringTest {
 
     @Autowired
     private lateinit var orderRetryScheduler: OrderRetryScheduler
+
+    @Autowired
+    private lateinit var meterRegistry: MeterRegistry
+
+    /** Boot supplies this in production; the minimal context has to declare it. */
+    @Configuration
+    class TestBeans {
+        @Bean
+        fun meterRegistry(): MeterRegistry = SimpleMeterRegistry()
+    }
 
     @Test
     fun `the scheduler runs the retry on a daemon retry thread, never on the caller`() {
@@ -41,6 +56,16 @@ class OrderRetrySchedulerWiringTest {
         assertNotEquals(Thread.currentThread(), retryThread, "retry ran inline — the worker was not released")
         assertTrue(retryThread.name.startsWith("order-retry-"), "unexpected retry thread: ${retryThread.name}")
         assertTrue(retryThread.isDaemon, "retry threads must be daemons so shutdown cannot hang")
+    }
+
+    @Test
+    fun `the retry pool publishes its saturation gauges`() {
+        // Micrometer holds the gauged object weakly, so a pool referenced only by the builder would
+        // report NaN or vanish once collected. The bean keeps the executor alive; this proves it.
+        System.gc()
+        assertNotNull(meterRegistry.find("order.retry.pool.active").gauge(), "order.retry.pool.active missing")
+        assertNotNull(meterRegistry.find("order.retry.pool.queued").gauge(), "order.retry.pool.queued missing")
+        assertEquals(0.0, meterRegistry.find("order.retry.pool.active").gauge()!!.value())
     }
 
     @Test

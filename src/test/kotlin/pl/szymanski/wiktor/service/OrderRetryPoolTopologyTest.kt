@@ -25,32 +25,36 @@ import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 /**
- * The point of TO-3-mod: a worker thread parked in retry backoff is a worker thread not doing work.
+ * WHICH pool runs a retried attempt. Invisible in every other test — the policy assertions and the
+ * unblocking assertion both hold either way — yet it is the difference between "retries have their
+ * own lane, as on ES" and "retries rejoin the worker queue behind fresh orders".
  *
- * ONE worker thread, two orders. The first conflicts once and must wait out its 25 ms backoff; the
- * second is queued behind it and needs nothing but a thread. Because the backoff is non-blocking
- * the thread is released and the second order runs during the wait, so the reserve handler sees
- * A, B, A.
- *
- * On stock TO-3 this test fails with A, A, B — verified before the change was written. Spring's
- * `@Retryable` interceptor sleeps on the worker, and with one worker there is nobody left to pick
- * up order B until the retry has finished.
+ * Asserted by thread name, because that is the only thing that actually distinguishes the two at
+ * runtime, and a silent regression here would show up in a bench run as an unexplained throughput
+ * change.
  */
-class OrderRetryUnblocksWorkerTest {
+class OrderRetryPoolTopologyTest {
 
     private val reserveOrderItemsCommandHandler: ReserveOrderItemsCommandHandler = mockk()
 
     private val workerExecutor = ThreadPoolTaskExecutor().apply {
-        // Exactly one thread: that is the whole experiment.
-        corePoolSize = 1
-        maxPoolSize = 1
+        corePoolSize = 2
+        maxPoolSize = 2
         setThreadNamePrefix("order-worker-")
         initialize()
     }
-    private val retryExecutor = ScheduledThreadPoolExecutor(1)
+    private val retryExecutor = ScheduledThreadPoolExecutor(2) { runnable ->
+        Thread(runnable, "order-retry-1").apply { isDaemon = true }
+    }
     private val retryScheduler = DelayedOrderRetryScheduler(retryExecutor)
 
-    private val inventoryService = InventoryService(
+    @AfterEach
+    fun tearDown() {
+        retryScheduler.close()
+        workerExecutor.shutdown()
+    }
+
+    private fun serviceWith(executeRetriesOnRetryPool: Boolean) = InventoryService(
         inventoryRepository = mockk<InventoryRepository>(),
         orderRepository = mockk<OrderRepository>(),
         createInventoryItemCommandHandler = mockk<CreateInventoryItemCommandHandler>(),
@@ -59,51 +63,46 @@ class OrderRetryUnblocksWorkerTest {
         failOrderCommandHandler = mockk(relaxed = true),
         orderWorkerExecutor = workerExecutor,
         retryScheduler = retryScheduler,
-        // false on purpose: the hand-off topology is the harder case for this assertion. If the
-        // worker is released even when the retry has to come BACK through the worker pool, it is
-        // released a fortiori when the retry runs on its own pool.
-        executeRetriesOnRetryPool = false,
+        executeRetriesOnRetryPool = executeRetriesOnRetryPool,
         meterRegistry = SimpleMeterRegistry(),
     )
 
-    @AfterEach
-    fun tearDown() {
-        retryScheduler.close()
-        workerExecutor.shutdown()
-    }
-
-    private fun eventFor(orderId: String) = OrderCreatedEvent(
-        orderId = orderId,
+    private val event = OrderCreatedEvent(
+        orderId = "ORDER-1",
         userId = "USER-1",
         items = listOf(ReservedItem("ITEM-001", 1)),
         correlationId = UUID.randomUUID(),
         createdAt = Instant.EPOCH,
     )
 
-    @Test
-    fun `an order waiting out its backoff does not hold the only worker thread`() {
-        val attempts = CopyOnWriteArrayList<String>()
-        val allAttemptsSeen = CountDownLatch(3)
-        var firstOrderHasFailedOnce = false
+    /** @return the thread-name prefixes the two attempts ran on, in order. */
+    private fun attemptThreadsFor(executeRetriesOnRetryPool: Boolean): List<String> {
+        val threads = CopyOnWriteArrayList<String>()
+        val bothAttempts = CountDownLatch(2)
+        var hasFailedOnce = false
 
         every { reserveOrderItemsCommandHandler.handle(any()) } answers {
-            val event = firstArg<OrderCreatedEvent>()
-            attempts += event.orderId
-            allAttemptsSeen.countDown()
-            if (event.orderId == "ORDER-A" && !firstOrderHasFailedOnce) {
-                firstOrderHasFailedOnce = true
+            threads += Thread.currentThread().name.substringBeforeLast('-')
+            bothAttempts.countDown()
+            if (!hasFailedOnce) {
+                hasFailedOnce = true
                 throw OptimisticLockingFailureException("conflict")
             }
         }
 
-        // Queued in this order, so the single worker necessarily picks A first.
-        inventoryService.onOrderCreated(eventFor("ORDER-A"))
-        inventoryService.onOrderCreated(eventFor("ORDER-B"))
+        serviceWith(executeRetriesOnRetryPool).onOrderCreated(event)
 
-        assertTrue(
-            allAttemptsSeen.await(5, TimeUnit.SECONDS),
-            "expected 3 reserve attempts, saw $attempts",
-        )
-        assertEquals(listOf("ORDER-A", "ORDER-B", "ORDER-A"), attempts)
+        assertTrue(bothAttempts.await(5, TimeUnit.SECONDS), "expected 2 attempts, saw $threads")
+        return threads
+    }
+
+    @Test
+    fun `by default the retried attempt runs on the retry pool`() {
+        assertEquals(listOf("order-worker", "order-retry"), attemptThreadsFor(true))
+    }
+
+    @Test
+    fun `with execute-on-retry-pool off the retried attempt goes back to the worker pool`() {
+        assertEquals(listOf("order-worker", "order-worker"), attemptThreadsFor(false))
     }
 }

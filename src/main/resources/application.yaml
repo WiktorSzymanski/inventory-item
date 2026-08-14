@@ -23,12 +23,22 @@ app:
   order-worker:
     threads: ${ORDER_WORKER_THREADS:200}                   # worker pool processing accepted orders
     queue-capacity: ${ORDER_WORKER_QUEUE_CAPACITY:2147483647}  # unbounded by default (Int.MAX_VALUE); absorb load like ES, no queue-full shedding
-  # TO-3-mod: threads that only wait out a retry backoff and re-submit the attempt to
-  # order-worker. The reservation itself never runs here, so 2 is enough at any load — and it must
-  # NOT be the shared spring.task.scheduling pool, which drains the outbox (a retry wait parked
-  # there would be exactly the long tick that starves the outbox.backlog gauge).
+  # TO-3-mod: a separate lane for attempts that have already conflicted. Must NOT be the shared
+  # spring.task.scheduling pool, which drains the outbox — a retry wait parked there would be
+  # exactly the long tick that starves the outbox.backlog gauge.
   order-retry:
-    threads: ${ORDER_RETRY_THREADS:2}
+    # 12 is ES's 4-of-64 retry ratio scaled to TO's 200 workers. Set it to order-worker.threads for
+    # "separate lane, equally wide", or lower for a deliberately narrow waist. Since the pool now
+    # EXECUTES retries, this is a throughput limit: read order_retry_pool_active (not _queued, which
+    # also counts attempts still serving out their backoff) before attributing anything to it.
+    threads: ${ORDER_RETRY_THREADS:12}
+    # true (default): the retried attempt runs ON the retry pool, as it does on every ES branch.
+    # false: the pool only counts time and hands the attempt back to order-worker, which runs
+    # retries at full width but at the tail of a FIFO queue. false is the configuration that differs
+    # from TO-3 in a single dimension (where the waiting happens) and is the honest setting for a
+    # pure blocking-vs-non-blocking A/B; true is the setting that makes TO's retry topology match
+    # ES's. Whichever a run uses, say which — the two are different experiments.
+    execute-on-retry-pool: ${ORDER_RETRY_EXECUTE_ON_RETRY_POOL:true}
 
 management:
   endpoints:

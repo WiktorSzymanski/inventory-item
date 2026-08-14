@@ -37,11 +37,13 @@ object OrderRetryPolicy {
 }
 
 /**
- * Timing only: it schedules, it never runs the reservation itself. The re-submitted task goes back
- * to `orderWorkerExecutor`, so the width of the retry path equals the width of the first-attempt
- * path. (The ES branches do the opposite — Axon's `RetryingCallback` re-dispatches inline, so
- * retried commands execute on the 4-thread retry pool. That narrowing is a property of ES, and
- * reproducing it here would confound this A/B.)
+ * Runs the scheduled task on its own pool, never on the caller.
+ *
+ * Whether that task IS the retried attempt or merely a hand-off back to `orderWorkerExecutor` is
+ * decided by `app.order-retry.execute-on-retry-pool`, in `InventoryService` — see
+ * `OrderRetryProperties`. Both topologies matter: executing here mirrors the ES branches, where
+ * Axon's `RetryingCallback` re-dispatches inline onto its own retry pool; handing back runs retries
+ * at full worker width, which is the configuration that differs from TO-3 in a single dimension.
  */
 class DelayedOrderRetryScheduler(
     private val executor: ScheduledExecutorService,

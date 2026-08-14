@@ -5,6 +5,7 @@ import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Timer
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Qualifier
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.core.task.TaskExecutor
 import org.springframework.dao.OptimisticLockingFailureException
 import org.springframework.dao.PessimisticLockingFailureException
@@ -44,6 +45,11 @@ class InventoryService(
     // ObjectProvider<InventoryService> self-proxy in this slot, needed only so processOrder() went
     // through the @Retryable interceptor; with the loop explicit, the proxy has nothing to do.
     private val retryScheduler: OrderRetryScheduler,
+    // Whether a retried attempt RUNS on the retry pool (default, matching ES) or is handed back to
+    // orderWorkerExecutor. Read as a @Value rather than from OrderRetryProperties so this package
+    // does not have to import config — which already imports this one.
+    @Value("\${app.order-retry.execute-on-retry-pool:true}")
+    private val executeRetriesOnRetryPool: Boolean,
     private val meterRegistry: MeterRegistry,
 ) {
     private val log = LoggerFactory.getLogger(this::class.java)
@@ -175,11 +181,20 @@ class InventoryService(
         )
         return try {
             retryScheduler.schedule(delayMs) {
-                // Runs on a retry thread, where a thrown exception would be swallowed with the
-                // task and leave the order PENDING for good. The worker pool has an unbounded
-                // queue, so this can only reject during shutdown.
+                // Runs on a retry thread, where a thrown exception would be swallowed with the task
+                // and leave the order PENDING for good.
                 try {
-                    submit(next)
+                    if (executeRetriesOnRetryPool) {
+                        // The retry pool is a lane of its own: this attempt runs HERE, so it neither
+                        // competes with fresh orders for a worker nor queues behind them. Matches the
+                        // ES branches, where RetryingCallback re-dispatches inline onto its retry pool.
+                        runOrderTask(next)
+                    } else {
+                        // Hand back to the worker pool. Retries then run at full worker width, but at
+                        // the TAIL of a FIFO queue, so under backlog they wait behind newer orders.
+                        // The worker queue is unbounded, so this can only reject during shutdown.
+                        submit(next)
+                    }
                 } catch (e: RejectedExecutionException) {
                     retryRejectedCounter.increment()
                     log.warn("[ORDER] worker pool rejected retry orderId={} — failing the order", next.event.orderId, e)
