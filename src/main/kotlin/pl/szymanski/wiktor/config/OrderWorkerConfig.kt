@@ -5,6 +5,10 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor
+import pl.szymanski.wiktor.service.DelayedOrderRetryScheduler
+import pl.szymanski.wiktor.service.OrderRetryScheduler
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.atomic.AtomicInteger
 
 @ConfigurationProperties("app.order-worker")
 data class OrderWorkerProperties(
@@ -12,8 +16,17 @@ data class OrderWorkerProperties(
     val queueCapacity: Int = Int.MAX_VALUE,
 )
 
+/**
+ * TO-3-mod only. Threads that do nothing but wait out a retry backoff and re-submit the attempt to
+ * orderWorkerExecutor, so 2 is plenty regardless of load: the work itself never runs here.
+ */
+@ConfigurationProperties("app.order-retry")
+data class OrderRetryProperties(
+    val threads: Int = 2,
+)
+
 @Configuration
-@EnableConfigurationProperties(OrderWorkerProperties::class)
+@EnableConfigurationProperties(OrderWorkerProperties::class, OrderRetryProperties::class)
 class OrderWorkerConfig {
 
     /**
@@ -30,4 +43,21 @@ class OrderWorkerConfig {
             queueCapacity = properties.queueCapacity
             setThreadNamePrefix("order-worker-")
         }
+
+    /**
+     * Deliberately NOT `spring.task.scheduling` (pool size 2): that scheduler runs the outbox
+     * drain, and application.yaml already warns that a long tick there starves the
+     * outbox.backlog gauge. Retry waits would be exactly such a tick.
+     *
+     * Daemon threads so a stuck retry can never hold the JVM open at shutdown; the returned
+     * scheduler is AutoCloseable, which Spring calls on context close for a graceful stop.
+     */
+    @Bean
+    fun orderRetryScheduler(properties: OrderRetryProperties): OrderRetryScheduler {
+        val threadNumber = AtomicInteger(1)
+        val executor = ScheduledThreadPoolExecutor(properties.threads) { runnable ->
+            Thread(runnable, "order-retry-${threadNumber.getAndIncrement()}").apply { isDaemon = true }
+        }
+        return DelayedOrderRetryScheduler(executor)
+    }
 }

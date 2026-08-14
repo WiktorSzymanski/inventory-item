@@ -23,6 +23,12 @@ app:
   order-worker:
     threads: ${ORDER_WORKER_THREADS:200}                   # worker pool processing accepted orders
     queue-capacity: ${ORDER_WORKER_QUEUE_CAPACITY:2147483647}  # unbounded by default (Int.MAX_VALUE); absorb load like ES, no queue-full shedding
+  # TO-3-mod: threads that only wait out a retry backoff and re-submit the attempt to
+  # order-worker. The reservation itself never runs here, so 2 is enough at any load — and it must
+  # NOT be the shared spring.task.scheduling pool, which drains the outbox (a retry wait parked
+  # there would be exactly the long tick that starves the outbox.backlog gauge).
+  order-retry:
+    threads: ${ORDER_RETRY_THREADS:2}
 
 management:
   endpoints:
@@ -40,6 +46,7 @@ management:
         order.processing.time: true
         order.queue.wait: true
         order.e2e.time: true
+        order.retry.backoff.time: true   # TO-3-mod only: the wait this branch moved off the worker
       # order.e2e.time bounds are pinned explicitly — and must stay identical on every
       # variant branch. Micrometer's default Timer max is 30s; declaring
       # maximum-expected-value for publish.lag alone left order.e2e.time on that default,

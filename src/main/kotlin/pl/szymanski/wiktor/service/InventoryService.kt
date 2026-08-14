@@ -4,7 +4,6 @@ import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Timer
 import org.slf4j.LoggerFactory
-import org.springframework.beans.factory.ObjectProvider
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.core.task.TaskExecutor
 import org.springframework.dao.OptimisticLockingFailureException
@@ -12,7 +11,6 @@ import org.springframework.dao.PessimisticLockingFailureException
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
 import org.springframework.modulith.events.ApplicationModuleListener
-import org.springframework.resilience.annotation.Retryable
 import org.springframework.stereotype.Service
 import pl.szymanski.wiktor.domain.InventoryItem
 import pl.szymanski.wiktor.domain.Order
@@ -30,6 +28,7 @@ import pl.szymanski.wiktor.service.command.FailOrderCommandHandler
 import pl.szymanski.wiktor.service.command.ReserveOrderItemsCommandHandler
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 
 @Service
@@ -41,9 +40,10 @@ class InventoryService(
     private val reserveOrderItemsCommandHandler: ReserveOrderItemsCommandHandler,
     private val failOrderCommandHandler: FailOrderCommandHandler,
     @Qualifier("orderWorkerExecutor") private val orderWorkerExecutor: TaskExecutor,
-    // Self-proxy so processOrder() invoked from the worker task goes through the
-    // @Retryable interceptor; a direct this-call would bypass it.
-    private val self: ObjectProvider<InventoryService>,
+    // TO-3-mod: the retry wait happens here instead of on the worker thread. Stock TO-3 had an
+    // ObjectProvider<InventoryService> self-proxy in this slot, needed only so processOrder() went
+    // through the @Retryable interceptor; with the loop explicit, the proxy has nothing to do.
+    private val retryScheduler: OrderRetryScheduler,
     private val meterRegistry: MeterRegistry,
 ) {
     private val log = LoggerFactory.getLogger(this::class.java)
@@ -57,6 +57,16 @@ class InventoryService(
     private val queueWaitTimer: Timer = meterRegistry.timer("order.queue.wait")
     private val optimisticRetryCounter: Counter = meterRegistry.counter("inventory.optimistic.retry")
     private val optimisticExhaustedCounter: Counter = meterRegistry.counter("inventory.optimistic.exhausted")
+
+    // TO-3-mod only: the wait this branch moved off the worker thread, so it can be priced. One
+    // sample per RETRIED order (orders that never conflict record nothing), covering the whole
+    // accumulated backoff rather than each individual wait.
+    private fun backoffTimer(outcome: String): Timer =
+        meterRegistry.timer("order.retry.backoff.time", "outcome", outcome)
+
+    // The retry hop could not be scheduled, i.e. the pools are shutting down. Counted because the
+    // alternative disposition — losing the task — would leave the order PENDING with no signal.
+    private val retryRejectedCounter: Counter = meterRegistry.counter("order.retry.rejected")
 
     private fun e2eTimer(outcome: String): Timer =
         meterRegistry.timer("order.e2e.time", "outcome", outcome)
@@ -103,57 +113,132 @@ class InventoryService(
     @ApplicationModuleListener
     fun onOrderCreated(event: OrderCreatedEvent) {
         val acceptedAtNs = acceptedAtByOrderId.remove(event.orderId) ?: -1L
-        orderWorkerExecutor.execute { runOrderTask(event, acceptedAtNs) }
+        submit(OrderAttempt(event, acceptedAtNs, attempt = 0, firstPickupNs = -1L, backoffNs = 0L))
     }
 
-    private fun runOrderTask(event: OrderCreatedEvent, acceptedAtNs: Long) {
-        if (acceptedAtNs >= 0) {
-            queueWaitTimer.record(System.nanoTime() - acceptedAtNs, TimeUnit.NANOSECONDS)
-        }
-        val sample = Timer.start()
-        var outcome = "confirmed"
-        try {
-            self.getObject().processOrder(event)
-            completedCounter("confirmed", "none").increment()
-        } catch (e: Exception) {
-            outcome = "rejected"
-            log.warn("[ORDER] rejected orderId={} reason={} correlationId={}", event.orderId, e.message, event.correlationId)
-            meterRegistry.counter("inventory.exception", "type", e.javaClass.simpleName).increment()
-            if (e is OptimisticLockingFailureException || e is PessimisticLockingFailureException) {
-                optimisticExhaustedCounter.increment()
-            }
-            completedCounter("rejected", rejectionReason(e)).increment()
-            // Rejection goes through the aggregate's command handler (own transaction, records
-            // OrderFailedEvent to the outbox). Never let a failure here escape into the executor.
-            try {
-                failOrderCommandHandler.handle(
-                    FailOrderCommand(event.orderId, e.message ?: e.javaClass.simpleName, event.correlationId)
-                )
-            } catch (rejectError: Exception) {
-                log.error("[ORDER] failed to reject orderId={} correlationId={}", event.orderId, event.correlationId, rejectError)
-            }
-        } finally {
-            sample.stop(processingTimer)
-            if (acceptedAtNs >= 0) {
-                e2eTimer(outcome).record(System.nanoTime() - acceptedAtNs, TimeUnit.NANOSECONDS)
-            }
-        }
+    private fun submit(state: OrderAttempt) {
+        orderWorkerExecutor.execute { runOrderTask(state) }
     }
 
-    @Retryable(
-        includes = [OptimisticLockingFailureException::class, PessimisticLockingFailureException::class],
-        maxRetries = 4,
-        delay = 25,
-        multiplier = 2.0,
-        maxDelay = 500,
-    )
-    fun processOrder(event: OrderCreatedEvent) =
+    /**
+     * One attempt at reserving an order. A conflict re-submits a later attempt through
+     * [retryScheduler] and RETURNS, so the worker thread is free for the whole backoff — the single
+     * behavioural difference between this branch and TO-3, where Spring's `@Retryable` interceptor
+     * slept here instead.
+     *
+     * The attempt budget and the delays are unchanged ([OrderRetryPolicy]).
+     */
+    private fun runOrderTask(state: OrderAttempt) {
+        val pickedUpNs = System.nanoTime()
+        // Queue wait is a property of admission, so it is measured once, on the first pickup. A
+        // re-submission's wait is backoff, not queueing, and is priced by backoffTimer instead.
+        val firstPickupNs = if (state.firstPickupNs >= 0) {
+            state.firstPickupNs
+        } else {
+            if (state.acceptedAtNs >= 0) {
+                queueWaitTimer.record(pickedUpNs - state.acceptedAtNs, TimeUnit.NANOSECONDS)
+            }
+            pickedUpNs
+        }
+
         try {
-            reserveOrderItemsCommandHandler.handle(event)
+            reserveOrderItemsCommandHandler.handle(state.event)
         } catch (e: Exception) {
-            if (e is OptimisticLockingFailureException || e is PessimisticLockingFailureException) {
+            val isConflict = e is OptimisticLockingFailureException || e is PessimisticLockingFailureException
+            if (isConflict) {
+                // Every failed attempt, the last one included — TO-3 counted it the same way (its
+                // catch ran before the exception escaped the final attempt), and the pair is only
+                // comparable if this stays identical.
                 optimisticRetryCounter.increment()
             }
-            throw e
+            if (isConflict && state.attempt < OrderRetryPolicy.MAX_RETRIES && scheduleRetry(state, firstPickupNs)) {
+                return
+            }
+            rejectOrder(state, firstPickupNs, e, exhaustedConflict = isConflict)
+            return
         }
+        completedCounter("confirmed", "none").increment()
+        recordTerminal(state, firstPickupNs, "confirmed")
+    }
+
+    /** @return true when the next attempt is safely queued and this thread may go. */
+    private fun scheduleRetry(state: OrderAttempt, firstPickupNs: Long): Boolean {
+        val delayMs = OrderRetryPolicy.delayMsFor(state.attempt)
+        val next = state.copy(
+            attempt = state.attempt + 1,
+            firstPickupNs = firstPickupNs,
+            backoffNs = state.backoffNs + TimeUnit.MILLISECONDS.toNanos(delayMs),
+        )
+        log.debug(
+            "[ORDER] conflict orderId={} attempt={} retrying in {}ms correlationId={}",
+            state.event.orderId, state.attempt + 1, delayMs, state.event.correlationId,
+        )
+        return try {
+            retryScheduler.schedule(delayMs) {
+                // Runs on a retry thread, where a thrown exception would be swallowed with the
+                // task and leave the order PENDING for good. The worker pool has an unbounded
+                // queue, so this can only reject during shutdown.
+                try {
+                    submit(next)
+                } catch (e: RejectedExecutionException) {
+                    retryRejectedCounter.increment()
+                    log.warn("[ORDER] worker pool rejected retry orderId={} — failing the order", next.event.orderId, e)
+                    rejectOrder(next, firstPickupNs, e, exhaustedConflict = false)
+                }
+            }
+            true
+        } catch (e: RejectedExecutionException) {
+            retryRejectedCounter.increment()
+            log.warn("[ORDER] retry scheduler rejected orderId={} — failing the order", state.event.orderId, e)
+            false
+        }
+    }
+
+    private fun rejectOrder(state: OrderAttempt, firstPickupNs: Long, e: Exception, exhaustedConflict: Boolean) {
+        val event = state.event
+        log.warn("[ORDER] rejected orderId={} reason={} correlationId={}", event.orderId, e.message, event.correlationId)
+        meterRegistry.counter("inventory.exception", "type", e.javaClass.simpleName).increment()
+        if (exhaustedConflict) {
+            optimisticExhaustedCounter.increment()
+        }
+        completedCounter("rejected", rejectionReason(e)).increment()
+        // Rejection goes through the aggregate's command handler (own transaction, records
+        // OrderFailedEvent to the outbox). Never let a failure here escape into the executor.
+        try {
+            failOrderCommandHandler.handle(
+                FailOrderCommand(event.orderId, e.message ?: e.javaClass.simpleName, event.correlationId)
+            )
+        } catch (rejectError: Exception) {
+            log.error("[ORDER] failed to reject orderId={} correlationId={}", event.orderId, event.correlationId, rejectError)
+        }
+        recordTerminal(state, firstPickupNs, "rejected")
+    }
+
+    /**
+     * Recorded once per order, at its terminal outcome — not once per attempt. `processingTimer`
+     * therefore still spans first pickup to final outcome with backoff included, which is what it
+     * spanned on TO-3 when the backoff was a sleep inside a single task.
+     */
+    private fun recordTerminal(state: OrderAttempt, firstPickupNs: Long, outcome: String) {
+        val nowNs = System.nanoTime()
+        processingTimer.record(nowNs - firstPickupNs, TimeUnit.NANOSECONDS)
+        if (state.backoffNs > 0) {
+            backoffTimer(outcome).record(state.backoffNs, TimeUnit.NANOSECONDS)
+        }
+        if (state.acceptedAtNs >= 0) {
+            e2eTimer(outcome).record(nowNs - state.acceptedAtNs, TimeUnit.NANOSECONDS)
+        }
+    }
+
+    /**
+     * Everything about one order's progress that has to survive being handed to another thread.
+     * On TO-3 all of this was thread-local to a single blocking task.
+     */
+    private data class OrderAttempt(
+        val event: OrderCreatedEvent,
+        val acceptedAtNs: Long,
+        val attempt: Int,
+        val firstPickupNs: Long,
+        val backoffNs: Long,
+    )
 }
