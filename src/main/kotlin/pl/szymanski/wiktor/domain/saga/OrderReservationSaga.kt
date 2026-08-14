@@ -187,12 +187,13 @@ class OrderReservationSaga {
         log.error("[SAGA] {} command failed orderId={} — failing order", stage, orderId, cause)
         meterRegistry.counter("saga.command.failed", "stage", stage).increment()
         // Handed back to the 64-thread saga pool rather than run inline. When retries are what
-        // exhausted, Axon's RetryingCallback completes the future on the 4-thread retryExecutor,
-        // and compensating an N-line order there means N sequential aggregate loads + appends on
-        // 1 of only 4 threads. Retries for every OTHER in-flight command queue behind that, burn
-        // their attempts against the 500ms backoff cap, and exhaust in turn — a contention spike
-        // amplifying itself into a rejection cascade. The pool this resubmits to is the one
-        // already sized for blocking command dispatch.
+        // exhausted, Axon's RetryingCallback completes the future on the retryExecutor
+        // (CommandGatewayConfig.RETRY_POOL_SIZE threads), and compensating an N-line order there
+        // means N sequential aggregate loads + appends on 1 of those. Retries for every OTHER
+        // in-flight command queue behind that, burn their attempts against the 500ms backoff cap,
+        // and exhaust in turn — a contention spike amplifying itself into a rejection cascade. The
+        // pool this resubmits to is the one already sized for blocking command dispatch, and it
+        // stays wider than the retry pool, which the Axon connection budget caps at 23.
         val disposition = {
             releaseAll(orderId, toRelease)
             sendFailOrder(orderId, "$stage command failed: ${cause.javaClass.simpleName}")
