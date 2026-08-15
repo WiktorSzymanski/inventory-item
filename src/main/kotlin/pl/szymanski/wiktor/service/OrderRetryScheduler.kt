@@ -47,10 +47,14 @@ object OrderRetryPolicy {
  */
 class DelayedOrderRetryScheduler(
     private val executor: ScheduledExecutorService,
+    // TO-3-mod-A: applied to the task, not to schedule(), because the delay is served in the
+    // executor's DelayedWorkQueue — no thread and no connection are held until it fires, so
+    // anything set here would be set far too early and on the wrong thread.
+    private val decorator: (Runnable) -> Runnable = { it },
 ) : OrderRetryScheduler, AutoCloseable {
 
     override fun schedule(delayMs: Long, task: Runnable) {
-        executor.schedule(task, delayMs, TimeUnit.MILLISECONDS)
+        executor.schedule(decorator(task), delayMs, TimeUnit.MILLISECONDS)
     }
 
     override fun close() {

@@ -6,8 +6,10 @@ spring:
     username: ${DB_USER:inventory}
     password: ${DB_PASSWORD:inventory}
     driver-class-name: org.postgresql.Driver
-    hikari:
-      maximum-pool-size: ${DB_MAX_CONNECTIONS:50}  # max open DB connections in the pool
+    # NOTE: spring.datasource.hikari.* is NOT read on this branch. DataSourceConfig declares its own
+    # DataSource beans, which backs off DataSourceAutoConfiguration; pool sizes live under app.db
+    # below. url/username/password above ARE still read — DataSourceConfig injects them by @Value,
+    # exactly as AxonConfig.axonDataSource does on the ES branches.
   flyway:
     url: ${DB_JDBC_URL:jdbc:postgresql://localhost:5432/inventory}
     user: ${DB_USER:inventory}
@@ -20,6 +22,18 @@ spring:
       republication-min-age: PT1M    # minimum age before a PUBLISHED event is considered orphaned
 
 app:
+  # TO-3-mod-A: two pools behind one lane-routed DataSource, mirroring the ES family's split
+  # (spring.datasource.hikari for HTTP reads + axon.jdbc.pool for everything else). Defaults sum to
+  # a 400-connection envelope so both families present Postgres with the same footprint — TO ran at
+  # 50 before this branch while ES ran at 300, which made pool pressure incomparable.
+  #
+  # This is an ENVELOPE, not a target. TO holds one connection per busy thread (every handler is
+  # Propagation.REQUIRED) where ES holds two, so the same 400 covers roughly twice the concurrency
+  # on TO. Read hikaricp_connections_active{pool="write-pool"} as the result; do not size the
+  # thread pools up to consume the ceiling.
+  db:
+    app-pool-size: ${DB_APP_POOL_SIZE:40}      # HTTP reads only (GET /inventory, /inventory/{id}, /orders/{id})
+    write-pool-size: ${DB_WRITE_POOL_SIZE:360} # accept tx, order workers, retry pool, republisher
   order-worker:
     threads: ${ORDER_WORKER_THREADS:200}                   # worker pool processing accepted orders
     queue-capacity: ${ORDER_WORKER_QUEUE_CAPACITY:2147483647}  # unbounded by default (Int.MAX_VALUE); absorb load like ES, no queue-full shedding

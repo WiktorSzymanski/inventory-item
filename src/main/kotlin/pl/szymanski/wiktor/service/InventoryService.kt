@@ -13,6 +13,8 @@ import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
 import org.springframework.modulith.events.ApplicationModuleListener
 import org.springframework.stereotype.Service
+import pl.szymanski.wiktor.db.DbLane
+import pl.szymanski.wiktor.db.DbLaneContext
 import pl.szymanski.wiktor.domain.InventoryItem
 import pl.szymanski.wiktor.domain.Order
 import pl.szymanski.wiktor.domain.OrderCreatedEvent
@@ -87,8 +89,12 @@ class InventoryService(
         else -> "other"
     }
 
+    // TO-3-mod-A: the four read/write entry points below are the ones reached on a Tomcat thread,
+    // so they are where the pool lane is chosen. It must be set HERE and not inside the command
+    // handlers: those are @Transactional, and by the time one is entered the transaction manager
+    // has already resolved a DataSource and bound its connection.
     fun createItem(command: CreateItemCommand): InventoryItem =
-        createInventoryItemCommandHandler.handle(command)
+        DbLaneContext.on(DbLane.WRITE) { createInventoryItemCommandHandler.handle(command) }
 
     fun getItem(itemId: String): InventoryItem? =
         inventoryRepository.findById(itemId).orElse(null)
@@ -107,7 +113,13 @@ class InventoryService(
         log.info("[ORDER] accepted orderId={} userId={} itemCount={} correlationId={}", orderId, command.userId, command.items.size, command.correlationId)
         // Committed before the reservation is triggered, so the reservation and any concurrent
         // status query always see the row. Publishes OrderCreatedEvent as part of the same tx.
-        createOrderCommandHandler.handle(orderId, command)
+        //
+        // WRITE lane, and this is the mapping most worth stating: ES's accept path is a write-pool
+        // cost too. InventoryService.createOrderReservation there calls sendAndWait on the Tomcat
+        // thread and SimpleCommandBus handles it inline, so the CreateOrderCommand transaction
+        // draws from axonDataSource, not from ES's primary pool. Putting it on app-pool here would
+        // make TO's read pool absorb the accept load and break the correspondence.
+        DbLaneContext.on(DbLane.WRITE) { createOrderCommandHandler.handle(orderId, command) }
         return orderId
     }
 

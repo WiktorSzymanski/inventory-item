@@ -6,6 +6,8 @@ import org.springframework.modulith.events.IncompleteEventPublications
 import org.springframework.scheduling.annotation.EnableScheduling
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
+import pl.szymanski.wiktor.db.DbLane
+import pl.szymanski.wiktor.db.DbLaneContext
 import java.time.Duration
 
 @Configuration
@@ -30,8 +32,16 @@ class IncompleteEventRepublisher(
     @Value("\${spring.modulith.events.republication-min-age:PT1M}")
     private val minAge: Duration,
 ) {
+    /**
+     * TO-3-mod-A: WRITE lane. This runs on Boot's task *scheduler* (a separate, single-threaded
+     * pool from the executors), it scans and rewrites `event_publication`, and Modulith opens the
+     * transaction inside `resubmitIncompletePublicationsOlderThan` — i.e. below this frame, so
+     * setting the lane here is early enough.
+     */
     @Scheduled(fixedDelayString = "\${spring.modulith.events.republication-interval:PT30S}")
     fun republishIncomplete() {
-        incompleteEventPublications.resubmitIncompletePublicationsOlderThan(minAge)
+        DbLaneContext.on(DbLane.WRITE) {
+            incompleteEventPublications.resubmitIncompletePublicationsOlderThan(minAge)
+        }
     }
 }
