@@ -31,9 +31,20 @@ app:
   # Propagation.REQUIRED) where ES holds two, so the same 400 covers roughly twice the concurrency
   # on TO. Read hikaricp_connections_active{pool="write-pool"} as the result; do not size the
   # thread pools up to consume the ceiling.
+  # write-pool-size is DERIVED, not rounded: it covers every thread that can demand a write
+  # connection, so no lane can starve another.
+  #
+  #   150 tomcat (accept tx) + 200 order-worker + 12 order-retry + 1 republisher = 363
+  #
+  # Sizing it below that sum reopens a real starvation window, and the loser is the retry lane:
+  # HikariCP's ConcurrentBag.borrow() checks a THREAD-LOCAL list first and then scans the shared
+  # list before parking on the (fair) handoff queue, so a continuously-cycling order-worker thread
+  # can barge ahead of a retry thread that is already waiting. Retries are work the system has
+  # already partly paid for, so starving them maximises work-in-progress. DataSourceConfig
+  # recomputes this sum at startup and warns when the pool cannot cover it.
   db:
     app-pool-size: ${DB_APP_POOL_SIZE:40}      # HTTP reads only (GET /inventory, /inventory/{id}, /orders/{id})
-    write-pool-size: ${DB_WRITE_POOL_SIZE:360} # accept tx, order workers, retry pool, republisher
+    write-pool-size: ${DB_WRITE_POOL_SIZE:363} # accept tx, order workers, retry pool, republisher
   order-worker:
     threads: ${ORDER_WORKER_THREADS:200}                   # worker pool processing accepted orders
     queue-capacity: ${ORDER_WORKER_QUEUE_CAPACITY:2147483647}  # unbounded by default (Int.MAX_VALUE); absorb load like ES, no queue-full shedding
@@ -87,7 +98,12 @@ server:
   port: 8080
   tomcat:
     threads:
-      max: ${HTTP_THREADS:200}        # threads answering HTTP requests
+      # TO-3-mod-A: 150, down from 200. This is admission control, not a residual. A POST runs the
+      # accept transaction ON the Tomcat thread, so every in-flight POST holds a write-pool
+      # connection; the cap is what keeps the write lane's demanders from exceeding the pool that
+      # serves them (see app.db.write-pool-size). Raising it without raising that pool re-opens
+      # the starvation window DataSourceConfig warns about.
+      max: ${HTTP_THREADS:150}        # threads answering HTTP requests
       min-spare: ${HTTP_THREADS:16}
 
 springdoc:

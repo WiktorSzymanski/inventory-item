@@ -34,7 +34,10 @@ import javax.sql.DataSource
 @ConfigurationProperties("app.db")
 data class DbPoolProperties(
     val appPoolSize: Int = 40,
-    val writePoolSize: Int = 360,
+    // Derived from the write lane's thread count, not rounded — see application.yaml and
+    // [DataSourceConfig.writeLaneDemand]. Kept in step with the yaml default because
+    // WriteLaneCoverageTest asserts the invariant against THIS value.
+    val writePoolSize: Int = 363,
 )
 
 /**
@@ -54,6 +57,22 @@ data class DbPoolProperties(
 class DataSourceConfig {
 
     private val log = LoggerFactory.getLogger(DataSourceConfig::class.java)
+
+    companion object {
+        /** Boot's task scheduler, which runs IncompleteEventRepublisher. One thread by default. */
+        const val REPUBLISHER_THREADS = 1
+
+        /**
+         * Threads that can hold a write-pool connection at the same moment. One per thread, not
+         * two: every handler on this branch is `Propagation.REQUIRED`, so unlike ES there is no
+         * second, non-transactional connection taken alongside the transactional one.
+         *
+         * A pure function so the invariant is testable without standing up a context — the sum is
+         * the only thing standing between the configuration and a silent starvation window.
+         */
+        fun writeLaneDemand(tomcatThreads: Int, workerThreads: Int, retryThreads: Int): Int =
+            tomcatThreads + workerThreads + retryThreads + REPUBLISHER_THREADS
+    }
 
     @Bean(name = ["appDataSource"], destroyMethod = "close")
     fun appDataSource(
@@ -77,15 +96,32 @@ class DataSourceConfig {
         @Qualifier("appDataSource") appDataSource: DataSource,
         @Qualifier("writeDataSource") writeDataSource: DataSource,
         properties: DbPoolProperties,
+        workerProperties: OrderWorkerProperties,
+        retryProperties: OrderRetryProperties,
+        @Value("\${server.tomcat.threads.max:150}") tomcatThreads: Int,
     ): DataSource {
+        val demand = writeLaneDemand(tomcatThreads, workerProperties.threads, retryProperties.threads)
         log.info(
             "[POOLS] lane-routed datasource: app-pool={} (HTTP reads) write-pool={} (accept tx, " +
                 "order workers, retry pool, republisher) -> {} connections per node. TO holds ONE " +
-                "connection per busy thread, so this covers ~{} concurrent threads.",
+                "connection per busy thread — write-lane demand is tomcat {} + worker {} + retry {} " +
+                "+ republisher {} = {} threads.",
             properties.appPoolSize, properties.writePoolSize,
             properties.appPoolSize + properties.writePoolSize,
-            properties.appPoolSize + properties.writePoolSize,
+            tomcatThreads, workerProperties.threads, retryProperties.threads, REPUBLISHER_THREADS,
+            demand,
         )
+        if (demand > properties.writePoolSize) {
+            log.warn(
+                "[POOLS] write-pool={} cannot cover the {} threads that can demand it. Lanes now " +
+                    "compete, and HikariCP's borrow() favours continuously-active threads — it " +
+                    "checks a thread-local list first and scans the shared list before parking on " +
+                    "the handoff queue — so the intermittently-scheduled RETRY lane starves first, " +
+                    "delaying orders the system has already partly paid for. Either raise " +
+                    "DB_WRITE_POOL_SIZE to {} or lower HTTP_THREADS / ORDER_WORKER_THREADS.",
+                properties.writePoolSize, demand, demand,
+            )
+        }
         return LaneRoutingDataSource(appDataSource, writeDataSource)
     }
 
@@ -109,5 +145,9 @@ class DataSourceConfig {
         driverClassName = "org.postgresql.Driver"
         maximumPoolSize = size
         poolName = name
+        // Carries the lane into Postgres itself: pg_stat_activity.application_name then attributes
+        // every backend, lock wait and long-running statement to the pool that opened it, which is
+        // the DB-side half of the split and is visible to postgres_exporter without any app metric.
+        addDataSourceProperty("ApplicationName", "inventory-$name")
     }
 }

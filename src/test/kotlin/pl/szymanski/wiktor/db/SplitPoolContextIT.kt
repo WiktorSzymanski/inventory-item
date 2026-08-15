@@ -95,16 +95,20 @@ class SplitPoolContextIT {
 
     @Test
     fun `a transaction lands on the pool its lane selects`() {
+        // Asked of Postgres rather than of Hikari's activeConnections gauge: that gauge is
+        // pool-global, so any concurrent write-lane work (the republisher tick, a Modulith
+        // listener) makes a count-based assertion flap. application_name is carried by the
+        // connection itself, so this identifies the pool that actually served the transaction.
         val template = TransactionTemplate(transactionManager)
 
-        val appActive = DbLaneContext.on(DbLane.APP) {
-            template.execute { jdbcTemplate.queryForObject("select 1", Int::class.java); appDataSource.hikariPoolMXBean.activeConnections }
+        val appName = DbLaneContext.on(DbLane.APP) {
+            template.execute { jdbcTemplate.queryForObject("select current_setting('application_name')", String::class.java) }
         }
-        assertEquals(1, appActive, "an APP-lane transaction did not borrow from app-pool")
+        assertEquals("inventory-app-pool", appName, "an APP-lane transaction did not borrow from app-pool")
 
-        val writeActive = DbLaneContext.on(DbLane.WRITE) {
-            template.execute { jdbcTemplate.queryForObject("select 1", Int::class.java); writeDataSource.hikariPoolMXBean.activeConnections }
+        val writeName = DbLaneContext.on(DbLane.WRITE) {
+            template.execute { jdbcTemplate.queryForObject("select current_setting('application_name')", String::class.java) }
         }
-        assertEquals(1, writeActive, "a WRITE-lane transaction did not borrow from write-pool")
+        assertEquals("inventory-write-pool", writeName, "a WRITE-lane transaction did not borrow from write-pool")
     }
 }
