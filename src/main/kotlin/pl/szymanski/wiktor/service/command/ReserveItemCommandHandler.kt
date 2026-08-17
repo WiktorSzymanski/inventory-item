@@ -36,7 +36,7 @@ data class ReserveItemCommand(
  *
  * The item state is read through the Caffeine cache: a hit skips the DB fetch entirely (only DB
  * fetches of misses are timed as state load). An optimistic/pessimistic conflict evicts the entry
- * so the @Retryable retry rereads fresh from the DB, and the version-guarded post-commit merge
+ * so the scheduled retry rereads fresh from the DB, and the version-guarded post-commit merge
  * keeps cached entries monotonic with the DB.
  */
 @Service
@@ -74,7 +74,7 @@ class ReserveItemCommandHandler(
             reservationRepo.save(result.reservation)
             saved
         } catch (e: OptimisticLockingFailureException) {
-            // Evict so the @Retryable retry rereads fresh from the DB instead of re-serving the
+            // Evict so the retried attempt rereads fresh from the DB instead of re-serving the
             // stale cached version into the optimistic UPDATE (which would guarantee exhaustion).
             inventoryStateCache.invalidate(command.itemId)
             throw e

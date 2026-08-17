@@ -21,8 +21,30 @@ spring:
 
 app:
   order-worker:
-    threads: ${ORDER_WORKER_THREADS:200}                   # worker pool processing accepted orders
+    threads: ${ORDER_WORKER_THREADS:150}                   # worker pool processing accepted orders
     queue-capacity: ${ORDER_WORKER_QUEUE_CAPACITY:2147483647}  # unbounded by default (Int.MAX_VALUE); absorb load like ES, no queue-full shedding
+
+  # A separate lane for attempts that have already conflicted. Must NOT be the shared
+  # spring.task.scheduling pool, which drains the outbox — a retry wait parked there would be
+  # exactly the long tick that starves the outbox.backlog gauge.
+  order-retry:
+    # 50 against 150 workers — a third of the first-attempt width. The retried attempt runs ON this
+    # pool by default (see execute-on-retry-pool below), exactly as it does on the ES branches where
+    # Axon's RetryingCallback dispatches inline, so this width is a hard throughput cap on retried
+    # work and under contention most contended work lands here.
+    #
+    # Read order_retry_pool_active (not _queued, which also counts attempts still serving out their
+    # backoff) — a run that pinned this pool at its ceiling measured pool width, not the persistence
+    # model, and should be re-run wider.
+    threads: ${ORDER_RETRY_THREADS:50}
+    # true (default): the retried attempt runs ON the retry pool, as it does on every ES branch.
+    # false: the pool only counts time and hands the attempt back to order-worker, which runs
+    # retries at full width but at the tail of a FIFO queue. false is the configuration that differs
+    # from the old blocking @Retryable path in a single dimension (where the waiting happens) and is
+    # the honest setting for a pure blocking-vs-non-blocking A/B; true is the setting that makes
+    # this branch's retry topology match ES's. Whichever a run uses, say which — they are different
+    # experiments.
+    execute-on-retry-pool: ${ORDER_RETRY_EXECUTE_ON_RETRY_POOL:true}
 
 management:
   endpoints:
@@ -40,6 +62,7 @@ management:
         order.processing.time: true
         order.queue.wait: true
         order.e2e.time: true
+        order.retry.backoff.time: true   # the wait the retry rebuild moved off the worker
       # order.e2e.time bounds are pinned explicitly — and must stay identical on every
       # variant branch. Micrometer's default Timer max is 30s; declaring
       # maximum-expected-value for publish.lag alone left order.e2e.time on that default,
@@ -56,8 +79,14 @@ server:
   port: 8080
   tomcat:
     threads:
-      max: ${HTTP_THREADS:200}        # threads answering HTTP requests
-      min-spare: ${HTTP_THREADS:16}
+      # 99, down from 200, and the same width TO-3 and ES-4-NullLock run so the families admit at
+      # the same size. A POST runs the accept transaction ON the Tomcat thread, so every in-flight
+      # POST holds a connection from the pool for its duration.
+      max: ${HTTP_THREADS:99}         # threads answering HTTP requests
+      # Literal, NOT ${HTTP_THREADS:16}: that spelling looks like a floor of 16 but actually pins
+      # min-spare to whatever HTTP_THREADS is set to, so a sweep silently starts every thread up
+      # front instead of raising a ceiling.
+      min-spare: 16
 
 springdoc:
   swagger-ui:
