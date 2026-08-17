@@ -31,12 +31,9 @@ app:
     # DANGER: docker-compose pins ORDER_WORKER_THREADS=${ORDER_WORKER_THREADS:-150} for EVERY TO
     # branch, so this default does not survive a harness run — a run must export
     # ORDER_WORKER_THREADS=200 (variants.d/TO-2.env does it, if run-suite.sh sources it).
-    # Left at 150 the branch is not broken, just 50 execution threads narrower than the two-pool
-    # topology it is being compared with, which is a resourcing difference dressed up as a topology
-    # result. OrderWorkerConfig says so at startup.
-    #
-    # It also means this branch and TO-3 CANNOT share one run-suite.sh invocation: the same
-    # exported ORDER_WORKER_THREADS would push TO-3 to 200 worker + 50 retry.
+    # Left at 150 the branch is not broken, just 50 execution threads narrower than every run taken
+    # before the merge, which is a resourcing difference dressed up as a topology result.
+    # OrderWorkerConfig says so at startup.
     threads: ${ORDER_WORKER_THREADS:200}                   # the one pool: first attempts AND retries
     # INERT. The merged pool is a ScheduledThreadPoolExecutor and its DelayedWorkQueue is unbounded
     # by construction — which is what this default asked for anyway, so nothing a run relied on
@@ -47,7 +44,7 @@ app:
   #
   # There used to be a second pool here (`order-retry-*`, 50 threads) which served the backoff AND
   # executed the retried attempt, mirroring ES, where Axon's RetryingCallback dispatches inline onto
-  # its own retry pool. TO-3 still runs that topology. Here the worker thread that failed the
+  # its own retry pool. No TO branch runs that topology now. Here the worker thread that failed the
   # attempt calls schedule() on its OWN pool and returns; the backoff is served in that pool's
   # DelayedWorkQueue — no thread, no connection — and when it comes due an order-worker thread runs
   # the attempt. It therefore also cannot park on the shared spring.task.scheduling pool, which

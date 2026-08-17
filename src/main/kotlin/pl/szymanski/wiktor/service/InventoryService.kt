@@ -127,8 +127,8 @@ class InventoryService(
      * One attempt at reserving an order. A conflict schedules a later attempt through
      * [retryScheduler] and RETURNS, so the worker thread is free for the whole backoff — where
      * Spring's `@Retryable` interceptor used to sleep here instead. The later attempt then runs on
-     * an `order-worker-*` thread from the only pool there is; TO-3 gives it an `order-retry-*`
-     * thread from a second pool.
+     * an `order-worker-*` thread from the only pool there is; the two-pool topology this replaces
+     * gave it an `order-retry-*` thread from a second pool.
      *
      * The attempt budget and the delays are unchanged ([OrderRetryPolicy]).
      */
@@ -178,7 +178,7 @@ class InventoryService(
             state.event.orderId, state.attempt + 1, delayMs, state.event.correlationId,
         )
         return try {
-            // ONE hop, where the two-pool topology has a choice of two. The task is queued on the
+            // ONE hop, where the two-pool topology had a choice of two. The task is queued on the
             // worker pool with a delay, so it neither holds a thread while it waits nor crosses a
             // pool boundary to resume: when it comes due an order-worker thread runs the attempt
             // itself. The old `execute-on-retry-pool=false` is the nearest thing to this, and it
