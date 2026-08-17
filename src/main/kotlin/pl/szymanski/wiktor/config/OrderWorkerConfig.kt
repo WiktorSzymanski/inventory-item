@@ -101,8 +101,8 @@ class OrderWorkerConfig {
                 "split the same work across 150 worker + 50 retry). " +
                 "ORDER_RETRY_THREADS and ORDER_RETRY_EXECUTE_ON_RETRY_POOL are INERT — there is no " +
                 "second pool to size or to choose. A run left at docker-compose's " +
-                "ORDER_WORKER_THREADS=150 default is 50 execution threads NARROWER than the two-pool " +
-                "topology it is being compared with; export ORDER_WORKER_THREADS=200.",
+                "ORDER_WORKER_THREADS=150 default is 50 execution threads NARROWER than every run " +
+                "taken before the merge; export ORDER_WORKER_THREADS=200.",
             properties.threads,
         )
 
