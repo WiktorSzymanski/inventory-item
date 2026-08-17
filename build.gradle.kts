@@ -36,6 +36,12 @@ dependencies {
         exclude(group = "org.junit.vintage", module = "junit-vintage-engine")
     }
     testImplementation("io.mockk:mockk:1.13.13")
+    // TO-3-mod-A only. Splitting the DataSource in two is exactly the kind of change that compiles,
+    // unit-tests green, and then fails to start a real context — Boot's DataSource, JdbcTemplate
+    // and transaction-manager auto-configuration all key off @ConditionalOnSingleCandidate. Same
+    // version the ES branches already use.
+    testImplementation("org.testcontainers:postgresql:1.20.4")
+    testImplementation("org.testcontainers:junit-jupiter:1.20.4")
 }
 
 tasks.withType<Test> {
