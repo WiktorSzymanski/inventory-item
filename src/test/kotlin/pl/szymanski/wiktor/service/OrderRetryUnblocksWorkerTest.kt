@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit
  *
  * The single thread is what makes this a real assertion. If a retry ever held a thread for the length
  * of its backoff — a `Thread.sleep` in a decorator, a scheduler that runs inline — this branch would
- * have no worker left at all, where TO-3 would still have 150 of them.
+ * have no worker left at all, where the two-pool topology would still have 150 of them.
  *
  * The ordering also pins the queue discipline: A's retry becomes due 25 ms after B was submitted, so
  * B goes first. A retry does not jump ahead of work already queued.

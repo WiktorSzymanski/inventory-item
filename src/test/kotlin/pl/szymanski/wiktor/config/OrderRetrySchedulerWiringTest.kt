@@ -55,7 +55,7 @@ class OrderRetrySchedulerWiringTest {
         assertTrue(done.await(5, TimeUnit.SECONDS), "retry task never ran")
         val retryThread = ranOn.get()
         assertNotEquals(Thread.currentThread(), retryThread, "retry ran inline — the worker was not released")
-        // THE branch assertion at the wiring level: TO-3 would print order-retry-N here.
+        // THE assertion at the wiring level: the two-pool topology printed order-retry-N here.
         assertTrue(
             retryThread.name.startsWith("order-worker-"),
             "a retry must resume on the ONE pool; ran on ${retryThread.name}",

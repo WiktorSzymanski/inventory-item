@@ -25,9 +25,9 @@ import java.util.concurrent.TimeUnit
 /**
  * WHICH pool runs a retried attempt — the branch, asserted directly.
  *
- * On TO-3 this test has two cases and two pools: the retried attempt lands on `order-retry-*` by
- * default, or back on `order-worker-*` with `execute-on-retry-pool=false`. Here there is one pool
- * and no setting, so there is one case: both attempts run on `order-worker-*`, and no thread named
+ * The two-pool topology gave this test two cases: the retried attempt landed on `order-retry-*` by
+ * default, or back on `order-worker-*` with `execute-on-retry-pool=false`. There is one pool and no
+ * setting now, so there is one case: both attempts run on `order-worker-*`, and no thread named
  * `order-retry-*` exists at all.
  *
  * Asserted by thread name, because that is the only thing that actually distinguishes the topologies

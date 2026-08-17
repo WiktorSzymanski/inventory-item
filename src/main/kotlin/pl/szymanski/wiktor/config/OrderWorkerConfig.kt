@@ -31,7 +31,8 @@ data class OrderWorkerProperties(
  * connection demand are unchanged and only retry TOPOLOGY moves. `app.order-retry` is gone;
  * `ORDER_RETRY_THREADS` and `ORDER_RETRY_EXECUTE_ON_RETRY_POOL` are still exported by
  * docker-compose to every TO branch and are inert here — logged at startup so a run cannot mistake
- * them for effective. TO-3 keeps the two-pool topology, which is what makes it the comparison.
+ * them for effective. No TO branch keeps the two-pool topology any more, so the contrast is with
+ * the git history rather than with a sibling branch.
  *
  * **The bean TYPES here are load-bearing, and getting one wrong fails silently rather than loudly.**
  * Two Boot conditionals key off them:
@@ -97,7 +98,7 @@ class OrderWorkerConfig {
         }
         log.info(
             "[POOLS] order-worker={} threads, serving first attempts AND retries (this branch used to " +
-                "split the same work across 150 worker + 50 retry, as TO-3 still does). " +
+                "split the same work across 150 worker + 50 retry). " +
                 "ORDER_RETRY_THREADS and ORDER_RETRY_EXECUTE_ON_RETRY_POOL are INERT — there is no " +
                 "second pool to size or to choose. A run left at docker-compose's " +
                 "ORDER_WORKER_THREADS=150 default is 50 execution threads NARROWER than the two-pool " +
