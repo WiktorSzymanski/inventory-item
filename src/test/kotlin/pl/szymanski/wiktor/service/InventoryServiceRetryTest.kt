@@ -51,13 +51,12 @@ class InventoryServiceRetryTest {
             reserveOrderItemsCommandHandler = reserveOrderItemsCommandHandler,
             failOrderCommandHandler = failOrderCommandHandler,
             orderWorkerExecutor = SyncTaskExecutor(),
+            // Records the delay and runs the retry inline, so the loop is deterministic. Which pool
+            // the real scheduler puts it on is OrderRetryPoolTopologyTest's job.
             retryScheduler = { delayMs, task ->
                 scheduledDelaysMs += delayMs
                 task.run()
             },
-            // Policy must hold under either topology; the pool choice is pinned by
-            // OrderRetryPoolTopologyTest instead.
-            executeRetriesOnRetryPool = true,
             meterRegistry = meterRegistry,
         )
     }
