@@ -23,18 +23,28 @@ spring:
 
 app:
   # TO-3-mod-A: two pools behind one lane-routed DataSource, mirroring the ES family's split
-  # (spring.datasource.hikari for HTTP reads + axon.jdbc.pool for everything else). Defaults sum to
-  # a 400-connection envelope so both families present Postgres with the same footprint — TO ran at
-  # 50 before this branch while ES ran at 300, which made pool pressure incomparable.
+  # (spring.datasource.hikari for HTTP reads + axon.jdbc.pool for everything else). TO ran one flat
+  # pool of 50 before this branch while ES ran 300, which made pool pressure incomparable.
   #
-  # This is an ENVELOPE, not a target. TO holds one connection per busy thread (every handler is
-  # Propagation.REQUIRED) where ES holds two, so the same 400 covers roughly twice the concurrency
-  # on TO. Read hikaricp_connections_active{pool="write-pool"} as the result; do not size the
-  # thread pools up to consume the ceiling.
+  # The write pool is CONSUMED rather than merely respected: the thread widths below are sized so
+  # the write lane demands exactly the pool that serves it. TO holds one connection per busy thread
+  # (every handler is Propagation.REQUIRED) where ES holds two, so a write connection here buys a
+  # whole thread where on ES it buys half of one — that 2:1 is the connection cost of the
+  # persistence model and is a RESULT of the two designs, not a knob either family was granted.
+  #
   # write-pool-size is DERIVED, not rounded: it covers every thread that can demand a write
   # connection, so no lane can starve another.
   #
-  #   150 tomcat (accept tx) + 200 order-worker + 12 order-retry + 1 republisher = 363
+  #   99 tomcat (accept tx) + 150 order-worker + 50 order-retry + 1 republisher = 300
+  #
+  # THE ENVELOPE IS 50 + 300 = 350 PER NODE, and it no longer matches ES-4-NullLock-A's 400
+  # (50 + 350). The two families therefore present Postgres with different footprints again, which
+  # the 2026-08-16 envelope note calls out as a confound — accepted deliberately here, not
+  # overlooked, and ES was left unchanged. The lane SHAPE is not a cross-family mirror either, and
+  # deliberately so: there is no thread-for-thread correspondence between a TO worker (one thread
+  # carries a whole order) and ES's command/saga split, so variants.env sizes ES's lanes from its
+  # own measured service times. Read that entry for ES's current widths rather than assuming this
+  # branch's ratio applies there, and say in any cross-family table that the envelopes differ.
   #
   # Sizing it below that sum reopens a real starvation window, and the loser is the retry lane:
   # HikariCP's ConcurrentBag.borrow() checks a THREAD-LOCAL list first and then scans the shared
@@ -43,20 +53,35 @@ app:
   # already partly paid for, so starving them maximises work-in-progress. DataSourceConfig
   # recomputes this sum at startup and warns when the pool cannot cover it.
   db:
-    app-pool-size: ${DB_APP_POOL_SIZE:40}      # HTTP reads only (GET /inventory, /inventory/{id}, /orders/{id})
-    write-pool-size: ${DB_WRITE_POOL_SIZE:363} # accept tx, order workers, retry pool, republisher
+    app-pool-size: ${DB_APP_POOL_SIZE:50}      # HTTP reads only (GET /inventory, /inventory/{id}, /orders/{id})
+    write-pool-size: ${DB_WRITE_POOL_SIZE:300} # accept tx, order workers, retry pool, republisher
   order-worker:
-    threads: ${ORDER_WORKER_THREADS:200}                   # worker pool processing accepted orders
+    # 150, down from the 200 every other TO branch runs. Together with the retry lane's 50 it is
+    # what makes the write lane consume its 300 connections exactly; a `--only TO-3-mod,TO-3-mod-A`
+    # pair therefore differs in worker width as well as pool topology now, so do not read it as an
+    # isolation of the split alone unless the baseline is run at ORDER_WORKER_THREADS=150 too.
+    threads: ${ORDER_WORKER_THREADS:150}                   # worker pool processing accepted orders
     queue-capacity: ${ORDER_WORKER_QUEUE_CAPACITY:2147483647}  # unbounded by default (Int.MAX_VALUE); absorb load like ES, no queue-full shedding
   # TO-3-mod: a separate lane for attempts that have already conflicted. Must NOT be the shared
   # spring.task.scheduling pool, which drains the outbox — a retry wait parked there would be
   # exactly the long tick that starves the outbox.backlog gauge.
   order-retry:
-    # 12 is ES's 4-of-64 retry ratio scaled to TO's 200 workers. Set it to order-worker.threads for
-    # "separate lane, equally wide", or lower for a deliberately narrow waist. Since the pool now
-    # EXECUTES retries, this is a throughput limit: read order_retry_pool_active (not _queued, which
-    # also counts attempts still serving out their backoff) before attributing anything to it.
-    threads: ${ORDER_RETRY_THREADS:12}
+    # 50 against 150 workers — a third of the first-attempt width. Both families execute the retried
+    # attempt ON this pool (see execute-on-retry-pool below, and Axon's RetryingCallback, which
+    # dispatches inline), so retry width is a hard throughput cap on retried work on BOTH, and under
+    # contention most contended work lands there. That makes it worth sizing generously here; it is
+    # NOT a ratio matched to ES, whose retry lane is sized from its own service times in variants.env.
+    #
+    # The original default of 12 was calibrated as "ES's 4-of-64 retry ratio scaled to 200 workers".
+    # ES's retry pool has since gone 4 -> 23 and that number never followed, leaving TO at 6% —
+    # a handicap on exactly the path that decides a contended run.
+    #
+    # Note the required width is really first-attempt width x conflict rate x (retry duration /
+    # first-attempt duration), and the conflict rate is what these runs MEASURE. Equal ratio removes
+    # an arbitrary handicap; it does not guarantee equal headroom. Read order_retry_pool_active (not
+    # _queued, which also counts attempts still serving out their backoff) — a run that pinned this
+    # pool at its ceiling measured pool width, not the persistence model, and should be re-run wider.
+    threads: ${ORDER_RETRY_THREADS:50}
     # true (default): the retried attempt runs ON the retry pool, as it does on every ES branch.
     # false: the pool only counts time and hands the attempt back to order-worker, which runs
     # retries at full width but at the tail of a FIFO queue. false is the configuration that differs
@@ -98,13 +123,23 @@ server:
   port: 8080
   tomcat:
     threads:
-      # TO-3-mod-A: 150, down from 200. This is admission control, not a residual. A POST runs the
-      # accept transaction ON the Tomcat thread, so every in-flight POST holds a write-pool
-      # connection; the cap is what keeps the write lane's demanders from exceeding the pool that
-      # serves them (see app.db.write-pool-size). Raising it without raising that pool re-opens
-      # the starvation window DataSourceConfig warns about.
-      max: ${HTTP_THREADS:150}        # threads answering HTTP requests
-      min-spare: ${HTTP_THREADS:16}
+      # 99, down from 150. This is admission control, not a residual. A POST runs the accept
+      # transaction ON the Tomcat thread, so every in-flight POST holds a write-pool connection;
+      # the cap is what keeps the write lane's demanders from exceeding the pool that serves them
+      # (see app.db.write-pool-size). Raising it without raising that pool re-opens the starvation
+      # window DataSourceConfig warns about.
+      #
+      # 99 is what makes the write lane consume its 300 connections exactly (99 + 150 + 50 + 1).
+      #
+      # accept-count is left at Boot's default 100. Offered load beyond max threads queues there and
+      # is REFUSED past it, which nginx surfaces as 502 and k6 reads as errors rather than as
+      # backpressure. Deepening that queue is the knob behind the TO-2 open-loop collapse, so it
+      # stays at the default deliberately — but check the 5xx rate before blaming a run on latency.
+      max: ${HTTP_THREADS:99}         # threads answering HTTP requests
+      # Literal, NOT ${HTTP_THREADS:16}: that spelling looks like a floor of 16 but actually pins
+      # min-spare to whatever HTTP_THREADS is set to, so a sweep silently starts every thread up
+      # front instead of raising a ceiling.
+      min-spare: 16
 
 springdoc:
   swagger-ui:

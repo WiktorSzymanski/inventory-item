@@ -13,31 +13,38 @@ import pl.szymanski.wiktor.db.LaneRoutingDataSource
 import javax.sql.DataSource
 
 /**
- * Pool sizes, defaulted to mirror the ES family's split at a 400-connection envelope.
+ * Pool sizes, defaulted to mirror the ES family's split at a 350-connection envelope.
  *
  * ES runs `spring.datasource.hikari.maximum-pool-size` for HTTP reads plus a separate
  * `axon.jdbc.pool.size` for everything Axon touches. The defaults here are that shape: a small
- * read pool and a large write pool summing to 400.
+ * read pool and a large write pool.
  *
- * **The sizes are an envelope, not a budget to spend.** TO holds ONE connection per busy thread —
- * every handler on this branch is `Propagation.REQUIRED`, so there is no second, non-transactional
- * connection like the one ES's `DataSourceConnectionProvider` takes. The same 400 therefore covers
- * roughly twice the concurrent threads it covers on ES, and the interesting number is not the
- * ceiling but `hikaricp_connections_active{pool="write-pool"}` under load: how much of it each
- * family actually needs for the same offered concurrency is a RESULT, not a setting.
+ * **The write pool is spent, deliberately.** TO holds ONE connection per busy thread — every
+ * handler on this branch is `Propagation.REQUIRED`, so there is no second, non-transactional
+ * connection like the one ES's `DataSourceConnectionProvider` takes. The write lane's thread widths
+ * are therefore sized so their sum IS [writePoolSize]: 300 connections buy TO 300 write-lane
+ * threads where on ES they would buy 150. That 2:1 is the connection cost of each persistence model
+ * and is the finding, not a knob either family was granted.
+ *
+ * **The two families are NOT on the same envelope any more.** 50 + 300 = 350 here against
+ * ES-4-NullLock-A's 50 + 350 = 400. Deliberate, and ES was left unchanged — but it means a
+ * cross-family reading of pool pressure carries a caveat, so state it rather than presenting the
+ * numbers as like-for-like. The lane SHAPE is not a mirror either: variants.env sizes ES's lanes
+ * from its own measured service times, because one TO worker thread carries a whole order where ES
+ * splits it across command and saga lanes.
  *
  * Note Hikari's `minimumIdle` defaults to `maximumPoolSize` and is deliberately not overridden
  * here — matching `AxonConfig.axonDataSource`, which does not override it either. Both families
- * therefore open their full pool at startup and present Postgres with the same backend-memory
- * footprint, which is a better baseline than TO's previous 50 against ES's 300.
+ * therefore open their full pool at startup, which is still a far better baseline than TO's
+ * original flat 50 against ES's 300.
  */
 @ConfigurationProperties("app.db")
 data class DbPoolProperties(
-    val appPoolSize: Int = 40,
+    val appPoolSize: Int = 50,
     // Derived from the write lane's thread count, not rounded — see application.yaml and
     // [DataSourceConfig.writeLaneDemand]. Kept in step with the yaml default because
     // WriteLaneCoverageTest asserts the invariant against THIS value.
-    val writePoolSize: Int = 363,
+    val writePoolSize: Int = 300,
 )
 
 /**

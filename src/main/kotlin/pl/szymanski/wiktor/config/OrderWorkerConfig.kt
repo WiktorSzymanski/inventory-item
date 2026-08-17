@@ -28,10 +28,11 @@ data class OrderWorkerProperties(
  * `RetryingCallback` re-dispatches inline onto its own retry pool. That parity is the point: TO and
  * ES then differ in their persistence model rather than in their retry topology.
  *
- * [threads] defaults to 12, which is ES's 4-of-64 ratio scaled to TO's 200 workers. Set it to the
- * worker count for "separate lane, equally wide" (isolation without narrowing), or lower to
- * reproduce a narrow waist. It is the knob this branch is read on, so watch
- * `order_retry_pool_queued` before attributing anything to it.
+ * [threads] defaults to 50 against 150 workers — a third of the first-attempt width, where
+ * ES-4-NullLock-A runs 23 of 91 (25.3%). Set it to the worker count for "separate lane, equally
+ * wide" (isolation without narrowing), or lower to reproduce a narrow waist. It is the knob this
+ * branch is read on, so watch `order_retry_pool_active` before attributing anything to it —
+ * `_queued` also counts attempts merely still serving out their backoff.
  *
  * Set [executeOnRetryPool] false to restore the earlier behaviour, where this pool only counted
  * time and handed the attempt back to `orderWorkerExecutor`. That configuration is the one that
@@ -40,7 +41,9 @@ data class OrderWorkerProperties(
  */
 @ConfigurationProperties("app.order-retry")
 data class OrderRetryProperties(
-    val threads: Int = 12,
+    // 33% of the order-worker width (50 of 150) — kept in step with application.yaml, which is
+    // where the reasoning lives. WriteLaneCoverageTest asserts the ratio against THIS value.
+    val threads: Int = 50,
     val executeOnRetryPool: Boolean = true,
 )
 
