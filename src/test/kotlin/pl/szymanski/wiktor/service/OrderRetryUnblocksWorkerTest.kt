@@ -8,7 +8,6 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.springframework.dao.OptimisticLockingFailureException
-import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor
 import pl.szymanski.wiktor.domain.OrderCreatedEvent
 import pl.szymanski.wiktor.domain.ReservedItem
 import pl.szymanski.wiktor.repository.InventoryRepository
@@ -21,34 +20,30 @@ import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 /**
- * The point of TO-3-mod: a worker thread parked in retry backoff is a worker thread not doing work.
+ * A worker thread parked in retry backoff is a worker thread not doing work — and on this branch
+ * that pool is the ONLY pool, so the property matters more here than anywhere.
  *
- * ONE worker thread, two orders. The first conflicts once and must wait out its 25 ms backoff; the
- * second is queued behind it and needs nothing but a thread. Because the backoff is non-blocking
- * the thread is released and the second order runs during the wait, so the reserve handler sees
- * A, B, A.
+ * ONE thread, two orders. The first conflicts once and must wait out its 25 ms backoff; the second is
+ * queued behind it and needs nothing but a thread. Because the backoff is served in the pool's
+ * DelayedWorkQueue rather than by sleeping, the thread is released and the second order runs during
+ * the wait, so the reserve handler sees A, B, A.
  *
- * On stock TO-3 this test fails with A, A, B — verified before the change was written. Spring's
- * `@Retryable` interceptor sleeps on the worker, and with one worker there is nobody left to pick
- * up order B until the retry has finished.
+ * The single thread is what makes this a real assertion. If a retry ever held a thread for the length
+ * of its backoff — a `Thread.sleep` in a decorator, a scheduler that runs inline — this branch would
+ * have no worker left at all, where the two-pool topology would still have 150 of them.
+ *
+ * The ordering also pins the queue discipline: A's retry becomes due 25 ms after B was submitted, so
+ * B goes first. A retry does not jump ahead of work already queued.
  */
 class OrderRetryUnblocksWorkerTest {
 
     private val reserveOrderItemsCommandHandler: ReserveOrderItemsCommandHandler = mockk()
 
-    private val workerExecutor = ThreadPoolTaskExecutor().apply {
-        // Exactly one thread: that is the whole experiment.
-        corePoolSize = 1
-        maxPoolSize = 1
-        setThreadNamePrefix("order-worker-")
-        initialize()
-    }
-    private val retryExecutor = ScheduledThreadPoolExecutor(1)
-    private val retryScheduler = DelayedOrderRetryScheduler(retryExecutor)
+    // Exactly one thread, serving first attempts and retries alike: that is the whole experiment.
+    private val pool = OrderWorkerPool(threads = 1)
 
     private val inventoryService = InventoryService(
         inventoryRepository = mockk<InventoryRepository>(),
@@ -57,19 +52,14 @@ class OrderRetryUnblocksWorkerTest {
         createOrderCommandHandler = mockk<CreateOrderCommandHandler>(),
         reserveOrderItemsCommandHandler = reserveOrderItemsCommandHandler,
         failOrderCommandHandler = mockk(relaxed = true),
-        orderWorkerExecutor = workerExecutor,
-        retryScheduler = retryScheduler,
-        // false on purpose: the hand-off topology is the harder case for this assertion. If the
-        // worker is released even when the retry has to come BACK through the worker pool, it is
-        // released a fortiori when the retry runs on its own pool.
-        executeRetriesOnRetryPool = false,
+        orderWorkerExecutor = pool,
+        retryScheduler = { delayMs, task -> pool.schedule(delayMs, task) },
         meterRegistry = SimpleMeterRegistry(),
     )
 
     @AfterEach
     fun tearDown() {
-        retryScheduler.close()
-        workerExecutor.shutdown()
+        pool.close()
     }
 
     private fun eventFor(orderId: String) = OrderCreatedEvent(

@@ -5,7 +5,6 @@ import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Timer
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Qualifier
-import org.springframework.beans.factory.annotation.Value
 import org.springframework.core.task.TaskExecutor
 import org.springframework.dao.OptimisticLockingFailureException
 import org.springframework.dao.PessimisticLockingFailureException
@@ -41,15 +40,12 @@ class InventoryService(
     private val reserveOrderItemsCommandHandler: ReserveOrderItemsCommandHandler,
     private val failOrderCommandHandler: FailOrderCommandHandler,
     @Qualifier("orderWorkerExecutor") private val orderWorkerExecutor: TaskExecutor,
-    // TO-3-mod: the retry wait happens here instead of on the worker thread. Stock TO-3 had an
-    // ObjectProvider<InventoryService> self-proxy in this slot, needed only so processOrder() went
-    // through the @Retryable interceptor; with the loop explicit, the proxy has nothing to do.
+    // The retry wait happens here instead of on the worker thread, and is backed by the SAME pool
+    // as orderWorkerExecutor above, so a retry resumes on an order-worker thread rather than on a
+    // lane of its own. The old path had an ObjectProvider<InventoryService> self-proxy in this
+    // slot, needed only so processOrder() went through the @Retryable interceptor; with the loop
+    // explicit, the proxy has nothing to do.
     private val retryScheduler: OrderRetryScheduler,
-    // Whether a retried attempt RUNS on the retry pool (default, matching ES) or is handed back to
-    // orderWorkerExecutor. Read as a @Value rather than from OrderRetryProperties so this package
-    // does not have to import config — which already imports this one.
-    @Value("\${app.order-retry.execute-on-retry-pool:true}")
-    private val executeRetriesOnRetryPool: Boolean,
     private val meterRegistry: MeterRegistry,
 ) {
     private val log = LoggerFactory.getLogger(this::class.java)
@@ -64,7 +60,7 @@ class InventoryService(
     private val optimisticRetryCounter: Counter = meterRegistry.counter("inventory.optimistic.retry")
     private val optimisticExhaustedCounter: Counter = meterRegistry.counter("inventory.optimistic.exhausted")
 
-    // TO-3-mod only: the wait this branch moved off the worker thread, so it can be priced. One
+    // The wait moved off the worker thread, so it can be priced. One
     // sample per RETRIED order (orders that never conflict record nothing), covering the whole
     // accumulated backoff rather than each individual wait.
     private fun backoffTimer(outcome: String): Timer =
@@ -127,10 +123,11 @@ class InventoryService(
     }
 
     /**
-     * One attempt at reserving an order. A conflict re-submits a later attempt through
-     * [retryScheduler] and RETURNS, so the worker thread is free for the whole backoff — the single
-     * behavioural difference between this branch and TO-3, where Spring's `@Retryable` interceptor
-     * slept here instead.
+     * One attempt at reserving an order. A conflict schedules a later attempt through
+     * [retryScheduler] and RETURNS, so the worker thread is free for the whole backoff — where
+     * Spring's `@Retryable` interceptor used to sleep here instead. The later attempt then runs on
+     * an `order-worker-*` thread from the only pool there is; the two-pool topology this replaces
+     * gave it an `order-retry-*` thread from a second pool.
      *
      * The attempt budget and the delays are unchanged ([OrderRetryPolicy]).
      */
@@ -180,26 +177,22 @@ class InventoryService(
             state.event.orderId, state.attempt + 1, delayMs, state.event.correlationId,
         )
         return try {
+            // ONE hop, where the two-pool topology had a choice of two. The task is queued on the
+            // worker pool with a delay, so it neither holds a thread while it waits nor crosses a
+            // pool boundary to resume: when it comes due an order-worker thread runs the attempt
+            // itself. The old `execute-on-retry-pool=false` is the nearest thing to this, and it
+            // still paid for a second pool and a hand-off.
             retryScheduler.schedule(delayMs) {
-                // Runs on a retry thread, where a thrown exception would be swallowed with the task
-                // and leave the order PENDING for good.
-                try {
-                    if (executeRetriesOnRetryPool) {
-                        // The retry pool is a lane of its own: this attempt runs HERE, so it neither
-                        // competes with fresh orders for a worker nor queues behind them. Matches the
-                        // ES branches, where RetryingCallback re-dispatches inline onto its retry pool.
-                        runOrderTask(next)
-                    } else {
-                        // Hand back to the worker pool. Retries then run at full worker width, but at
-                        // the TAIL of a FIFO queue, so under backlog they wait behind newer orders.
-                        // The worker queue is unbounded, so this can only reject during shutdown.
-                        submit(next)
-                    }
-                } catch (e: RejectedExecutionException) {
-                    retryRejectedCounter.increment()
-                    log.warn("[ORDER] worker pool rejected retry orderId={} — failing the order", next.event.orderId, e)
-                    rejectOrder(next, firstPickupNs, e, exhaustedConflict = false)
+                // Direct runtime evidence of the property this topology exists for. Logback's
+                // pattern is `[%thread]` and the pool is named, so this prints `order-worker-N`
+                // where the two-pool topology would print `order-retry-N`.
+                if (log.isDebugEnabled) {
+                    log.debug(
+                        "[ORDER] retry executing on {} orderId={} attempt={}",
+                        Thread.currentThread().name, next.event.orderId, next.attempt,
+                    )
                 }
+                runOrderTask(next)
             }
             true
         } catch (e: RejectedExecutionException) {

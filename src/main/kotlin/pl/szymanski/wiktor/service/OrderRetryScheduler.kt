@@ -1,15 +1,22 @@
 package pl.szymanski.wiktor.service
 
-import java.util.concurrent.ScheduledExecutorService
+import org.springframework.core.task.TaskExecutor
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * TO-3-mod: defers a conflict retry WITHOUT holding the caller's thread.
+ * Defers a conflict retry WITHOUT holding the caller's thread.
  *
- * On stock TO-3 the wait is Spring's `@Retryable` interceptor, which sleeps on the `order-worker`
- * thread that is retrying — so up to 375 ms of a worker's time is spent doing nothing, and under
- * load the pool can be entirely parked in backoff. Here the worker returns immediately and the
- * attempt is re-submitted later.
+ * The wait used to be Spring's `@Retryable` interceptor, which sleeps on the `order-worker` thread
+ * that is retrying — so up to 375 ms of a worker's time is spent doing nothing, and under load the
+ * pool can be entirely parked in backoff. The rebuild moved that wait to a SECOND pool
+ * (`order-retry-*`, 50 threads) which served the backoff and then executed the retried attempt.
+ * This is now backed by [OrderWorkerPool] instead — the same pool that ran the first attempt — so
+ * there is no second pool and no hand-off hop. No branch carries the two-pool topology any more —
+ * TO-1, TO-2, TO-3 and TO-4 all merged it away — so it lives in the git history, not in a sibling
+ * branch.
  *
  * Implementations must NOT run the task on the calling thread, and may throw
  * `RejectedExecutionException` (shutdown) — callers are required to handle that, because a lost
@@ -20,13 +27,13 @@ fun interface OrderRetryScheduler {
 }
 
 /**
- * The retry policy, unchanged from TO-3's `@Retryable(maxRetries = 4, delay = 25,
- * multiplier = 2.0, maxDelay = 500)`. Spelled out here because TO-3-mod varies WHERE the wait
- * happens and nothing else: `delayMsFor(0..3)` is 25, 50, 100, 200 ms, exactly the sleeps Spring's
- * interceptor would have taken before attempts 2 through 5.
+ * The retry policy, unchanged from the former `@Retryable(maxRetries = 4, delay = 25,
+ * multiplier = 2.0, maxDelay = 500)`. Spelled out here because the rebuild varies WHERE the wait
+ * happens and WHICH POOL runs the retried attempt, and nothing else: `delayMsFor(0..3)` is 25, 50,
+ * 100, 200 ms, exactly the sleeps Spring's interceptor would have taken before attempts 2 through 5.
  *
- * Kept as constants rather than properties on purpose — a knob here would let a run differ from
- * TO-3 in the one dimension this branch must hold fixed.
+ * Kept as constants rather than properties on purpose — a knob here would let a run vary the one
+ * dimension this rebuild must hold fixed.
  */
 object OrderRetryPolicy {
     const val MAX_RETRIES = 4
@@ -37,21 +44,88 @@ object OrderRetryPolicy {
 }
 
 /**
- * Runs the scheduled task on its own pool, never on the caller.
+ * ONE pool for first attempts and retries.
  *
- * Whether that task IS the retried attempt or merely a hand-off back to `orderWorkerExecutor` is
- * decided by `app.order-retry.execute-on-retry-pool`, in `InventoryService` — see
- * `OrderRetryProperties`. Both topologies matter: executing here mirrors the ES branches, where
- * Axon's `RetryingCallback` re-dispatches inline onto its own retry pool; handing back runs retries
- * at full worker width, which is the configuration that differs from TO-3 in a single dimension.
+ * The previous topology ran two execution lanes — `order-worker-*` (150) for first attempts and
+ * `order-retry-*` (50) which served the backoff AND executed the retried attempt, mirroring the ES
+ * branches where Axon's `RetryingCallback` dispatches inline onto its own retry pool. No TO branch
+ * runs it that way now. Here there is a single `ScheduledThreadPoolExecutor` of `150 + 50 = 200`
+ * threads, all named `order-worker-*`:
+ *
+ *   - [execute] is the first-attempt path, submitted by the `@ApplicationModuleListener`;
+ *   - [schedule] is the retry path, called BY THE WORKER THREAD THAT JUST FAILED, which then
+ *     returns to the pool immediately.
+ *
+ * Nothing is held during the backoff. A `ScheduledThreadPoolExecutor` parks delayed tasks in a
+ * `DelayedWorkQueue` ordered by due time; no thread and no DB connection is assigned to a task
+ * until it comes due, so a thousand orders in backoff occupy a thousand queue entries and zero
+ * threads. This is why merging the pools costs nothing at rest: the retry lane's threads were only
+ * ever needed for the EXECUTION half of its job, and that half is what moved here.
+ *
+ * On queue position: `execute()` is a zero-delay scheduled task, so a retry due at T sorts behind
+ * every first attempt submitted before T and ahead of every one submitted after — the same place
+ * the FIFO tail gave it under the old `execute-on-retry-pool=false`. What differs from that setting
+ * is that no second pool exists at all, and a retry no longer crosses a pool boundary to resume.
+ *
+ * The width is [OrderWorkerProperties.threads][pl.szymanski.wiktor.config.OrderWorkerProperties],
+ * which now defaults to 200 precisely so total executing capacity and the connection demand match
+ * the 150 + 50 this branch used to run. See `application.yaml`.
+ *
+ * NOT a `TaskScheduler`, NOT a `ScheduledExecutorService` — deliberately, see
+ * [pl.szymanski.wiktor.config.OrderWorkerConfig].
  */
-class DelayedOrderRetryScheduler(
-    private val executor: ScheduledExecutorService,
-) : OrderRetryScheduler, AutoCloseable {
+class OrderWorkerPool(threads: Int) : TaskExecutor, AutoCloseable {
 
-    override fun schedule(delayMs: Long, task: Runnable) {
-        executor.schedule(task, delayMs, TimeUnit.MILLISECONDS)
+    private val threadNumber = AtomicInteger(1)
+
+    /**
+     * Exposed so `OrderWorkerConfig` can bind `executor_*` to it. Boot auto-binds those series for
+     * `ThreadPoolTaskExecutor` beans, which this is not, and the dashboards group by that tag.
+     */
+    internal val executor = ScheduledThreadPoolExecutor(threads) { runnable ->
+        // Daemon, where the old ThreadPoolTaskExecutor workers were not. The merged pool holds
+        // delayed tasks as a matter of course, and a pending retry must never be able to hold the
+        // JVM open at shutdown — the retry pool made the same choice for the same reason.
+        // Shutdown semantics only; nothing about throughput depends on it.
+        Thread(runnable, "order-worker-${threadNumber.getAndIncrement()}").apply { isDaemon = true }
     }
+
+    /**
+     * Retries scheduled but not yet started, i.e. still serving out their backoff.
+     *
+     * Tracked by hand because the merged pool's own queue can no longer answer the question:
+     * `order_retry_pool_queued` used to be the retry pool's `queue.size`, but here that queue is
+     * `executor_queued_tasks` and holds READY first attempts alongside retries in backoff. Keeping
+     * this series makes the two separable again — ready backlog is
+     * `executor_queued_tasks - order_retry_pool_queued`.
+     */
+    private val backoffInFlight = AtomicInteger()
+
+    override fun execute(task: Runnable) {
+        executor.execute(task)
+    }
+
+    /** Never runs [task] on the calling thread. Throws `RejectedExecutionException` at shutdown. */
+    fun schedule(delayMs: Long, task: Runnable) {
+        backoffInFlight.incrementAndGet()
+        try {
+            executor.schedule(
+                {
+                    // Decremented when the attempt STARTS, so the gauge means "in backoff" and not
+                    // "in backoff or running".
+                    backoffInFlight.decrementAndGet()
+                    task.run()
+                },
+                delayMs,
+                TimeUnit.MILLISECONDS,
+            )
+        } catch (e: RejectedExecutionException) {
+            backoffInFlight.decrementAndGet()
+            throw e
+        }
+    }
+
+    fun backoffInFlight(): Int = backoffInFlight.get()
 
     override fun close() {
         executor.shutdownNow()
