@@ -5,6 +5,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -18,10 +19,10 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * The retry hop is new infrastructure, and the two ways it can be wrong are both silent in a bench
- * run: a scheduler that runs the task on the calling thread quietly restores TO-3's blocking
- * behaviour while every other test still passes, and non-daemon threads leave the JVM unable to
- * exit — which the harness would report only as a health-check timeout.
+ * The retry hop's silent failure modes. A scheduler that runs the task on the calling thread quietly
+ * restores blocking behaviour while every other test still passes, and on this branch a retry that
+ * came back on some pool OTHER than the worker pool would undo the branch itself — both are
+ * invisible in a bench run except as an unexplained throughput number.
  *
  * Nothing here needs a database, so this stays a plain context test over [OrderWorkerConfig].
  */
@@ -42,7 +43,7 @@ class OrderRetrySchedulerWiringTest {
     }
 
     @Test
-    fun `the scheduler runs the retry on a daemon retry thread, never on the caller`() {
+    fun `the scheduler runs the retry on a worker thread, never on the caller`() {
         val ranOn = AtomicReference<Thread>()
         val done = CountDownLatch(1)
 
@@ -54,18 +55,60 @@ class OrderRetrySchedulerWiringTest {
         assertTrue(done.await(5, TimeUnit.SECONDS), "retry task never ran")
         val retryThread = ranOn.get()
         assertNotEquals(Thread.currentThread(), retryThread, "retry ran inline — the worker was not released")
-        assertTrue(retryThread.name.startsWith("order-retry-"), "unexpected retry thread: ${retryThread.name}")
-        assertTrue(retryThread.isDaemon, "retry threads must be daemons so shutdown cannot hang")
+        // THE branch assertion at the wiring level: TO-3 would print order-retry-N here.
+        assertTrue(
+            retryThread.name.startsWith("order-worker-"),
+            "a retry must resume on the ONE pool; ran on ${retryThread.name}",
+        )
+        assertTrue(retryThread.isDaemon, "pool threads must be daemons so a pending retry cannot hang shutdown")
     }
 
     @Test
-    fun `the retry pool publishes its saturation gauges`() {
+    fun `the merged pool publishes executor_ and the in-backoff gauge, and no retry-pool gauge`() {
         // Micrometer holds the gauged object weakly, so a pool referenced only by the builder would
         // report NaN or vanish once collected. The bean keeps the executor alive; this proves it.
         System.gc()
-        assertNotNull(meterRegistry.find("order.retry.pool.active").gauge(), "order.retry.pool.active missing")
+
+        // Boot auto-binds executor_* for ThreadPoolTaskExecutor beans only, and OrderWorkerPool is
+        // not one — so the config binds it by hand. Without this the dashboards' "Busy threads by
+        // pool" panel is empty for the branch and the run looks like it had no worker pool at all.
+        assertNotNull(
+            meterRegistry.find("executor.pool.size").tag("name", "orderWorkerExecutor").gauge(),
+            "executor.pool.size{name=orderWorkerExecutor} missing — ExecutorServiceMetrics not bound",
+        )
+        assertNotNull(
+            meterRegistry.find("executor.queued").tag("name", "orderWorkerExecutor").gauge(),
+            "executor.queued{name=orderWorkerExecutor} missing",
+        )
+
         assertNotNull(meterRegistry.find("order.retry.pool.queued").gauge(), "order.retry.pool.queued missing")
-        assertEquals(0.0, meterRegistry.find("order.retry.pool.active").gauge()!!.value())
+        // Not published here: there is no separate pool to be active on, and a constant 0 would read
+        // as "the retry lane is idle" rather than "there is no retry lane".
+        assertNull(
+            meterRegistry.find("order.retry.pool.active").gauge(),
+            "order.retry.pool.active must NOT exist on a branch with one pool",
+        )
+    }
+
+    @Test
+    fun `the in-backoff gauge counts a retry while it waits and releases it when it runs`() {
+        val gauge = meterRegistry.find("order.retry.pool.queued").gauge()!!
+        assertEquals(0.0, gauge.value(), "gauge should start empty")
+
+        val running = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        orderRetryScheduler.schedule(300L) {
+            running.countDown()
+            release.await()
+        }
+
+        // Still in backoff: queued on the DelayedWorkQueue, holding no thread.
+        assertEquals(1.0, gauge.value(), "a retry serving out its backoff must be counted")
+
+        assertTrue(running.await(5, TimeUnit.SECONDS), "retry never ran")
+        // Started, so it is no longer waiting — it is now executor_active_threads, not backoff.
+        assertEquals(0.0, gauge.value(), "a retry that has started is no longer in backoff")
+        release.countDown()
     }
 
     @Test

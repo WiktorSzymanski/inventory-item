@@ -8,7 +8,6 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.springframework.dao.OptimisticLockingFailureException
-import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor
 import pl.szymanski.wiktor.domain.OrderCreatedEvent
 import pl.szymanski.wiktor.domain.ReservedItem
 import pl.szymanski.wiktor.repository.InventoryRepository
@@ -21,49 +20,41 @@ import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 /**
- * WHICH pool runs a retried attempt. Invisible in every other test — the policy assertions and the
- * unblocking assertion both hold either way — yet it is the difference between "retries have their
- * own lane, as on ES" and "retries rejoin the worker queue behind fresh orders".
+ * WHICH pool runs a retried attempt — the branch, asserted directly.
  *
- * Asserted by thread name, because that is the only thing that actually distinguishes the two at
- * runtime, and a silent regression here would show up in a bench run as an unexplained throughput
- * change.
+ * On TO-3 this test has two cases and two pools: the retried attempt lands on `order-retry-*` by
+ * default, or back on `order-worker-*` with `execute-on-retry-pool=false`. Here there is one pool
+ * and no setting, so there is one case: both attempts run on `order-worker-*`, and no thread named
+ * `order-retry-*` exists at all.
+ *
+ * Asserted by thread name, because that is the only thing that actually distinguishes the topologies
+ * at runtime. A regression — someone reintroducing a scheduler with its own threads — would show up
+ * in a bench run as an unexplained throughput change and nowhere else.
  */
 class OrderRetryPoolTopologyTest {
 
     private val reserveOrderItemsCommandHandler: ReserveOrderItemsCommandHandler = mockk()
 
-    private val workerExecutor = ThreadPoolTaskExecutor().apply {
-        corePoolSize = 2
-        maxPoolSize = 2
-        setThreadNamePrefix("order-worker-")
-        initialize()
-    }
-    private val retryExecutor = ScheduledThreadPoolExecutor(2) { runnable ->
-        Thread(runnable, "order-retry-1").apply { isDaemon = true }
-    }
-    private val retryScheduler = DelayedOrderRetryScheduler(retryExecutor)
+    // Two threads, the shipped topology in miniature: first attempts and retries share them.
+    private val pool = OrderWorkerPool(threads = 2)
 
     @AfterEach
     fun tearDown() {
-        retryScheduler.close()
-        workerExecutor.shutdown()
+        pool.close()
     }
 
-    private fun serviceWith(executeRetriesOnRetryPool: Boolean) = InventoryService(
+    private val service = InventoryService(
         inventoryRepository = mockk<InventoryRepository>(),
         orderRepository = mockk<OrderRepository>(),
         createInventoryItemCommandHandler = mockk<CreateInventoryItemCommandHandler>(),
         createOrderCommandHandler = mockk<CreateOrderCommandHandler>(),
         reserveOrderItemsCommandHandler = reserveOrderItemsCommandHandler,
         failOrderCommandHandler = mockk(relaxed = true),
-        orderWorkerExecutor = workerExecutor,
-        retryScheduler = retryScheduler,
-        executeRetriesOnRetryPool = executeRetriesOnRetryPool,
+        orderWorkerExecutor = pool,
+        retryScheduler = { delayMs, task -> pool.schedule(delayMs, task) },
         meterRegistry = SimpleMeterRegistry(),
     )
 
@@ -76,7 +67,7 @@ class OrderRetryPoolTopologyTest {
     )
 
     /** @return the thread-name prefixes the two attempts ran on, in order. */
-    private fun attemptThreadsFor(executeRetriesOnRetryPool: Boolean): List<String> {
+    private fun attemptThreads(): List<String> {
         val threads = CopyOnWriteArrayList<String>()
         val bothAttempts = CountDownLatch(2)
         var hasFailedOnce = false
@@ -90,19 +81,25 @@ class OrderRetryPoolTopologyTest {
             }
         }
 
-        serviceWith(executeRetriesOnRetryPool).onOrderCreated(event)
+        service.onOrderCreated(event)
 
         assertTrue(bothAttempts.await(5, TimeUnit.SECONDS), "expected 2 attempts, saw $threads")
         return threads
     }
 
     @Test
-    fun `by default the retried attempt runs on the retry pool`() {
-        assertEquals(listOf("order-worker", "order-retry"), attemptThreadsFor(true))
+    fun `the retried attempt runs on the worker pool, because there is no other pool`() {
+        assertEquals(listOf("order-worker", "order-worker"), attemptThreads())
     }
 
     @Test
-    fun `with execute-on-retry-pool off the retried attempt goes back to the worker pool`() {
-        assertEquals(listOf("order-worker", "order-worker"), attemptThreadsFor(false))
+    fun `no retry-pool thread is ever created`() {
+        attemptThreads()
+
+        val retryThreads = Thread.getAllStackTraces().keys.map { it.name }.filter { it.startsWith("order-retry-") }
+        assertTrue(
+            retryThreads.isEmpty(),
+            "there must be no second pool; found $retryThreads",
+        )
     }
 }
