@@ -14,8 +14,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * pool can be entirely parked in backoff. The rebuild moved that wait to a SECOND pool
  * (`order-retry-*`, 50 threads) which served the backoff and then executed the retried attempt.
  * This is now backed by [OrderWorkerPool] instead — the same pool that ran the first attempt — so
- * there is no second pool and no hand-off hop. TO-3 still runs the two-pool topology, which is what
- * makes it the comparison.
+ * there is no second pool and no hand-off hop. No branch carries the two-pool topology any more —
+ * TO-1, TO-2, TO-3 and TO-4 all merged it away — so it lives in the git history, not in a sibling
+ * branch.
  *
  * Implementations must NOT run the task on the calling thread, and may throw
  * `RejectedExecutionException` (shutdown) — callers are required to handle that, because a lost
@@ -47,8 +48,8 @@ object OrderRetryPolicy {
  *
  * The previous topology ran two execution lanes — `order-worker-*` (150) for first attempts and
  * `order-retry-*` (50) which served the backoff AND executed the retried attempt, mirroring the ES
- * branches where Axon's `RetryingCallback` dispatches inline onto its own retry pool. TO-3 still
- * runs it that way. Here there is a single `ScheduledThreadPoolExecutor` of `150 + 50 = 200`
+ * branches where Axon's `RetryingCallback` dispatches inline onto its own retry pool. No TO branch
+ * runs it that way now. Here there is a single `ScheduledThreadPoolExecutor` of `150 + 50 = 200`
  * threads, all named `order-worker-*`:
  *
  *   - [execute] is the first-attempt path, submitted by the `@ApplicationModuleListener`;
