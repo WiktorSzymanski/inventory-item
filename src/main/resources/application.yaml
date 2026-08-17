@@ -21,30 +21,43 @@ spring:
 
 app:
   order-worker:
-    threads: ${ORDER_WORKER_THREADS:150}                   # worker pool processing accepted orders
-    queue-capacity: ${ORDER_WORKER_QUEUE_CAPACITY:2147483647}  # unbounded by default (Int.MAX_VALUE); absorb load like ES, no queue-full shedding
-
-  # A separate lane for attempts that have already conflicted. Must NOT be the shared
-  # spring.task.scheduling pool, which drains the outbox — a retry wait parked there would be
-  # exactly the long tick that starves the outbox.backlog gauge.
-  order-retry:
-    # 50 against 150 workers — a third of the first-attempt width. The retried attempt runs ON this
-    # pool by default (see execute-on-retry-pool below), exactly as it does on the ES branches where
-    # Axon's RetryingCallback dispatches inline, so this width is a hard throughput cap on retried
-    # work and under contention most contended work lands here.
+    # 200 = the 150 worker + 50 retry threads this branch used to run, merged. This ONE pool runs
+    # first attempts and retried attempts alike, so the branch has the same executing width and the
+    # same connection demand as before while having half as many pools.
     #
-    # Read order_retry_pool_active (not _queued, which also counts attempts still serving out their
-    # backoff) — a run that pinned this pool at its ceiling measured pool width, not the persistence
-    # model, and should be re-run wider.
-    threads: ${ORDER_RETRY_THREADS:50}
-    # true (default): the retried attempt runs ON the retry pool, as it does on every ES branch.
-    # false: the pool only counts time and hands the attempt back to order-worker, which runs
-    # retries at full width but at the tail of a FIFO queue. false is the configuration that differs
-    # from the old blocking @Retryable path in a single dimension (where the waiting happens) and is
-    # the honest setting for a pure blocking-vs-non-blocking A/B; true is the setting that makes
-    # this branch's retry topology match ES's. Whichever a run uses, say which — they are different
-    # experiments.
-    execute-on-retry-pool: ${ORDER_RETRY_EXECUTE_ON_RETRY_POOL:true}
+    # DANGER: docker-compose pins ORDER_WORKER_THREADS=${ORDER_WORKER_THREADS:-150} for EVERY TO
+    # branch, so this default does not survive a harness run — a run must export
+    # ORDER_WORKER_THREADS=200 (variants.d/TO-4.env does it, if run-suite.sh sources it).
+    # Left at 150 the branch is not broken, just 50 execution threads narrower than the two-pool
+    # topology it is being compared with, which is a resourcing difference dressed up as a topology
+    # result. OrderWorkerConfig says so at startup.
+    #
+    # It also means this branch and TO-3 CANNOT share one run-suite.sh invocation: the same
+    # exported ORDER_WORKER_THREADS would push TO-3 to 200 worker + 50 retry.
+    threads: ${ORDER_WORKER_THREADS:200}                   # the one pool: first attempts AND retries
+    # INERT. The merged pool is a ScheduledThreadPoolExecutor and its DelayedWorkQueue is unbounded
+    # by construction — which is what this default asked for anyway, so nothing a run relied on
+    # changes. OrderWorkerConfig warns if it is set to anything else.
+    queue-capacity: ${ORDER_WORKER_QUEUE_CAPACITY:2147483647}  # unbounded (Int.MAX_VALUE); absorb load like ES, no queue-full shedding
+
+  # NO app.order-retry ON THIS BRANCH ANY MORE.
+  #
+  # There used to be a second pool here (`order-retry-*`, 50 threads) which served the backoff AND
+  # executed the retried attempt, mirroring ES, where Axon's RetryingCallback dispatches inline onto
+  # its own retry pool. TO-3 still runs that topology. Here the worker thread that failed the
+  # attempt calls schedule() on its OWN pool and returns; the backoff is served in that pool's
+  # DelayedWorkQueue — no thread, no connection — and when it comes due an order-worker thread runs
+  # the attempt. It therefore also cannot park on the shared spring.task.scheduling pool, which
+  # drains the outbox.
+  #
+  # docker-compose still exports ORDER_RETRY_THREADS and ORDER_RETRY_EXECUTE_ON_RETRY_POOL to every
+  # TO branch. Both are INERT here: there is no second pool to size and no choice of where a retry
+  # runs. OrderWorkerConfig says so at startup so a run cannot record them as settings it used.
+  #
+  # The nearest old configuration is ORDER_RETRY_EXECUTE_ON_RETRY_POOL=false, where the retry pool
+  # only counted time and handed the attempt back. That still paid for a second pool and a
+  # cross-pool hand-off; the queue POSITION a retry ends up in is the same either way, because a
+  # DelayedWorkQueue orders by due time and treats a first attempt as a zero-delay task.
 
 management:
   endpoints:
@@ -62,7 +75,7 @@ management:
         order.processing.time: true
         order.queue.wait: true
         order.e2e.time: true
-        order.retry.backoff.time: true   # the wait the retry rebuild moved off the worker
+        order.retry.backoff.time: true   # accumulated backoff, one sample per retried order
       # order.e2e.time bounds are pinned explicitly — and must stay identical on every
       # variant branch. Micrometer's default Timer max is 30s; declaring
       # maximum-expected-value for publish.lag alone left order.e2e.time on that default,
