@@ -40,8 +40,6 @@ dependencies {
     // unit-tests green, and then fails to start a real context — Boot's DataSource, JdbcTemplate
     // and transaction-manager auto-configuration all key off @ConditionalOnSingleCandidate. Same
     // version the ES branches already use.
-    testImplementation("org.testcontainers:postgresql:1.20.4")
-    testImplementation("org.testcontainers:junit-jupiter:1.20.4")
 }
 
 tasks.withType<Test> {

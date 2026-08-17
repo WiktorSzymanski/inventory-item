@@ -6,10 +6,18 @@ spring:
     username: ${DB_USER:inventory}
     password: ${DB_PASSWORD:inventory}
     driver-class-name: org.postgresql.Driver
-    # NOTE: spring.datasource.hikari.* is NOT read on this branch. DataSourceConfig declares its own
-    # DataSource beans, which backs off DataSourceAutoConfiguration; pool sizes live under app.db
-    # below. url/username/password above ARE still read — DataSourceConfig injects them by @Value,
-    # exactly as AxonConfig.axonDataSource does on the ES branches.
+    hikari:
+      # ONE flat pool for every path: HTTP reads, the accept transaction, the order workers, the
+      # retry pool and the Modulith republisher all draw from it. The lane-routed two-pool split
+      # (app-pool / write-pool) that this branch carried between 2026-08-15 and 2026-08-17 was
+      # removed — see git history if the isolation argument is ever wanted back.
+      #
+      # 350 covers the write path with headroom rather than exactly: 99 tomcat (the accept tx runs
+      # ON the Tomcat thread) + 150 order-worker + 50 order-retry + 1 republisher = 300 demanders,
+      # one connection each because every handler is Propagation.REQUIRED. Raising HTTP_THREADS or
+      # ORDER_WORKER_THREADS eats that headroom; nothing warns when it runs out, so the symptom is
+      # Hikari wait time rather than a message.
+      maximum-pool-size: ${DB_MAX_CONNECTIONS:50}  # max open DB connections in the pool
   flyway:
     url: ${DB_JDBC_URL:jdbc:postgresql://localhost:5432/inventory}
     user: ${DB_USER:inventory}
@@ -22,44 +30,8 @@ spring:
       republication-min-age: PT1M    # minimum age before a PUBLISHED event is considered orphaned
 
 app:
-  # TO-3-mod-A: two pools behind one lane-routed DataSource, mirroring the ES family's split
-  # (spring.datasource.hikari for HTTP reads + axon.jdbc.pool for everything else). TO ran one flat
-  # pool of 50 before this branch while ES ran 300, which made pool pressure incomparable.
-  #
-  # The write pool is CONSUMED rather than merely respected: the thread widths below are sized so
-  # the write lane demands exactly the pool that serves it. TO holds one connection per busy thread
-  # (every handler is Propagation.REQUIRED) where ES holds two, so a write connection here buys a
-  # whole thread where on ES it buys half of one — that 2:1 is the connection cost of the
-  # persistence model and is a RESULT of the two designs, not a knob either family was granted.
-  #
-  # write-pool-size is DERIVED, not rounded: it covers every thread that can demand a write
-  # connection, so no lane can starve another.
-  #
-  #   99 tomcat (accept tx) + 150 order-worker + 50 order-retry + 1 republisher = 300
-  #
-  # THE ENVELOPE IS 50 + 300 = 350 PER NODE, and it no longer matches ES-4-NullLock-A's 400
-  # (50 + 350). The two families therefore present Postgres with different footprints again, which
-  # the 2026-08-16 envelope note calls out as a confound — accepted deliberately here, not
-  # overlooked, and ES was left unchanged. The lane SHAPE is not a cross-family mirror either, and
-  # deliberately so: there is no thread-for-thread correspondence between a TO worker (one thread
-  # carries a whole order) and ES's command/saga split, so variants.env sizes ES's lanes from its
-  # own measured service times. Read that entry for ES's current widths rather than assuming this
-  # branch's ratio applies there, and say in any cross-family table that the envelopes differ.
-  #
-  # Sizing it below that sum reopens a real starvation window, and the loser is the retry lane:
-  # HikariCP's ConcurrentBag.borrow() checks a THREAD-LOCAL list first and then scans the shared
-  # list before parking on the (fair) handoff queue, so a continuously-cycling order-worker thread
-  # can barge ahead of a retry thread that is already waiting. Retries are work the system has
-  # already partly paid for, so starving them maximises work-in-progress. DataSourceConfig
-  # recomputes this sum at startup and warns when the pool cannot cover it.
-  db:
-    app-pool-size: ${DB_APP_POOL_SIZE:50}      # HTTP reads only (GET /inventory, /inventory/{id}, /orders/{id})
-    write-pool-size: ${DB_WRITE_POOL_SIZE:300} # accept tx, order workers, retry pool, republisher
   order-worker:
-    # 150, down from the 200 every other TO branch runs. Together with the retry lane's 50 it is
-    # what makes the write lane consume its 300 connections exactly; a `--only TO-3-mod,TO-3-mod-A`
-    # pair therefore differs in worker width as well as pool topology now, so do not read it as an
-    # isolation of the split alone unless the baseline is run at ORDER_WORKER_THREADS=150 too.
+    # 150. TO-1, TO-2 and TO-4 carry the same width, so the TO family is uniform on it.
     threads: ${ORDER_WORKER_THREADS:150}                   # worker pool processing accepted orders
     queue-capacity: ${ORDER_WORKER_QUEUE_CAPACITY:2147483647}  # unbounded by default (Int.MAX_VALUE); absorb load like ES, no queue-full shedding
   # TO-3-mod: a separate lane for attempts that have already conflicted. Must NOT be the shared
@@ -123,13 +95,11 @@ server:
   port: 8080
   tomcat:
     threads:
-      # 99, down from 150. This is admission control, not a residual. A POST runs the accept
-      # transaction ON the Tomcat thread, so every in-flight POST holds a write-pool connection;
-      # the cap is what keeps the write lane's demanders from exceeding the pool that serves them
-      # (see app.db.write-pool-size). Raising it without raising that pool re-opens the starvation
-      # window DataSourceConfig warns about.
-      #
-      # 99 is what makes the write lane consume its 300 connections exactly (99 + 150 + 50 + 1).
+      # 99, down from 200, and the same width TO-1/TO-2/TO-4 and the ES *-NullLock branches run so
+      # both families admit at the same size. This is admission control, not a residual: a POST runs
+      # the accept transaction ON the Tomcat thread, so every in-flight POST holds a connection from
+      # spring.datasource.hikari for its duration. Raising it eats the pool's headroom, and since
+      # the split pool went away nothing recomputes or warns about that — see the note there.
       #
       # accept-count is left at Boot's default 100. Offered load beyond max threads queues there and
       # is REFUSED past it, which nginx surfaces as 502 and k6 reads as errors rather than as

@@ -7,8 +7,6 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor
-import pl.szymanski.wiktor.db.DbLane
-import pl.szymanski.wiktor.db.DbLaneContext
 import pl.szymanski.wiktor.service.DelayedOrderRetryScheduler
 import pl.szymanski.wiktor.service.OrderRetryScheduler
 import java.util.concurrent.ScheduledThreadPoolExecutor
@@ -64,18 +62,14 @@ class OrderWorkerConfig {
             maxPoolSize = properties.threads
             queueCapacity = properties.queueCapacity
             setThreadNamePrefix("order-worker-")
-            // TO-3-mod-A: everything this pool runs is a write, so it draws from the write pool.
-            //
-            // This covers more than the order tasks. Because an Executor bean exists in this
-            // context, Boot's `applicationTaskExecutor` is never created (its
+            // NOTE this pool runs more than the order tasks. Because an Executor bean exists in
+            // this context, Boot's `applicationTaskExecutor` is never created (its
             // `TaskExecutorConfigurations.OnExecutorCondition` is `@ConditionalOnMissingBean(
             // Executor.class)`), and Spring's @Async resolution then finds exactly one TaskExecutor
             // bean — this one. So `InventoryService.onOrderCreated`, the @ApplicationModuleListener
             // that marks the publication complete in its own REQUIRES_NEW transaction, ALSO runs
-            // here and is lane-tagged by the same decorator. That is pre-existing TO-3-mod
-            // behaviour, deliberately not changed on this branch: the split must be the only
-            // variable.
-            setTaskDecorator { task -> DbLaneContext.wrap(DbLane.WRITE, task) }
+            // here: event DELIVERY competes with reservation EXECUTION for these threads and their
+            // queue. Long-standing behaviour on every TO branch, called out because it is invisible.
         }
 
     /**
@@ -103,9 +97,6 @@ class OrderWorkerConfig {
         Gauge.builder("order.retry.pool.queued", executor) { it.queue.size.toDouble() }
             .description("Retries waiting for a retry thread (includes those still serving out their backoff)")
             .register(meterRegistry)
-        // TO-3-mod-A: a retried attempt is the same reserve transaction as a first attempt, so it
-        // belongs on the same pool. Applied per task rather than per thread because the backoff is
-        // served in the DelayedWorkQueue, on no thread at all.
-        return DelayedOrderRetryScheduler(executor) { task -> DbLaneContext.wrap(DbLane.WRITE, task) }
+        return DelayedOrderRetryScheduler(executor)
     }
 }
