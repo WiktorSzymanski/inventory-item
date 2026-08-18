@@ -129,7 +129,10 @@ class InventoryService(
      * an `order-worker-*` thread from the only pool there is; the two-pool topology this replaces
      * gave it an `order-retry-*` thread from a second pool.
      *
-     * The attempt budget and the delays are unchanged ([OrderRetryPolicy]).
+     * The attempt budget and the backoff curve are unchanged ([OrderRetryPolicy]); the delay
+     * actually waited is that curve plus jitter, which the un-jittered branches do not add.
+     * `backoffNs` accumulates the JITTERED value, so `order.retry.backoff.time` prices what was
+     * really waited rather than what the curve nominally asks for.
      */
     private fun runOrderTask(state: OrderAttempt) {
         val pickedUpNs = System.nanoTime()
