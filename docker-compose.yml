@@ -36,14 +36,13 @@ services:
       DB_R2DBC_URL:        "r2dbc:postgresql://postgres:5432/inventory"
       DB_USER:             inventory
       DB_PASSWORD:         inventory
-      # Superset across families. Spring Boot ignores an environment variable with no
-      # matching property, so AXON_* and CACHE_* are inert on TO, and CACHE_* is inert on
-      # ES-1/ES-2/ES-3, which have no confirmed-state cache.
-      AXON_JDBC_POOL_SIZE: "${AXON_JDBC_POOL_SIZE:-300}"
+      AXON_JDBC_POOL_SIZE: "${AXON_JDBC_POOL_SIZE:-350}"
       API_REPLICAS:        "${REPLICAS:-1}"
       CACHE_TTL:           "${CACHE_TTL:-10m}"
       CACHE_MAXIMUM_SIZE:  "${CACHE_MAXIMUM_SIZE:-10000}"
-      DB_MAX_CONNECTIONS:  "${DB_MAX_CONNECTIONS:-300}"
+      DB_MAX_CONNECTIONS:  "${DB_MAX_CONNECTIONS:-350}"
+      ORDER_WORKER_THREADS: "${ORDER_WORKER_THREADS:-200}"
+      HTTP_THREADS: "${HTTP_THREADS:-99}"
     expose:
       - "8080"
     deploy:
