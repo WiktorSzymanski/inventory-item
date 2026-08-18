@@ -48,9 +48,12 @@ data class InventoryItem(
             )
         }
 
-        // Paid only once the reserve is known to succeed, and inside the caller's transaction:
-        // the inventory_state row lock is already held and stays held for the duration. That is the
-        // point — it is what makes this a model of slow aggregate logic rather than of slow IO.
+        // Paid only once the reserve is known to succeed. It used to be paid inside the caller's
+        // transaction, with the inventory_state row lock already held and staying held for the
+        // duration; the split reserve path runs this in its modify phase, so the sleep now holds
+        // neither a lock nor a Hikari connection. Either way it is a model of slow aggregate logic
+        // rather than of slow IO — what moved is who else has to wait for it.
+        // See ReserveOrderItemsCommandHandler for the phase boundaries.
         if (reserveDelayMs > 0) {
             Thread.sleep(reserveDelayMs.toLong())
         }
