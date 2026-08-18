@@ -117,6 +117,15 @@ class ReserveOrderItemsPhaseTest {
         // order's lines.
         assertEquals(2, outcome.captured.reservations.size)
         assertEquals(2, outcome.captured.reservedEvents.size)
+
+        // AND THE DATABASE THEN REFUSES IT, here as on the per-line path: `reservations` is keyed
+        // (item_id, reservation_id), reservation_id IS the order id, and Reservation is a
+        // Persistable whose isNew() is always true — so two lines on one item are two INSERTs of
+        // one key and the order ends REJECTED on a duplicate-key violation, with nothing written.
+        // Verified against a real Postgres on 2026-08-18. Not a regression and not worth fixing:
+        // k6's buildOrder draws lines without replacement, and config.validate rejects
+        // ALLOW_DUP_LINES, so no benchmarked order can contain a duplicate line. What this test
+        // pins is the FOLD — that the working copy is sequential — not that duplicates commit.
     }
 
     @Test
