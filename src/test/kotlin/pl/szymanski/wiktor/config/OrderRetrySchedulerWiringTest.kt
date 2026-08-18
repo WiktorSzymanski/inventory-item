@@ -114,8 +114,10 @@ class OrderRetrySchedulerWiringTest {
     @Test
     fun `the backoff curve matches the Retryable policy it replaced`() {
         // delay = 25, multiplier = 2.0, maxDelay = 500 — the waits Spring took before attempts 2..5.
-        assertEquals(listOf(25L, 50L, 100L, 200L), (0 until OrderRetryPolicy.MAX_RETRIES).map { OrderRetryPolicy.delayMsFor(it) })
+        // On this branch the curve is what delayMsFor JITTERS AROUND, so the curve itself is
+        // baseDelayMsFor; the spread and its mean are OrderRetryJitterTest's job.
+        assertEquals(listOf(25L, 50L, 100L, 200L), (0 until OrderRetryPolicy.MAX_RETRIES).map { OrderRetryPolicy.baseDelayMsFor(it) })
         // The cap binds rather than the curve running away, if MAX_RETRIES is ever raised.
-        assertEquals(OrderRetryPolicy.MAX_DELAY_MS, OrderRetryPolicy.delayMsFor(20))
+        assertEquals(OrderRetryPolicy.MAX_DELAY_MS, OrderRetryPolicy.baseDelayMsFor(20))
     }
 }
