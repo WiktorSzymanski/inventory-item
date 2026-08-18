@@ -5,6 +5,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.core.task.SyncTaskExecutor
@@ -24,9 +25,14 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
- * Retry POLICY, which TO-3-mod must not change: 5 total attempts with 25/50/100/200 ms between
- * them, and the same counter arithmetic TO-3 produced. Only the thread the waiting happens on is
- * different, and that is [OrderRetryUnblocksWorkerTest]'s job.
+ * Retry POLICY: 5 total attempts on the 25/50/100/200 ms curve, and the same counter arithmetic
+ * TO-3 produced. Only the thread the waiting happens on is different, and that is
+ * [OrderRetryUnblocksWorkerTest]'s job.
+ *
+ * The delays are asserted as WINDOWS rather than exact values, because this branch jitters each one
+ * over [0.5 x base, 1.5 x base). What the loop must still guarantee is the attempt budget and the
+ * curve those windows are centred on; the spread itself, and the fact that its mean IS the curve,
+ * are [OrderRetryJitterTest]'s job.
  *
  * No Spring context: with the retry loop explicit rather than an AOP interceptor, the service is
  * just a constructor call. The scheduler here records each delay and runs the retry INLINE, so the
@@ -69,6 +75,21 @@ class InventoryServiceRetryTest {
         createdAt = Instant.EPOCH,
     )
 
+    /**
+     * One scheduled delay per retry, each inside its own attempt's jitter window. Asserting the
+     * window rather than the value keeps this test deterministic without stubbing the RNG.
+     */
+    private fun assertDelaysOnCurve(expectedRetries: Int) {
+        assertEquals(expectedRetries, scheduledDelaysMs.size, "wrong number of retries scheduled")
+        scheduledDelaysMs.forEachIndexed { attempt, delay ->
+            val base = OrderRetryPolicy.baseDelayMsFor(attempt)
+            assertTrue(
+                delay in (base / 2)..(base * 3 / 2),
+                "retry $attempt waited ${delay}ms, outside [${base / 2}, ${base * 3 / 2}] for a ${base}ms base",
+            )
+        }
+    }
+
     private fun retryCount() = meterRegistry.counter("inventory.optimistic.retry").count()
     private fun exhaustedCount() = meterRegistry.counter("inventory.optimistic.exhausted").count()
     private fun completedCount(outcome: String, reason: String) =
@@ -82,7 +103,7 @@ class InventoryServiceRetryTest {
         inventoryService.onOrderCreated(event)
 
         verify(exactly = 2) { reserveOrderItemsCommandHandler.handle(event) }
-        assertEquals(listOf(25L), scheduledDelaysMs)
+        assertDelaysOnCurve(expectedRetries = 1)
         verify(exactly = 0) { failOrderCommandHandler.handle(any()) }
         assertEquals(1.0, retryCount())
         assertEquals(0.0, exhaustedCount())
@@ -97,7 +118,7 @@ class InventoryServiceRetryTest {
         inventoryService.onOrderCreated(event)
 
         verify(exactly = 5) { reserveOrderItemsCommandHandler.handle(event) }
-        assertEquals(listOf(25L, 50L, 100L, 200L), scheduledDelaysMs)
+        assertDelaysOnCurve(expectedRetries = 4)
         verify(exactly = 1) { failOrderCommandHandler.handle(any<FailOrderCommand>()) }
         // Identical to TO-3: every failed attempt counts as a retry, the last one included.
         assertEquals(5.0, retryCount())
@@ -114,7 +135,14 @@ class InventoryServiceRetryTest {
 
         val backoff = meterRegistry.timer("order.retry.backoff.time", "outcome", "rejected")
         assertEquals(1L, backoff.count())
-        assertEquals(375.0, backoff.totalTime(TimeUnit.MILLISECONDS))
+        // 375 ms is the curve's total and the jittered EXPECTATION; one order draws somewhere in
+        // [187.5, 562.5]. What must hold is that the recorded figure is the sum of the delays
+        // actually scheduled, not the nominal curve.
+        assertEquals(
+            scheduledDelaysMs.sum().toDouble(),
+            backoff.totalTime(TimeUnit.MILLISECONDS),
+            "backoff must price the jittered waits, not the curve",
+        )
     }
 
     @Test
