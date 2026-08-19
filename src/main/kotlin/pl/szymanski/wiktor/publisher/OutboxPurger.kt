@@ -17,7 +17,8 @@ import java.util.concurrent.TimeUnit
  * Deletes delivered publications so `event_publication` stops growing without bound.
  *
  * The outbox guarantee only needs a row until it has been delivered; keeping completed rows forever
- * cost this branch its capacity.
+ * cost TO-2 its capacity (measured on TO-2_capacity_W-base_20260819T184043Z); every TO branch
+ * writes this table the same way.
  *
  * The win is not the disk it frees, it is what a small table does to autovacuum. The default
  * trigger is `50 + 0.2 * n_live_tup`, so 300k live rows tolerate 60,052 dead tuples before a
