@@ -2,6 +2,29 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**This branch is `ES-4-NullLock-oneExec`, not `ES-4-NullLock`.** It is the only ES branch on which a
+retried command does **not** execute on the retry pool. Everywhere else, Axon's
+`RetryingCallback.RetryDispatch.run()` calls `commandBus.dispatch()` inline and `SimpleCommandBus`
+handles on the calling thread, so the retry pool is a second execution lane whose width caps retried
+work. Here `ConcurrencyRetryScheduler` hands the dispatch task to `sagaCommandExecutor` instead: the
+retry pool only serves out the backoff, and one pool runs first attempts, retries and the saga's
+terminal dispositions.
+
+The command pool is 112 = the parent's 82 + the 30 the retry lane no longer executes on, so the
+connection budget is unchanged at `2 x (112 + 60 + 3) = 350` against the parent's
+`2 x (82 + 30 + 60 + 3) = 350`. Equal total threads, equal budget, identical retry policy — the pair
+`--only ES-4-NullLock,ES-4-NullLock-oneExec` therefore varies topology alone. It is the ES analogue
+of TO's `ORDER_RETRY_EXECUTE_ON_RETRY_POOL=false`. Expect the difference only under contention
+(`DISTINCT_ITEMS=1`): a retry now rejoins an unbounded FIFO at the tail, behind first attempts
+admitted after it, and the saga's `abandon()`/release/fail-order dispositions share the same queue.
+
+Both pools are observable, which they are not on the parent: `saga_pool_{active,queued,size}` tagged
+`pool="command"|"retry"` (same names as `ES-4-NullLock-mod`), threads named `saga-command-N` /
+`retry-timer-N` so a `jcmd <pid> Thread.print` identifies them, and
+`logging.level.pl.szymanski.wiktor.config.ConcurrencyRetryScheduler=DEBUG` prints
+`[RETRY] executing on saga-command-N` per retry. Expect `saga_pool_active{pool="retry"}` ~0 — those
+threads only hand tasks over; sustained activity there means a retry executed on the timer.
+
 ## What this repository is
 
 A Master's thesis benchmark comparing **Traditional Ownership** (`TO-1`..`TO-4`) against
