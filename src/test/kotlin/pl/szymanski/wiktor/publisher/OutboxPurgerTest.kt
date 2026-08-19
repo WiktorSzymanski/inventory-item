@@ -5,31 +5,44 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.springframework.jdbc.core.JdbcTemplate
 import java.time.Duration
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
- * Covers the contract the purge exists for: it must bound itself.
+ * Covers the two contracts the purge exists to honour.
  *
- * The bug this whole change fixes was caused by long-lived transactions pinning the xmin horizon,
- * so a sweep that deleted a large backlog in one unbounded transaction would BE the bug. Every
- * batch is its own transaction and the sweep stops at maxBatches, which also keeps it from
- * starving the single shared scheduler thread it runs on alongside OutboxMetrics and
- * IncompleteEventRepublisher.
+ * It must bound itself: the bug this change fixes was caused by long-lived transactions pinning the
+ * xmin horizon, so a sweep that deleted a large backlog in one unbounded transaction would BE the
+ * bug.
+ *
+ * And it must run on its own thread. Spring's default scheduler pool is one thread, and on TO-1
+ * that thread runs OutboxPollingPublisher.drain() — a @Scheduled sweep would serialize against
+ * outbox delivery on that branch and not on this one.
  */
 class OutboxPurgerTest {
 
     private val jdbc = mockk<JdbcTemplate>()
     private val registry = SimpleMeterRegistry()
+    private var started: OutboxPurger? = null
+
+    @AfterEach
+    fun tearDown() {
+        started?.stop()
+    }
 
     private fun purger(
         enabled: Boolean = true,
         batchSize: Int = 100,
         maxBatches: Int = 10,
-        minAge: Duration = Duration.ofSeconds(60),
-    ) = OutboxPurger(jdbc, registry, enabled, minAge, batchSize, maxBatches)
+        minAge: Duration = Duration.ofSeconds(5),
+        interval: Duration = Duration.ofSeconds(5),
+    ) = OutboxPurger(jdbc, registry, enabled, interval, minAge, batchSize, maxBatches)
 
     private fun purgedCount() = registry.counter("outbox.purged").count().toInt()
 
@@ -84,7 +97,38 @@ class OutboxPurgerTest {
 
         // The guard that makes the sweep safe: an in-flight publication has completion_date NULL,
         // and NULL is never < anything, so it can never be selected.
-        assertEquals(true, sql.captured.contains("completion_date <"))
-        assertEquals(true, sql.captured.contains("LIMIT"))
+        assertTrue(sql.captured.contains("completion_date <"))
+        assertTrue(sql.captured.contains("LIMIT"))
+    }
+
+    @Test
+    fun `sweeps run on a dedicated thread, not the shared scheduler pool`() {
+        val ran = CountDownLatch(1)
+        val threadName = mutableListOf<String>()
+        every { jdbc.update(any<String>(), *anyVararg()) } answers {
+            threadName += Thread.currentThread().name
+            ran.countDown()
+            0
+        }
+
+        val p = purger(interval = Duration.ofMillis(50)).also { started = it }
+        p.start()
+
+        assertTrue(ran.await(5, TimeUnit.SECONDS), "purge sweep never ran")
+        assertTrue(
+            threadName.first().startsWith("outbox-purge"),
+            "sweep ran on '${threadName.first()}', expected its own outbox-purge thread",
+        )
+    }
+
+    @Test
+    fun `a disabled purge schedules nothing at all`() {
+        every { jdbc.update(any<String>(), *anyVararg()) } returns 0
+
+        val p = purger(enabled = false, interval = Duration.ofMillis(50)).also { started = it }
+        p.start()
+        Thread.sleep(300)
+
+        verify(exactly = 0) { jdbc.update(any<String>(), *anyVararg()) }
     }
 }
