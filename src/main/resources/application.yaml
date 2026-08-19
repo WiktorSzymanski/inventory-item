@@ -22,7 +22,8 @@ spring:
 
 app:
   event-delivery:
-    threads: ${EVENT_DELIVERY_THREADS:20}                 # workers delivering NOTIFY-pushed publications
+    threads: ${EVENT_DELIVERY_THREADS:20}                 # workers delivering a drain page; caps deliveries in flight
+    batch-size: ${EVENT_DELIVERY_BATCH_SIZE:1000}         # publications per drain page; bounds a large backlog's fetch
   order-worker:
     # 200 = the 150 worker + 50 retry threads this branch used to run, merged. This ONE pool runs
     # first attempts and retried attempts alike, so the branch has the same executing width and the

@@ -75,6 +75,25 @@ class EventPublicationDirectProcessor(
             olderThan.toMillis() / 1000.0,
         ).filterNotNull()
 
+    /**
+     * One bounded page of incomplete publications, for [EventDrainLoop]'s paged drain.
+     *
+     * Deliberately unordered. Completed rows are never deleted, so `ORDER BY publication_date`
+     * would make every page rescan the growing prefix of already-delivered rows — millions of
+     * them by the end of a load run. Without it the planner can go straight at
+     * `completion_date IS NULL` via idx_event_publication_completion_date. Nothing is lost:
+     * delivery is already concurrent across the pool, so no ordering was ever guaranteed.
+     */
+    fun findIncompleteIds(olderThan: Duration, limit: Int): List<UUID> =
+        jdbcTemplate.queryForList(
+            """SELECT id FROM event_publication
+               WHERE completion_date IS NULL AND publication_date < now() - make_interval(secs => ?)
+               LIMIT ?""",
+            UUID::class.java,
+            olderThan.toMillis() / 1000.0,
+            limit,
+        ).filterNotNull()
+
     // listener_id format: "full.ClassName.methodName(full.ParamType)"
     private fun resolveInvoker(listenerId: String, eventType: Class<*>): ListenerInvoker {
         val withoutParams = listenerId.substringBefore("(")
