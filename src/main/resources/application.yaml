@@ -24,6 +24,23 @@ app:
   event-delivery:
     threads: ${EVENT_DELIVERY_THREADS:20}                 # workers delivering a drain page; caps deliveries in flight
     batch-size: ${EVENT_DELIVERY_BATCH_SIZE:1000}         # publications per drain page; bounds a large backlog's fetch
+  outbox-purge:
+    # Deletes delivered publications so event_publication stops growing without bound. See
+    # OutboxPurger — a delivered row has served the outbox guarantee and keeping it forever cost
+    # this branch its capacity (352 MB against 134 MB of shared_buffers in a five-minute run).
+    #
+    # enabled=false is the controlled A/B: it reproduces the pre-V7 table growth WITHOUT reverting
+    # the migration, so a run can separate the partial indexes' effect from the purge's.
+    enabled: ${OUTBOX_PURGE_ENABLED:true}
+    interval: ${OUTBOX_PURGE_INTERVAL:PT5S}               # sweep period
+    # Never purge a row the backup republisher could still be interested in: matches
+    # spring.modulith.events.republication-min-age below.
+    min-age: ${OUTBOX_PURGE_MIN_AGE:PT60S}                # how long a delivered row is kept
+    batch-size: ${OUTBOX_PURGE_BATCH_SIZE:2000}           # rows per batch; each batch is ONE transaction
+    # Hard bound, not a nicety. This runs on Spring's default scheduler pool — ONE thread, no
+    # spring.task.scheduling section anywhere in this file — shared with OutboxMetrics (5 s) and
+    # IncompleteEventRepublisher (1 min). An unbounded sweep would starve both.
+    max-batches: ${OUTBOX_PURGE_MAX_BATCHES:10}           # batches per sweep; caps one sweep's duration
   order-worker:
     # 200 = the 150 worker + 50 retry threads this branch used to run, merged. This ONE pool runs
     # first attempts and retried attempts alike, so the branch has the same executing width and the
