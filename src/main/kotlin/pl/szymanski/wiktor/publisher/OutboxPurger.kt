@@ -47,7 +47,7 @@ class OutboxPurger(
     meterRegistry: MeterRegistry,
     @Value("\${app.outbox-purge.enabled:true}")
     private val enabled: Boolean,
-    @Value("\${app.outbox-purge.min-age:PT60S}")
+    @Value("\${app.outbox-purge.min-age:PT5S}")
     private val minAge: Duration,
     @Value("\${app.outbox-purge.batch-size:2000}")
     private val batchSize: Int,
