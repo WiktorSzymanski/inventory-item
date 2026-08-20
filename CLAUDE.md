@@ -2,6 +2,37 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**On this branch a retried command does not execute on the retry pool.** Everywhere else in the ES
+family, Axon's `RetryingCallback.RetryDispatch.run()` calls `commandBus.dispatch()` inline and
+`SimpleCommandBus` handles on the calling thread, so the retry pool is a second execution lane whose
+width caps retried work. Here `ConcurrencyRetryScheduler` hands the dispatch task to
+`sagaCommandExecutor` instead: the retry pool only serves out the backoff, and one pool runs first
+attempts, retries and the saga's terminal dispositions.
+
+This arrived by merging the former `ES-4-NullLock-oneExec` on 2026-08-20. That branch existed to be
+the other half of a topology-only A/B against this one; now that its topology *is* this branch's,
+`--only ES-4-NullLock,ES-4-NullLock-oneExec` compares a branch against itself and must not be run as
+a pair.
+
+The command pool is 112 = the previous 82 + the 30 the retry lane no longer executes on, so the
+connection budget is unchanged at `2 x (112 + 60 + 3) = 350`, where the two-lane shape spent the same
+350 as `2 x (82 + 30 + 60 + 3)`. Retry threads drop out of the sum because a thread that only calls
+`execute(...)` opens no transaction and takes no `axon-jdbc-pool` connection, and the backoff is
+served in the `DelayedWorkQueue` on no thread at all. The retry policy is unchanged (`maxRetries=5`,
+`initialDelayMs=25`, 500 ms cap), as is the 99-thread Tomcat cap. It is the ES analogue of TO's
+`ORDER_RETRY_EXECUTE_ON_RETRY_POOL=false`. Expect the behavioural difference only under contention
+(`DISTINCT_ITEMS=1`): a retry now rejoins an unbounded FIFO at the tail, behind first attempts
+admitted after it, and the saga's `abandon()`/release/fail-order dispositions share the same queue
+(watch `saga_command_failed_total{stage="abandon-rejected"}`).
+
+Both pools are observable: `saga_pool_{active,queued,size}` tagged `pool="command"|"retry"` (same
+names as `ES-4-NullLock-mod`), threads named `saga-command-N` / `retry-timer-N` so a
+`jcmd <pid> Thread.print` identifies them, and
+`logging.level.pl.szymanski.wiktor.config.ConcurrencyRetryScheduler=DEBUG` prints
+`[RETRY] executing on saga-command-N` per retry. Expect `saga_pool_active{pool="retry"}` ~0 — those
+threads only hand tasks over; sustained activity there means a retry executed on the timer. Note the
+thread name changed from `retry-command-N` with this merge; no dashboard panel pins that value.
+
 ## What this repository is
 
 A Master's thesis benchmark comparing **Traditional Ownership** (`TO-1`..`TO-4`) against
@@ -12,6 +43,13 @@ benchmarked against each other under an identical workload.
 `main` has no `k6/` directory. The architecture below describes **`ES-4`** (formerly
 `ES-3-pesimistic`); `TO-*` branches implement the same API over a classic mutable schema
 with an outbox.
+
+**`ES-4` is the lock-free ES variant.** Its `InventoryItem` repository is built with
+`NullLockFactory`, so nothing serialises concurrent commands on one aggregate and conflicts
+are resolved by the event store's unique constraint plus `ConcurrencyRetryScheduler`. It
+kept the name `PessimisticCachingRepository` from when it locked pessimistically; several
+files still carry that name, and `ES-4_*` runs recorded before the switch measured the other
+write path and are not comparable to later ones.
 
 ## Commands
 
@@ -56,11 +94,16 @@ REPLICAS=3 PG_MAX_CONNECTIONS=1300 docker compose up -d
 The infrastructure is verified at `REPLICAS=3`: nginx spreads load, Prometheus finds all
 targets, and the saga splits its 60 segments evenly (20/20/20, none unclaimed).
 
-**ES is still not multi-node write-*correct*.** The only thing serialising writers to an
-`InventoryItem` is a JVM-local `LockFactory`, so a second JVM removes it: two replicas load
-the same aggregate at sequence N and both append at N+1, leaving the
-`(aggregate_identifier, sequence_number)` unique constraint as the backstop. Horizontal
-write scale-out cannot be demonstrated without real distributed concurrency control.
+**ES is still not multi-node write-*correct*.** On `ES-1`/`ES-2`/`ES-3` the only thing
+serialising writers to an `InventoryItem` is a JVM-local `LockFactory`, so a second JVM
+removes it: two replicas load the same aggregate at sequence N and both append at N+1,
+leaving the `(aggregate_identifier, sequence_number)` unique constraint as the backstop.
+Horizontal write scale-out cannot be demonstrated without real distributed concurrency
+control.
+
+**`ES-4` has no aggregate lock at all** — its repository is built with `NullLockFactory`, so
+that race exists between two threads in one JVM exactly as it does between two replicas.
+Everything below about lost races applies to `ES-4` at **every** replica count, including 1.
 
 **What changed is the outcome of losing that race.** It used to be permanent:
 
@@ -108,9 +151,9 @@ compensation or fail-order dispatch failed. Harness verdict **PASS** (9/9 validi
 p99 0.263 s. All 15 rejections landed in the **warmup** phase, so the measured window reports
 `rejected_ratio=0.0` and `opt_exhausted=0.0` — those zeros mean "none inside the window", not
 "the terminal path never fired". `ES-4` itself was not re-measured at `REPLICAS>1`: it shares
-the saga file byte-for-byte and already had the resolver, but its pessimistic-lock caching
-repository is a different aggregate-access path, so treat the numbers above as indicative of
-the mechanism rather than as an `ES-4` result.
+the saga file byte-for-byte and already had the resolver, but its lock-free caching repository
+is a different aggregate-access path — and one that produces conflicts far more readily — so
+treat the numbers above as indicative of the mechanism rather than as an `ES-4` result.
 
 **The contention-vs-stock split is not exhaustive.** `saga_completed{outcome="command_failed"}`
 separates contention-driven rejections from genuine out-of-stock ones on the *reservation*
@@ -132,14 +175,22 @@ all of them alongside the contention-vs-stock split.
 
 **`REPLICAS=1` is still the measurement-grade configuration**, because at `REPLICAS>1` the
 rejection rate is an artefact of lost write races rather than of stock. Read multi-replica
-runs as a contention study, not as a throughput result. On any single-node run
-`saga_completed_total{outcome="command_failed"}` should be zero — the JVM-local
-`LockFactory` (Axon's default is pessimistic) prevents the `23505` entirely there. A non-zero
-value falsifies that assumption and means the baseline needs re-examining. `evaluate.py`
-enforces this as the `saga_command_failed_single_node` validity check, which is skipped
-whenever `EXPECTED_REPLICAS > 1` — above 1 the count is the contention signal itself.
+runs as a contention study, not as a throughput result. On a single-node run of a
+*lock-holding* branch (`ES-1`/`ES-2`/`ES-3`) `saga_completed_total{outcome="command_failed"}`
+should be zero — the JVM-local `LockFactory` prevents the `23505` entirely there — and a
+non-zero value falsifies that assumption and means the baseline needs re-examining.
+`evaluate.py` enforces this as the `saga_command_failed_single_node` validity check, which is
+skipped whenever `EXPECTED_REPLICAS > 1` — above 1 the count is the contention signal itself.
 The underlying series come from the `saga_completed` and `saga_cmd_failed` deltas and the
 `saga_lifetime` histogram in `queries.promql`, so they land in `dump.json` on every run.
+
+**That check is wrong for `ES-4` and is knowingly left in place.** With `NullLockFactory`
+there is no lock to prevent a `23505`, so a single-node `ES-4` run in which any command
+exhausts its 5 retries reports `INVALID` on `saga_command_failed_single_node` alone. That is
+an artefact of a harness assumption, not a broken measurement: read the rest of the check
+list, and treat the run as valid if `saga_command_failed_single_node` is its only failure.
+The check is not relaxed here because everything under `k6/` must stay byte-identical across
+all eight branches, so the fix would have to land on all eight at once.
 
 **Single-node cost is not quite unchanged.** The `@SagaEventHandler` on `OrderFailedEvent`
 adds an `association_value_entry` lookup on the saga processor for *every* rejected order,
@@ -177,21 +228,30 @@ KurrentDB and no R2DBC on any current branch.
 - **`domain/saga/OrderReservationSaga.kt`** — started by `OrderCreatedEvent`. Reserves the
   order's items **strictly sequentially**, so an N-line order costs N saga round trips.
   Compensates with `ReleaseReservationCommand` for each already-reserved line on failure.
-  Dispatches on a separate 64-thread executor so the processor thread never blocks on
-  aggregate locks. Every `commandGateway.send` has a failure disposition: a command that
+  Dispatches on a separate 64-thread executor so the processor thread never blocks waiting on
+  an aggregate. Every `commandGateway.send` has a failure disposition: a command that
   fails for good reaches `abandon()`, which releases what was already reserved and sends
   `FailOrderCommand`; the resulting `OrderFailedEvent` comes back to an `@EndSaga` handler.
   That indirection is required — `SagaLifecycle` resolves the current saga from a ThreadLocal
   bound to the processor's unit of work, so it cannot be touched from a pool thread. Emits
   `saga.completed{outcome}`, `saga.lifetime{outcome}` and `saga.command.failed{stage}`.
 - **`config/PessimisticCachingRepository.kt`** — copy-on-write cache in front of the
-  event-sourcing repository. **Caffeine**, bounded by `cache.ttl` (`expireAfterAccess`, 10m)
+  event-sourcing repository, built **lock-free** with `NullLockFactory` (`AxonConfig`
+  overrides `LockingRepository`'s pessimistic default). The class name predates that switch
+  and is kept because `k6/lib/config.js` and `k6/bench/reset.sh` name it and `k6/` must stay
+  byte-identical across the eight branches. Nothing serialises commands on one aggregate, so
+  concurrent commands all load at sequence N, all append N+1, one wins, and the losers take
+  `23505` → `SQLStateResolver` → `ConcurrencyException` → `ConcurrencyRetryScheduler`. A cache
+  hit can therefore be stale; that is caught at append time, repaired by the rollback's
+  incremental `catchUp`, and retried. The deep copy per load is what makes this safe — without
+  a lock, concurrent commands would otherwise mutate one shared root.
+  **Caffeine**, bounded by `cache.ttl` (`expireAfterAccess`, 10m)
   and `cache.maximum-size` (10000); a cache hit skips stream replay entirely. Every load
   deep-copies the aggregate via Jackson. Also implements `ConfirmedStateSource`, the read side
   `CacheFedSnapshotter` uses.
   **Eviction is a performance event, never a correctness one.** The cache is a pure accelerator
   over the event store: an evicted entry is just a miss, and the miss path is
-  `super.doLoadWithLock`, which reads the authoritative store under the same lock. The cached
+  `super.doLoadWithLock`, which reads the authoritative store. The cached
   `SnapshotTrigger` dies with the entry, but that is benign too — `initializeState` replays
   through `publish`, which calls `eventHandled` per replayed event, so the snapshot counter is
   rebuilt from the tail instead of restarting at zero.
@@ -216,9 +276,10 @@ every 30th it fires, and `AbstractSnapshotTrigger.prepareSnapshotScheduling` reg
 inherits `DirectExecutor.INSTANCE`. The stock task then does `eventStore.readEvents(id)` — the fat
 snapshot row plus the whole tail — deserialises it, replays it through the
 `@EventSourcingHandler`s, serialises the result and stores it. All of that ran **synchronously on
-the command thread, before commit, while the pessimistic aggregate lock was still held**, so every
-30th command on a hot item blocked every other command on that item. `additionalBytes` lives on
-the aggregate root, so the row being read and written is the fat one.
+the command thread, before commit**, so every 30th command on a hot item paid a full replay of that
+item's stream inline — and while this branch still locked the aggregate pessimistically, it did so
+with the lock held, blocking every other command on that item. `additionalBytes` lives on the
+aggregate root, so the row being read and written is the fat one.
 
 `CacheFedSnapshotter` serialises the cached root instead. Eliminated per snapshot: the fat
 snapshot-row read, the tail reads, the deserialise and the replay; what remains is the serialise
@@ -230,11 +291,14 @@ mismatch, or `cache.enabled=false` it falls back to the stock replay task.
 - **The type guard is required, not defensive.** `inventorySnapshotTrigger` is the only
   `SnapshotTriggerDefinition` bean, so Axon applies it to `OrderAggregate` too and those snapshots
   arrive at the same snapshotter. They must never be served from the `InventoryItem` cache.
-- **The snapshot lands at sequence N-1, not N.** The trigger fires at `onPrepareCommit` while
-  `advance` runs at `afterCommit`, so the cache still holds the previous sequence. That state is
-  committed *by construction* — which makes this safer than making the stock replay asynchronous
-  would have been, since an async `readEvents` would race the in-flight commit for the same result
-  with no such guarantee. Costs one extra event on the next cold replay and nothing else.
+- **The snapshot lands behind the triggering command's sequence, typically at N-1.** The trigger
+  fires at `onPrepareCommit` while `advance` runs at `afterCommit`, so the cache still holds an
+  earlier sequence — and without a lock, exactly which earlier sequence is not fixed, since a
+  concurrent command may have advanced the cache in between. Whatever is there is committed *by
+  construction*, because the cache only ever holds persisted state; that is what makes this safer
+  than making the stock replay asynchronous would have been, since an async `readEvents` would race
+  the in-flight commit for the same result with no such guarantee. Costs those few events on the
+  next cold replay and nothing else.
 - **`AggregateSnapshotter`'s "replaces more than one event" guard is dropped**, because evaluating
   it needs the very read being eliminated. Harmless at threshold 30.
 - **Metrics:** `inventory_opt_snapshot_duration_seconds{source="cache"|"replay"}`. The `_count`
@@ -282,12 +346,14 @@ on `ES-3`/`ES-4` only; `ES-1`/`ES-2` run Axon's defaults (10000 / 60000).
 `GapAwareTrackingToken` discards every gap more than `max-gap-offset` indices behind the
 token, so an event whose row commits after the token has advanced that far past it is skipped
 by every tracking processor **permanently**. Rolled-back appends leave permanent gaps because
-`global_index` is a `BIGSERIAL` and appends autocommit on their own connection — and at
-`REPLICAS>1` they are no longer rare: the reference `ES-2` run burnt ~8717 index values in
-180 s, which makes 500 indices a ~1.4 s window. The exposure is still small (index assignment
-and commit are in one autocommitted statement) and that run measured
-`completion_ratio_inverse=0.0`, so the value stands — but revisit it before any run
-appreciably faster, and treat a non-zero `completion_ratio_inverse` as a reason to suspect it.
+`global_index` is a `BIGSERIAL` and appends autocommit on their own connection. On the
+lock-holding branches they are rare below `REPLICAS>1`; **on `ES-4` they are routine at every
+replica count**, because `NullLockFactory` means ordinary in-JVM contention produces them. For
+scale: the reference `ES-2` run at `REPLICAS=2` burnt ~8717 index values in 180 s, which makes
+500 indices a ~1.4 s window. The exposure is still small (index assignment and commit are in
+one autocommitted statement) and that run measured `completion_ratio_inverse=0.0`, so the
+value stands — but revisit it before any run appreciably faster, and treat a non-zero
+`completion_ratio_inverse` on any `ES-4` run as a reason to suspect it first.
 
 **`axon.saga.total-segments` is 60 on every ES branch** and must stay that way — it is the
 fixed segment pool that `ceil(total-segments / replicas)` divides, and 60 splits evenly for

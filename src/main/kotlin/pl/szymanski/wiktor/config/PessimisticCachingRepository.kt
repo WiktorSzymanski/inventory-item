@@ -17,24 +17,29 @@ import org.slf4j.LoggerFactory
 import java.util.concurrent.Callable
 
 /**
- * ES-4 copy-on-write repository.
+ * ES-4 copy-on-write repository. **Lock-free**: [AxonConfig] builds it with
+ * [org.axonframework.common.lock.NullLockFactory], not the [org.axonframework.common.lock.PessimisticLockFactory]
+ * that [org.axonframework.modelling.command.LockingRepository] defaults to. Nothing serialises
+ * commands targeting the same aggregate, so correctness rests on the event store's
+ * `UNIQUE (aggregate_identifier, sequence_number)` constraint: two commands that both start from
+ * sequence N try to append N+1, exactly one wins, and the loser's `23505` becomes a
+ * `ConcurrencyException` (via the storage engine's `SQLStateResolver`) that
+ * [ConcurrencyRetryScheduler] retries.
  *
- * Identical caching machinery to the ES-3-optimistic variant — the ONLY difference is the lock: this
- * repository is built with Axon's default [org.axonframework.common.lock.PessimisticLockFactory]
- * instead of `NullLockFactory`, so commands targeting the same aggregate are serialised inside the JVM
- * and never race for the same sequence number. The two branches are therefore a clean A/B of the
- * concurrency strategy alone.
+ * The class NAME predates that switch and is kept deliberately: `k6/lib/config.js` and
+ * `k6/bench/reset.sh` refer to it by name, and everything under `k6/` must stay byte-identical
+ * across all eight variant branches.
  *
  * Holds only CONFIRMED (persisted) aggregate state at a known sequence number in a Caffeine cache
- * bounded by an idle TTL and a maximum size ([CacheProperties]). Each command still works on its OWN
- * deep copy of that state: with the lock in place this is no longer required for correctness, but it
- * keeps the cache immune to a rolled-back command's partial mutations, so a rollback needs no cache
- * invalidation (unlike Axon's stock `CachingEventSourcingRepository`, which shares one instance and
- * must evict it on failure).
+ * bounded by an idle TTL and a maximum size ([CacheProperties]). Each command works on its OWN deep
+ * copy of that state, which without a lock is REQUIRED for correctness — concurrent commands would
+ * otherwise mutate one shared root. It also keeps the cache immune to a rolled-back command's partial
+ * mutations, so a rollback needs no cache invalidation (unlike Axon's stock
+ * `CachingEventSourcingRepository`, which shares one instance and must evict it on failure).
  *
  * **Eviction is a performance event, never a correctness one.** The cache is a pure accelerator over
  * the event store: an evicted entry is simply a miss, and the miss path is `super.doLoadWithLock`,
- * which reads the authoritative store under the same lock. The cached [SnapshotTrigger] is lost with
+ * which reads the authoritative store. The cached [SnapshotTrigger] is lost with
  * the entry, but that too is benign — `EventSourcedAggregate.initializeState` replays through
  * `publish`, which calls `SnapshotTrigger.eventHandled` for every replayed event, so the event
  * counter is rebuilt from the tail rather than restarting from zero.
@@ -44,10 +49,12 @@ import java.util.concurrent.Callable
  * the previous never-evicted `ConcurrentHashMap` did; the bounds exist to stop aggregates that go
  * cold from pinning heap forever.
  *
- * Lock/cache interplay: [org.axonframework.modelling.command.LockingRepository] obtains the lock
- * before [doLoadWithLock] and releases it in the UnitOfWork CLEANUP phase — i.e. after AFTER_COMMIT.
- * [advance] therefore always runs while the lock is still held, so the next command for the same
- * aggregate is guaranteed to observe the cache at the store head: a hit is never stale.
+ * **A cache hit CAN be stale, and that is by design.** [advance] runs at AFTER_COMMIT with no lock
+ * held, so between a hit at sequence N and this command's append another command may have committed
+ * N+1. The stale read is not a correctness hole: it is caught at append time by the unique
+ * constraint, the UnitOfWork rolls back, [catchUp] pulls in the delta, and the retry runs against
+ * fresh state. The cache itself never goes backwards — every write goes through a monotonic `merge`
+ * — and never holds uncommitted state.
  *
  * Cache lifecycle:
  *  - load (hit)  -> deep-copy the confirmed root, reconstruct the aggregate at seq N (NO replay),
@@ -56,11 +63,12 @@ import java.util.concurrent.Callable
  *  - load (miss) -> cold replay via `super` (snapshot + tail), then seed the cache.
  *  - afterCommit -> monotonically advance the cache to the just-persisted state (confirmed only).
  *  - onRollback  -> incremental catch-up: read just the missing delta (`readEvents(id, N+1)`) and
- *                   advance the cache. With the pessimistic lock this finds nothing on a single node;
- *                   it stays for the multi-node case (the lock is JVM-local, not distributed).
+ *                   advance the cache, so the gateway retry re-runs on `cached + delta` rather than
+ *                   on a snapshot + full-tail replay. Lock-free, this is the single-node repair path,
+ *                   not a multi-node-only one.
  *
  * Set `cache.enabled=false` to bypass the cache entirely (every load cold-replays) while keeping the
- * pessimistic locking — useful for A/B measurement against the cached path.
+ * lock-free behaviour — useful for A/B measurement against the cached path.
  */
 class PessimisticCachingRepository<T : Any>(
     builder: EventSourcingRepository.Builder<T>,
@@ -138,6 +146,10 @@ class PessimisticCachingRepository<T : Any>(
         }
         hitCounter.increment()
         // reconfigure (NOT prepareTrigger): keeps the snapshot event counter running across commands.
+        // Without a lock, concurrent commands on one aggregate share this trigger instance and race on
+        // its counter. That race is benign — it can only make the snapshot cadence slightly irregular,
+        // never produce a wrong snapshot — whereas prepareTrigger would hand out a ZEROED counter per
+        // command and stop the threshold from ever being reached, silently disabling snapshotting.
         val trigger = snapshotTriggerDefinition.reconfigure(aggregateType, cached.trigger)
         val aggregate = EventSourcedAggregate.reconstruct(
             deepCopy(cached.root), aggregateModel(), cached.sequence, cached.deleted, eventStore, trigger,
@@ -157,10 +169,10 @@ class PessimisticCachingRepository<T : Any>(
         if (!CurrentUnitOfWork.isStarted()) return
         val uow = CurrentUnitOfWork.get()
         // afterCommit fires only on a successful commit => cache holds persisted state exclusively.
-        // It runs before the lock is released (CLEANUP), so the next command sees the advanced state.
         uow.afterCommit { advance(aggregate.identifierAsString(), aggregate) }
-        // onRollback fires on a failed command; thanks to the deep copy there is nothing to undo, so
-        // this only pulls in events another node may have appended.
+        // onRollback fires on a failed command — lock-free, typically the lost race for this sequence.
+        // Thanks to the deep copy there is nothing to undo, so this only pulls in the events the
+        // winner (local or on another node) appended.
         uow.onRollback { catchUp(aggregate.identifierAsString(), baseSequence) }
     }
 
@@ -176,11 +188,13 @@ class PessimisticCachingRepository<T : Any>(
 
     /**
      * Incremental catch-up after a rolled-back command: read only the delta events the cached state is
-     * missing and apply them, so the next load serves fresh state without a snapshot replay.
+     * missing and apply them, so the retry serves fresh state without a snapshot replay.
      *
-     * On a single node with the pessimistic lock this finds nothing — no other command could have
-     * appended while this one held the lock. It matters only when a second node writes to the same
-     * aggregate. Strictly best-effort and NON-destructive: on any failure the cache is left untouched
+     * Lock-free, this is the ordinary single-node path: the command that lost the race for sequence
+     * N+1 lands here, and by retry time the winner's [advance] (afterCommit) has usually already moved
+     * the cache to the store head — this delta read is the same-effect realisation of that for the
+     * case where no local commit did (e.g. a different node won). Strictly best-effort and
+     * NON-destructive: on any failure the cache is left untouched
      * (never invalidated) so we never fall back into the snapshot+tail replay path this cache exists
      * to avoid. An absent entry — expired, or never loaded — needs no repair: the next load misses and
      * cold-replays from the store, which is authoritative.

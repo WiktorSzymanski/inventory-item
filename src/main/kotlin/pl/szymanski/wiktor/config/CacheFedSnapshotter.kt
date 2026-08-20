@@ -18,8 +18,9 @@ import org.springframework.beans.factory.ObjectProvider
  * `DirectExecutor.INSTANCE`. The stock task then does `eventStore.readEvents(id)` — the (fat)
  * snapshot row plus the whole tail — deserializes it, replays it through the
  * `@EventSourcingHandler`s, serializes the result and stores it. All of that ran **synchronously on
- * the command thread, before commit, while the pessimistic aggregate lock was still held**, so
- * every 30th command on a hot item blocked every other command on that item.
+ * the command thread, before commit**, so every 30th command on a hot item paid a full replay of
+ * that item's stream inline. (When this branch still locked the aggregate pessimistically it was
+ * worse still: the replay ran with the lock held, blocking every other command on the item.)
  *
  * The cache already holds the materialized root at a known sequence, so the replay is redundant:
  * this snapshotter serializes what it has. Eliminated per snapshot: one fat snapshot-row read, the
@@ -34,12 +35,14 @@ import org.springframework.beans.factory.ObjectProvider
  * silent-failure handling, and replaces only the part that reads the store.
  *
  * **Two deliberate differences from the stock snapshotter:**
- *  - The snapshot lands at sequence **N-1**, not N. The trigger fires at `onPrepareCommit` whereas
- *    [PessimisticCachingRepository.advance] runs at `afterCommit`, so the cache still holds the
- *    previous sequence. That state is *committed by construction* — which makes this safer than
- *    making the stock replay asynchronous would have been, since an async `readEvents` would race
- *    the in-flight commit for the same result with no such guarantee. A snapshot one event behind
- *    costs one extra event on the next cold replay and nothing else.
+ *  - The snapshot lands **behind** the triggering command's sequence, typically at N-1. The trigger
+ *    fires at `onPrepareCommit` whereas [PessimisticCachingRepository.advance] runs at `afterCommit`,
+ *    so the cache still holds an earlier sequence. Lock-free, exactly which earlier sequence is not
+ *    fixed — a concurrent command may have advanced the cache in between — but whatever is there is
+ *    *committed by construction*, because the cache only ever holds persisted state. That is what
+ *    makes this safe, and safer than making the stock replay asynchronous would have been, since an
+ *    async `readEvents` would race the in-flight commit with no such guarantee. A snapshot a few
+ *    events behind costs those events on the next cold replay and nothing else.
  *  - `AggregateSnapshotter`'s "only store if the snapshot replaces more than one event" guard is
  *    dropped, because evaluating it needs the very read being eliminated. Harmless at a threshold
  *    of 30: the sequence is always ~29 events past the previous snapshot.
