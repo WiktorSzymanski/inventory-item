@@ -1,6 +1,19 @@
-# Archive Prometheus for replayed benchmark runs.
+# Archive Prometheus + Grafana for completed benchmark runs. Serves the `bench-runs` dashboard.
 #
-#   COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml up -d prometheus-replay
+#   docker volume create bench-replay-data      # first time on this machine only
+#   COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml up -d
+#
+# That `volume create` is not optional and not tidiness: bench-replay-data is declared
+# `external: true` below, so Compose will NOT create it and `up` fails outright with
+# `external volume "bench-replay-data" not found`. External is what makes it immune to
+# `docker compose down -v` — the previous archive was destroyed by exactly that command — so
+# the volume having to pre-exist is the price of that protection, not an oversight.
+#
+# In practice only the VIEWER hits this. Everything that writes the archive creates it on the
+# way past: run-suite.sh (`docker volume create`), prom_archive.sh and run_markers.py (plain
+# `docker run -v`, which auto-creates), and docker-compose.replay-load.yml (which declares the
+# same volume non-external for exactly that reason). So if any run has ever been archived on
+# this machine, the volume is already there.
 #
 # Used STANDALONE, without `-f docker-compose.yml`. That file's api service declares
 # `image: ${IMAGE_TAG:?...}` so a bare `docker compose up` cannot silently run whichever
@@ -57,6 +70,9 @@ services:
       - prometheus-replay
 
 volumes:
+  # external: Compose neither creates nor deletes it. The second half is the point — `down -v`
+  # cannot touch an external volume — and the first half is why `docker volume create
+  # bench-replay-data` has to have happened before the first `up` on a machine. See the header.
   bench-replay-data:
     external: true
   # Not external: this is only Grafana's own state (preferences, starred dashboards). The

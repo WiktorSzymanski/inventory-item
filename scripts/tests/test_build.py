@@ -111,111 +111,79 @@ class CommittedJsonMatchesTheGenerator(unittest.TestCase):
     def test_the_dashboard_json_is_current(self):
         self.assertEqual(self.committed("the-dashboard"), build.build_live())
 
-    def test_bench_replay_json_is_current(self):
-        self.assertEqual(self.committed("bench-replay"), build.build_archived())
-
 
 class GeneratedDashboards(unittest.TestCase):
     def setUp(self):
         self.live = build.build_live()
-        self.archived = build.build_archived()
 
     def test_live_keeps_the_reporter_uid(self):
         """bench.sh renders /api/v5/report/the-dashboard for every run's report.pdf."""
         self.assertEqual(self.live["uid"], "the-dashboard")
 
     def test_panel_ids_are_unique(self):
-        for dashboard in (self.live, self.archived):
-            ids = [p["id"] for p in dashboard["panels"]]
-            self.assertEqual(len(ids), len(set(ids)), f"{dashboard['uid']}: duplicate panel ids")
+        ids = [p["id"] for p in self.live["panels"]]
+        self.assertEqual(len(ids), len(set(ids)), "the-dashboard: duplicate panel ids")
 
     def test_every_variable_used_is_declared(self):
-        for dashboard in (self.live, self.archived):
-            declared = {v["name"] for v in dashboard["templating"]["list"]}
-            for panel in dashboard["panels"]:
-                for target in panel.get("targets", []):
-                    for token in ("$job", "$db", "$dbc", "$apic", "$runs"):
-                        if token in target.get("expr", ""):
-                            self.assertIn(token[1:], declared,
-                                          f"{dashboard['uid']}/{panel['title']}: {token} not declared")
+        declared = {v["name"] for v in self.live["templating"]["list"]}
+        for panel in self.live["panels"]:
+            for target in panel.get("targets", []):
+                for token in ("$job", "$db", "$dbc", "$apic"):
+                    if token in target.get("expr", ""):
+                        self.assertIn(token[1:], declared,
+                                      f"the-dashboard/{panel['title']}: {token} not declared")
 
-    def test_live_dashboard_has_a_switchable_datasource_variable(self):
-        """The live dashboard can be pointed at the replay archive from the dropdown
-        (Task 8): every panel/target uses ${ds}, not a fixed uid, and the default is
-        explicitly the live Prometheus so switching is opt-in, not accidental."""
+    def test_live_dashboard_is_pinned_to_the_live_prometheus(self):
+        """The live dashboard has exactly one job: show the stack that is running now.
+
+        It used to carry a `ds` datasource picker so it could double as an archived-run
+        viewer, pointed at "Prometheus Replay" with the run's absolute window typed into the
+        time picker. That is `bench-runs`' job now, and it does it without the two failure
+        modes the picker had: a dashboard left on the archive silently shows stale data during
+        the next live run, and one left on the live Prometheus after `run-suite.sh`'s
+        `down -v` renders every variable-filtered panel as "No data" while the unfiltered ones
+        look fine -- which reads as a corrupt archive rather than an unresolved variable.
+
+        So: no `ds` variable, and every panel, target and query variable hard-pinned to the
+        live Prometheus. Nothing on this dashboard can reach the archive.
+        """
+        live_ds = {"type": "prometheus", "uid": "prometheus"}
         names = {v["name"]: v for v in self.live["templating"]["list"]}
-        self.assertIn("ds", names)
-        self.assertEqual(names["ds"]["type"], "datasource")
-        self.assertEqual(names["ds"]["current"]["uid"], "prometheus")
+        self.assertNotIn("ds", names)
+        for var in names.values():
+            if var["type"] == "query":
+                self.assertEqual(var.get("datasource"), live_ds,
+                                 f"the-dashboard variable ${var['name']} is not on the live Prometheus")
         for panel in self.live["panels"]:
             if "datasource" in panel:
-                self.assertEqual(panel["datasource"], {"type": "prometheus", "uid": "${ds}"},
-                                  f"the-dashboard/{panel.get('title')}: not on ${{ds}}")
+                self.assertEqual(panel["datasource"], live_ds,
+                                 f"the-dashboard/{panel.get('title')}: not on the live Prometheus")
             for target in panel.get("targets", []):
-                self.assertEqual(target["datasource"], {"type": "prometheus", "uid": "${ds}"},
-                                  f"the-dashboard/{panel.get('title')}: target not on ${{ds}}")
-
-    def test_live_query_variables_follow_the_datasource_picker(self):
-        """The QUERY variables must resolve against ${ds} too, not a fixed uid.
-
-        The sibling test above covers panels and targets, and that was not enough. With the
-        variables pinned to `uid: "prometheus"`, switching Data source -> "Prometheus Replay"
-        repoints every panel at the archive while the variables keep asking the LIVE
-        Prometheus for their options — and after a benchmark that container is gone
-        (`run-suite.sh` ends with `down -v`). label_values() returns nothing, `current` stays
-        {}, `$job` expands empty, and every panel that filters on a variable renders "No data"
-        while the unfiltered ones render normally.
-
-        That half-empty dashboard reads as a corrupt archive rather than an unresolved
-        variable, and it is invisible during a live run: the live Prometheus is up at the
-        moment report.pdf is rendered, so the PDF looks perfect. Only viewing an archived run
-        exposes it.
-        """
-        for var in self.live["templating"]["list"]:
-            if var["type"] != "query":
-                continue
-            self.assertEqual(
-                var.get("datasource"), {"type": "prometheus", "uid": "${ds}"},
-                f"the-dashboard variable ${var['name']} is pinned to "
-                f"{var.get('datasource')} — it will not resolve against the replay archive")
-
-    def test_archived_dashboard_stays_pinned_to_the_replay_datasource(self):
-        """bench-replay must never expose the switch: it only ever holds replayed
-        dump.json data, so pointing it at live Prometheus would be nonsensical."""
-        names = {v["name"] for v in self.archived["templating"]["list"]}
-        self.assertNotIn("ds", names)
-        for panel in self.archived["panels"]:
-            if "datasource" in panel:
-                self.assertEqual(panel["datasource"]["uid"], "prometheus-replay",
-                                  f"bench-replay/{panel.get('title')}: not pinned to prometheus-replay")
-            for target in panel.get("targets", []):
-                self.assertEqual(target["datasource"]["uid"], "prometheus-replay",
-                                  f"bench-replay/{panel.get('title')}: target not pinned to prometheus-replay")
+                self.assertEqual(target["datasource"], live_ds,
+                                 f"the-dashboard/{panel.get('title')}: target not on the live Prometheus")
 
     def test_no_panel_overflows_the_grid(self):
-        for dashboard in (self.live, self.archived):
-            for panel in dashboard["panels"]:
-                pos = panel["gridPos"]
-                self.assertLessEqual(pos["x"] + pos["w"], 24, f"{panel.get('title')} overflows")
+        for panel in self.live["panels"]:
+            pos = panel["gridPos"]
+            self.assertLessEqual(pos["x"] + pos["w"], 24, f"{panel.get('title')} overflows")
 
     def test_no_panels_overlap(self):
         """_layout must not place two panels on the same grid cell. Regression test for a bug
         where wrapping advanced `y` by the INCOMING panel's height instead of the height of the
         row just completed, which overlapped rows whenever a wrap point followed a taller panel."""
-        for dashboard in (self.live, self.archived):
-            claimed = {}
-            for panel in dashboard["panels"]:
-                if panel.get("type") == "row":
-                    continue
-                pos = panel["gridPos"]
-                for x in range(pos["x"], pos["x"] + pos["w"]):
-                    for y in range(pos["y"], pos["y"] + pos["h"]):
-                        cell = (x, y)
-                        self.assertNotIn(
-                            cell, claimed,
-                            f"{dashboard['uid']}: {panel.get('title')!r} overlaps "
-                            f"{claimed.get(cell)!r} at cell {cell}")
-                        claimed[cell] = panel.get("title")
+        claimed = {}
+        for panel in self.live["panels"]:
+            if panel.get("type") == "row":
+                continue
+            pos = panel["gridPos"]
+            for x in range(pos["x"], pos["x"] + pos["w"]):
+                for y in range(pos["y"], pos["y"] + pos["h"]):
+                    cell = (x, y)
+                    self.assertNotIn(
+                        cell, claimed,
+                        f"the-dashboard: {panel.get('title')!r} overlaps "
+                        f"{claimed.get(cell)!r} at cell {cell}")
+                    claimed[cell] = panel.get("title")
 
     def test_live_query_variables_have_a_narrowing_regex(self):
         """Grafana resolves an empty `current` ({}) to the first option under sort=1
@@ -232,7 +200,6 @@ class GeneratedDashboards(unittest.TestCase):
 
     def test_build_is_deterministic(self):
         self.assertEqual(build.build_live(), self.live)
-        self.assertEqual(build.build_archived(), self.archived)
 
 
 if __name__ == "__main__":

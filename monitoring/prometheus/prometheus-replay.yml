@@ -1,5 +1,5 @@
 # Archive-only Prometheus. It scrapes nothing; every series is backfilled from
-# bench-results/<run_id>/dump.json by scripts/replay_run.py.
+# bench-results/<run_id>/prom-snapshot/ by scripts/prom_archive.sh.
 global:
   scrape_interval: 1h
 scrape_configs: []

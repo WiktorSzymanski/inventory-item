@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
 # Print (or open) the Grafana URL that shows one archived run.
 #
-#   scripts/replay_url.sh                                    # the newest run
+#   scripts/replay_url.sh                                     # the newest run
 #   scripts/replay_url.sh bench-results/ES-4_steady_2026...   # a specific run
 #   scripts/replay_url.sh --open                              # and open it in a browser
 #
-# WHY THIS EXISTS. `the-dashboard` defaults to `from=now-15m&to=now` with `refresh=5s`,
-# because its first job is watching a run happen. An archived run is a fixed window in the
-# past, so opening the dashboard without an explicit time range shows an empty dashboard
-# that looks broken — and the 5s refresh keeps sliding the window further away from it.
-# Nothing about that failure points at the time range, so it reads as "the archive is
-# empty" when the data is perfectly fine.
+# WHY THIS EXISTS. `bench-runs` already has a dropdown of every archived run, so this is a
+# shortcut rather than the only way in: it saves picking the run you just finished out of a
+# dropdown of thirty, and gives you a URL to paste into notes.
 #
-# The window comes from the run's own meta.json (`windows.full`, epoch seconds), which
-# covers load plus drain — the drain tail matters, because order_e2e_time is recorded when
-# the projection handles the terminal event and under load that lags the load phase.
+# The `run` variable's VALUE is the run's distance from the dashboard's fixed anchor, applied
+# as a PromQL offset — so that is what goes in the URL, computed from the run's own meta.json
+# (`windows.full`, epoch seconds) exactly the way scripts/dashboards/runs.py computes it.
+# The time range is deliberately NOT set: bench-runs pins it to the anchor window and the
+# offset does the rest.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,24 +43,52 @@ fi
 [ -d "$RUN_DIR" ] || die "no such run directory: $RUN_DIR"
 [ -f "$RUN_DIR/meta.json" ] || die "$RUN_DIR has no meta.json — not a completed run"
 
-URL="$(python3 - "$RUN_DIR" "$GRAFANA_PORT" <<'PY'
+OUT="$(python3 - "$RUN_DIR" "$GRAFANA_PORT" "$MAIN_ROOT" <<'PY'
 import json, os, sys
-run_dir, port = sys.argv[1], sys.argv[2]
+run_dir, port, repo_root = sys.argv[1], sys.argv[2], sys.argv[3]
+# `python3 -` has no __file__, so the repo root arrives as an argument rather than being
+# derived here; it is what makes `scripts.dashboards.runs` importable.
+sys.path.insert(0, repo_root)
+from scripts.dashboards.runs import ANCHOR_EPOCH
+
 with open(os.path.join(run_dir, "meta.json")) as fh:
     meta = json.load(fh)
-# windows.full = [T0, T2]: measured load through end of drain.
-start, end = meta["windows"]["full"]
-print(f"http://localhost:{port}/d/the-dashboard/"
-      f"?from={start}000&to={end}000&var-ds=prometheus-replay&refresh=")
+# windows.full = [T0, T2]: measured load through end of drain; runs.py anchors on T0. The
+# anchor is imported rather than repeated so a stale copy here cannot drift out of step.
+start, _end = meta["windows"]["full"]
+offset = f"{ANCHOR_EPOCH - int(start)}s"
+
+# bench-runs' dropdown is a list baked into the JSON at `build --runs` time, so a run that was
+# never scanned into it has no option to select -- and Grafana responds to an unknown
+# `var-run` by falling back to the first option, drawing a DIFFERENT run's data under this
+# run's name with nothing on screen to say so. Checking here turns that into a message.
+dash = os.path.join(repo_root, "monitoring/grafana/provisioning/dashboards/bench-runs.json")
+known = set()
+if os.path.exists(dash):
+    with open(dash) as fh:
+        for var in json.load(fh)["templating"]["list"]:
+            if var["name"] == "run":
+                known = {o["value"] for o in var["options"]}
+
+print(f"http://localhost:{port}/d/bench-runs/?var-run={offset}")
+print("known" if offset in known else "unknown")
 PY
 )"
+URL="$(echo "$OUT" | sed -n 1p)"
+IN_DROPDOWN="$(echo "$OUT" | sed -n 2p)"
 
-# A run whose TSDB was never archived will open to an empty dashboard for a different
-# reason, so say so here rather than letting it look like the same problem.
+if [ "$IN_DROPDOWN" != "known" ]; then
+    log "WARNING: this run is not in bench-runs.json's Run dropdown, so the URL will land on"
+    log "         whichever run is first. Rebuild the dashboard from the same directory the"
+    log "         archive was loaded from:"
+    log "           python3 -m scripts.dashboards.build --runs $RESULTS_DIR"
+fi
+
+# The likeliest reason for the warning above: scan_runs() skips a run with no prom-snapshot/,
+# so no rebuild will ever put this one in the dropdown.
 if [ ! -d "$RUN_DIR/prom-snapshot" ]; then
-    log "WARNING: $(basename "$RUN_DIR") has no prom-snapshot/ — its TSDB was never captured"
-    log "         (run made with --no-snapshot-tsdb?). Only dump.json survives; this URL"
-    log "         will show an empty dashboard."
+    log "         $(basename "$RUN_DIR") has no prom-snapshot/ — its TSDB was never captured"
+    log "         (run made with --no-snapshot-tsdb?), so rebuilding will not add it."
 fi
 
 if ! curl -sf -o /dev/null "http://localhost:${GRAFANA_PORT}/api/health" 2>/dev/null; then

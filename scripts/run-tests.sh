@@ -6,8 +6,8 @@
 #
 # ONE suite, run ONCE — not once per variant. With a single harness on main there is a
 # single set of tests, which is what "the same for all variants" means here. These cover
-# bench.sh's label and point handling, evaluate.py's validity gates, the dashboard spec and
-# build, and replay_run.py's OpenMetrics generation.
+# bench.sh's label and point handling, evaluate.py's validity gates, and the dashboard spec,
+# build and archived-run rewrite.
 #
 # Stdlib unittest only: no pytest, no conftest.py, no requirements.txt, no Docker and no
 # JDK. `-t .` is required because the tests do `from scripts.dashboards import build`, so

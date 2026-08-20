@@ -141,7 +141,7 @@ def main():
         os.chmod(staging, 0o755)
         os.chmod(om_path, 0o644)
 
-        # Same rule as prom_archive.sh and replay_run.py: backfilled blocks must not be written
+        # Same rule as prom_archive.sh: backfilled blocks must not be written
         # underneath a live head block, so the container is stopped for the copy and restarted
         # afterwards — but only if this script was the one that stopped it.
         running = docker("ps", "-q", "-f", f"name=^{REPLAY_CONTAINER}$", check=False).stdout.strip()

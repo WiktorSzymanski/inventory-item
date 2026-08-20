@@ -51,7 +51,7 @@ when iterating, not the workload.
 | `scripts/run-suite.sh` | Runs `main`'s harness against each variant's image, in turn. |
 | `scripts/run-campaign.sh` | Runs several (scenario, point) steps in turn, each across every variant. Resumable. |
 | `scripts/run-tests.sh` | Runs the harness test suite. |
-| `scripts/replay_url.sh` | Prints the Grafana URL for an archived run, with its time window preset. |
+| `scripts/replay_url.sh` | Prints the `bench-runs` Grafana URL for an archived run, with that run preselected. |
 | `scripts/lib.sh` | Registry, worktree, teardown and point-resolution helpers. |
 | `docs/bench-campaign-runbook.md` | The thesis campaign in execution order. |
 
@@ -210,31 +210,43 @@ admission-plus-latency-SLO knee, this one is throughput only and needs no SLO gu
 
 ### 3. `report.pdf`
 
-`bench-results/<run_id>/report.pdf` is a full render of the 53-panel dashboard for that
+`bench-results/<run_id>/report.pdf` is a full render of the live dashboard for that
 run's window, produced at the end of the run. Nothing to start — just open it. On an ES run
 the TO-family panels render empty by design, and vice versa.
 
 ### 4. Grafana, against the archived run
 
 This is the full-fidelity path: the complete Prometheus TSDB, not the ~20 series
-`dump.json` extracts.
+`dump.json` extracts. One dashboard reads it — `bench-runs`.
 
 **The replay stack is self-contained — it brings its own Grafana.** The benchmark stack's
 Grafana lives in `docker-compose.yml`, which `run-suite.sh` tears down with `down -v` after
 every run, so after a benchmark there is nothing on `:3000` to look at.
 
 ```bash
+docker volume create bench-replay-data   # first time on this machine only
 COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml up -d
 ```
 
 That starts both halves: `prometheus-replay` (`:9091`) and `grafana-replay` (**`:3001`**).
+The archive volume is `external`, which is what keeps `docker compose down -v` from
+destroying it — the flip side being that Compose will not create it either, so a first `up`
+without that `volume create` fails with `external volume "bench-replay-data" not found`. Any
+machine that has archived a run already has the volume: `run-suite.sh`, `prom_archive.sh` and
+`docker-compose.replay-load.yml` each create it on the way past.
+
 Note the different port — the archive viewer is deliberately kept off `:3000` so it can
 never collide with a benchmark that is running, and both may be up at once. Use it
 **standalone**: do not add `-f docker-compose.yml`, which demands `IMAGE_TAG` and
 contributes nothing here. `COMPOSE_PROJECT_NAME` must match the benchmark stack's so the
 two share a network.
 
-Then get the URL for a run — this is the reliable way in:
+Then open **`Bench Runs`** at `http://localhost:3001/d/bench-runs/` and pick a run from the
+**Run** dropdown. Every panel redraws over an axis starting at that run's own t0, so
+flipping between two runs diffs them in place. **Leave the time picker alone** — it is not
+how the run is selected.
+
+To jump straight to one run instead of scrolling the dropdown:
 
 ```bash
 scripts/replay_url.sh                    # newest run
@@ -242,24 +254,19 @@ scripts/replay_url.sh bench-results/ES-4_steady_20260807T101745Z
 scripts/replay_url.sh --open             # and open it in a browser
 ```
 
-**Opening the dashboard without an explicit time range shows nothing, and it is not
-obvious why.** `Inventory — Full Stack` defaults to `from=now-15m&to=now` with a 5-second
-refresh, because its first job is watching a run happen. An archived run is a fixed window
-in the past, so those defaults point at a stretch of time the archive has no samples for —
-and the refresh slides the window further away every 5 seconds. It looks like an empty
-archive; the data is fine. `replay_url.sh` reads the window out of the run's own
-`meta.json` and pins the refresh off, so the question does not arise.
+The dropdown is a list baked into `bench-runs.json` at build time, so a run archived since
+the last build is not in it — rebuild with
+`python3 -m scripts.dashboards.build --runs bench-results`, or let
+`docker-compose.replay-load.yml` do the archive and the dashboard together (see
+[`docs/bench-replay.md`](docs/bench-replay.md) §5, or §1 for the whole path from a
+directory of runs to a browsable dashboard). `replay_url.sh` warns when the run you
+named is not among the options.
 
-The manual equivalent, if you would rather: open `http://localhost:3001`, set the **Data
-source** dropdown to **Prometheus Replay**, turn auto-refresh **off**, and set an absolute
-time range from `meta.json`'s `windows.full` (epoch seconds — load through end of drain;
-the drain tail matters, because `order_e2e_time` is recorded when the projection handles
-the terminal event, which under load lags the load phase).
-
-The archive volume is `external`, so `docker compose down -v` cannot touch it. With the
-benchmark stack down the plain **Prometheus** datasource has nothing to resolve — only
-**Prometheus Replay** returns data, which is expected. Query the archive directly at
-`http://localhost:9091` if you would rather not use Grafana at all.
+`Inventory — Full Stack` is the live dashboard only; it is pinned to the benchmark stack's
+Prometheus and cannot show an archived run. With the benchmark stack down its panels are
+simply empty, which is expected. Query the archive directly at `http://localhost:9091` if
+you would rather not use Grafana at all. The archive volume is `external`, so
+`docker compose down -v` cannot touch it.
 
 Stop it when you are done; it holds `:9091` and `:3001`, neither of which the benchmark
 needs:
@@ -290,8 +297,11 @@ magnitude below the truth. Real latency is `order_e2e_time`, which reaches you t
 series and `report.pdf` would survive a run. TSDB preservation guards against exactly that,
 and it is **on by default** (`SNAPSHOT_TSDB=1`, `ARCHIVE_TSDB=1`) — every run copies its full
 TSDB into `bench-results/<run_id>/prom-snapshot/` before teardown, and also merges it into
-the external `bench-replay-data` volume for Grafana replay. Pass `--no-snapshot-tsdb` to skip
-both, or `--no-archive-tsdb` to keep the host-side snapshot but skip the replay-volume merge.
+the external `bench-replay-data` volume the `bench-runs` dashboard reads. Pass
+`--no-snapshot-tsdb` to skip both, or `--no-archive-tsdb` to keep the host-side snapshot but
+skip the archive merge. A run with no `prom-snapshot/` never reaches the `bench-runs`
+dropdown — `dump.json` still feeds the comparison tables, but nothing rebuilds a dashboard
+from it.
 `SNAPSHOT_TSDB=0` / `ARCHIVE_TSDB=0` work the same way as environment variables.
 
 ## Per-branch details

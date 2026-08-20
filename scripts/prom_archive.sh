@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Merge a Prometheus TSDB snapshot's blocks into the replay archive (bench-replay-data),
-# so a run keeps its full metric surface -- not just what dump.json extracted -- for
-# viewing in Grafana's bench-replay dashboard, or the live "the-dashboard" pointed at the
-# prometheus-replay datasource, at any time in the future.
+# so a run keeps its full metric surface -- not just what dump.json extracted -- and can be
+# opened in Grafana's "bench-runs" dashboard at any time in the future. A run whose blocks
+# never reach this volume cannot be viewed at all; dump.json feeds the tables, not a dashboard.
 #
 # Unlike prom_restore.sh, this does NOT wipe the target volume: benchmark runs never
 # overlap in time, so TSDB blocks from many runs coexist side by side in one Prometheus,
@@ -34,7 +34,7 @@ fi
 REPLAY_CONTAINER=prometheus-replay
 
 # Plain `docker`, not `docker compose`, and deliberately so — the same choice
-# scripts/replay_run.py makes for the same operation:
+# scripts/run_markers.py makes for the same operation:
 #
 #   * docker-compose.yml declares `image: ${IMAGE_TAG:?...}`, so ANY compose invocation
 #     naming it fails outright unless IMAGE_TAG happens to be set. Nothing about archiving
@@ -61,7 +61,7 @@ else
     echo "==> ${REPLAY_CONTAINER} is not running; copying straight into the volume."
 fi
 
-# Mirrors the try/finally in scripts/replay_run.py: prometheus-replay must come back up even
+# Mirrors the try/finally in scripts/run_markers.py: prometheus-replay must come back up even
 # if the copy fails partway through, so it is never left down after this script exits. Only
 # restarts what this script stopped.
 restart_replay() {

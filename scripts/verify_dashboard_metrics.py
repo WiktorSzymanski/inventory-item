@@ -20,13 +20,13 @@ never both, so run this against a stack of each family before concluding a panel
 metric MISSING on both families, with no meter registered on any branch, is a dead panel.
 
 An idle stack cannot prove a counter is absent (Micrometer registers many meters lazily, on
-first increment), so run this while load is flowing, or point it at the replay archive, which
-holds a full TSDB snapshot of a completed run.
+first increment), so run this while load is flowing, or point it at the archive, which holds a
+full TSDB snapshot of a completed run.
 
 Usage:
-    python3 scripts/verify_dashboard_metrics.py                       # live dashboard, :9090
-    python3 scripts/verify_dashboard_metrics.py --dashboard archived  # replay dashboard, :9091
-    python3 scripts/verify_dashboard_metrics.py --var job=inventory-es --var dbc=postgres-es
+    python3 scripts/verify_dashboard_metrics.py                   # live dashboard, :9090
+    python3 scripts/verify_dashboard_metrics.py --dashboard runs  # archived runs, :9091
+    python3 scripts/verify_dashboard_metrics.py --dashboard runs --run TO-3
 """
 import argparse
 import json
@@ -38,13 +38,8 @@ import urllib.request
 
 DASHBOARDS = {
     "live": "monitoring/grafana/provisioning/dashboards/the-dashboard.json",
-    "archived": "monitoring/grafana/provisioning/dashboards/bench-replay.json",
     "runs": "monitoring/grafana/provisioning/dashboards/bench-runs.json",
 }
-# Matches scripts/replay_run.py: every archived run is re-anchored to this epoch, so an instant
-# query at "now" sees nothing — the samples sit years in the past, far outside the 5-minute
-# staleness window. Evaluate inside the anchored window instead.
-ANCHOR_EPOCH = 1767225600
 # scripts/dashboards/runs.py ANCHOR_EPOCH. Duplicated rather than imported because this script
 # runs as a path script (`python3 scripts/verify_dashboard_metrics.py`), which puts scripts/ on
 # sys.path, not the repo root — `from scripts.dashboards import runs` would not resolve.
@@ -55,7 +50,6 @@ DEFAULT_VARS = {
     "live": {"job": "inventory-to", "db": "inventory", "dbc": "postgres-to",
              "apic": "inventoryitemreservation-api-to-1", "__rate_interval": "1m",
              "__interval": "15s", "__range": "1h"},
-    "archived": {"runs": ".*", "__rate_interval": "1m", "__range": "3650d"},
     # $run is not listed: its value is a per-run offset read out of the dashboard's own
     # variable options, so --run picks a run rather than a raw duration.
     "runs": {"job": "inventory", "db": "inventory", "dbc": "postgres",
@@ -158,7 +152,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dashboard", choices=sorted(DASHBOARDS), default="live")
-    ap.add_argument("--prometheus", help="default: :9090 for live, :9091 for archived")
+    ap.add_argument("--prometheus", help="default: :9090 for live, :9091 for the archive")
     ap.add_argument("--var", action="append", default=[], metavar="NAME=VALUE",
                     help="override a template variable, e.g. --var job=inventory-es")
     ap.add_argument("--run", metavar="SUBSTRING",
@@ -183,15 +177,10 @@ def main():
         variables["end"] = marker_end(prom, offset)
         print(f"run: {label}  ($run = {offset}, $end = {variables['end']})")
 
-    # Archived samples live at the anchor epoch, so probe across a run-length spread of offsets:
-    # a per-step metric has one sample per capacity step and is absent between them.
-    #
-    # bench-runs works the other way round: its samples sit at their real wall-clock time and the
-    # QUERY carries the offset, so the probe times are inside its own (later) anchor window and
-    # only need to be far enough in for a 1m rate to have data on both sides.
-    if args.dashboard == "archived":
-        anchor, offsets = ANCHOR_EPOCH, [60, 300, 600, 1200, 1800, 3600]
-    elif args.dashboard == "runs":
+    # bench-runs' samples sit at their real wall-clock time and the QUERY carries the offset, so
+    # the probe times are inside its anchor window and only need to be far enough in for a 1m
+    # rate to have data on both sides. The live dashboard just evaluates at "now".
+    if args.dashboard == "runs":
         anchor, offsets = ANCHOR_RUNS, [600, 1800, 3000]
     else:
         anchor, offsets = 0, [None]

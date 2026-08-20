@@ -40,10 +40,10 @@ It replaces the checkout-and-teardown ritual, and preserves the Prometheus TSDB 
 
 `bench.sh` keeps no TSDB of its own. The raw series live in the `prometheus-data` volume, and
 the `down -v` between variants destroys them. What survives unaided is `dump.json`'s ~20
-extracted series — 20 of the merged dashboard's 56 panels. Every `pg_stat_*` metric, WAL size,
-locks, checkpoints, GC pause, HikariCP, Tomcat, and on the TO family the outbox and
-order-timing panels have no archived equivalent at any later effort, because they were never
-extracted in the first place.
+extracted series, which feed the comparison tables — but nothing rebuilds a dashboard from
+them. Every `pg_stat_*` metric, WAL size, locks, checkpoints, GC pause, HikariCP, Tomcat, and
+on the TO family the outbox and order-timing panels exist only in the snapshot, so a run whose
+snapshot was skipped cannot be looked at afterwards at all.
 
 Two copies are made, both immune to `down -v`:
 
@@ -99,7 +99,7 @@ build above is only to get the cold-cache cost out of the way before a long camp
   the reason is the finding. The suite prints a per-variant table at the end.
 - **`knee`**, on `capacity` runs — apply the bracketing rule in §2.1.
 - **the `TSDB ->` line.** If it says the snapshot failed, the run's own artifacts are still
-  valid but it will only ever replay from `dump.json`.
+  valid, but it will never appear in the `bench-runs` dropdown — there is no TSDB to show.
 - **the knob warning**, if you set `RESERVE_DELAY_MS` or `PAYLOAD_BYTES`.
 
 `image_fresh` compares the image's `Created` against the HEAD of **the branch it was built
@@ -463,11 +463,15 @@ number surprises you, spot-repeat that single run with `--only <variant>` before
 
 Because the TSDB is snapshotted on every run, every panel works months later:
 
-1. Open `the-dashboard` in Grafana.
-2. Switch the **"Data source"** dropdown from "Prometheus" to **"Prometheus Replay"**.
-3. Set the time picker to that run's `windows.full` from its `meta.json`.
+1. Bring up the replay stack:
+   `COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml up -d`
+2. Open **`bench-runs`** at `http://localhost:3001/d/bench-runs/`.
+3. Pick the run from the **Run** dropdown, and leave the time picker alone.
 
-If a snapshot was ever skipped, that run falls back to `dump.json` — ~20 of 56 panels.
+If the dropdown does not list it, rebuild:
+`python3 -m scripts.dashboards.build --runs bench-results`. If a snapshot was skipped for that
+run, no rebuild will help — there is nothing archived to show. See
+[`bench-replay.md`](bench-replay.md) for the whole path.
 
 To re-merge a host-side snapshot that failed to archive at the time, from that variant's
 worktree:
