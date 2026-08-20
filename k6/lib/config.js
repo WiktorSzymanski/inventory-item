@@ -1,5 +1,5 @@
 // Resolved run configuration. Every knob is an env var with a default. This file — and the
-// whole k6/ directory — now lives once, on `main`, shared by all eight variant branches.
+// whole k6/ directory — now lives once, on `main`, shared by every variant branch.
 // There is no bench.env any more; main.js/lib.sh derive what used to live there.
 
 export const HARNESS_VERSION = '1.0.0';

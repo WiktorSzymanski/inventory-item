@@ -57,7 +57,7 @@ Each run does: build → reset DB + restart API → seed → warmup → settle �
 | `DISTINCT_ITEMS` | 6 | Number of item aggregates — the contention axis |
 | `ITEMS_PER_ORDER` | 4 | Lines per order — each costs one *sequential* saga hop |
 | `PAYLOAD_BYTES` | 0 | Aggregate padding — copy-on-write and snapshot cost |
-| `RESERVE_DELAY_MS` | 0 | Artificial per-reserve sleep inside the aggregate — the domain-work cost axis (`TO-3`, `ES-4` only) |
+| `RESERVE_DELAY_MS` | 0 | Artificial per-reserve sleep inside the aggregate — the domain-work cost axis (every variant since 2026-08-06) |
 | `READ_RATE` | 0 | Optional concurrent read load (separate scenario) |
 | `SEED` | 1337 | RNG seed; identical item sequence across variants |
 | `SKIP_BUILD` | 0 | Skip gradle+docker build (only if the image is already current) |
@@ -87,97 +87,30 @@ terminal state, dirty tree). Never report an INVALID run as a result.
 
 ## 3. What to run, and where
 
-12 variants. Running every scenario on all of them is roughly 60+ hours, most of it
-uninformative. Run in phases — **each phase depends on the previous one**.
+**The campaign plan lives in [`docs/bench-campaign-runbook.md`](../docs/bench-campaign-runbook.md),
+not here.** That runbook is written against `scripts/run-suite.sh` on `main`, which is the only
+supported way to run the suite: it reads `variants.env`, builds each variant's image and drives
+this harness against it. Phases, staircase bracketing, the common rate and the result tables are
+all there.
 
-### The variants
+This section used to carry a phase plan of its own. It was written when each variant branch
+carried its own copy of `k6/` and its own `bench.env`, and it planned **12** variants — including
+`ES-3-optimistic`, `ES-3-pesimistic`, `ES-3-WeakRefCache`, `ES-3-WeakRefCache-NullLock` and
+`ES-3-pesimistic-scaling`, none of which exist any more. Following it would have meant
+`git checkout <branch> && ./k6/bench/bench.sh` per variant, which is exactly the loop `main` now
+owns. It was removed on 2026-08-20 rather than renumbered, because the runbook already says all of
+it correctly.
 
-| Family | Variants | Distinguishing axis (verified markers) |
-|---|---|---|
-| **TO** | `TO-1` | `@Version` OL + outbox, `NOTIFY`, `@Async` publisher |
-| | `TO-2` | as TO-1 plus `LISTEN` — full NOTIFY/LISTEN outbox |
-| | `TO-3`, `TO-4` | outbox without NOTIFY/LISTEN or `@Async` |
-| **ES base** | `ES-1`, `ES-2`, `ES-3` | event store progression; `ES-3` adds `StrongCache` |
-| **ES-3 lock A/B** | `ES-3-optimistic` | `NullLockFactory` + CoW cache |
-| | `ES-3-pesimistic` | `PessimisticLockFactory` + CoW cache |
-| **ES-3 cache A/B** | `ES-3-WeakRefCache` | weak-reference cache |
-| | `ES-3-WeakRefCache-NullLock` | weak-ref cache + `NullLockFactory` |
-| **Scale-out** | `ES-3-pesimistic-scaling` | multi-replica behind nginx |
+**The live set is seven:** `TO-1`, `TO-2`, `TO-3`, `TO-4`, `ES-1`, `ES-2`, `ES-4`. `variants.env`
+on `main` is the registry and the only place that set is defined. Branches that were variants and
+are not any more are documented in
+[`docs/retired-variants.md`](../docs/retired-variants.md).
 
-### Phase 1 — capacity, on all 12 (~6 h)
-
-```bash
-SCENARIO=capacity ./k6/bench/bench.sh
-```
-
-Nothing else can be interpreted until this is done: it produces each variant's **knee**,
-the highest arrival rate it sustains with bounded latency and a non-growing queue. Without
-it you have no defensible basis for choosing a comparison rate.
-
-```bash
-python3 k6/bench/compare.py --knee bench-results/*_capacity_*
-```
-
-Then take **`RATE = 0.6 × the lowest knee across all 12`**. One rate for every variant —
-comparing variants at *different* rates measures nothing.
-
-### Phase 2 — steady, on all 12 (~4 h)
-
-```bash
-SCENARIO=steady RATE=<0.6 × min knee> DURATION=10m ./k6/bench/bench.sh
-```
-
-The head-to-head table: same workload, same rate, compare latency, CPU, DB growth per
-order. This is your primary thesis result. Run each variant **twice** and check the pair
-agrees within ~5% — if it doesn't, the harness isn't controlling something and no
-cross-variant conclusion is safe yet.
-
-### Phase 3 — targeted sweeps (~6 h)
-
-One factor at a time from the Phase 2 baseline. Do **not** run the full cross product.
-
-| Sweep | Command delta | Run on | Why there |
-|---|---|---|---|
-| **Contention** | `DISTINCT_ITEMS=1` then `100` (with `ITEMS_PER_ORDER=1`) | `ES-3-optimistic`, `ES-3-pesimistic`, `ES-3-WeakRefCache-NullLock`, `TO-1` | This is the lock A/B. One hot aggregate is where `NullLockFactory` and `PessimisticLockFactory` diverge; 100 items is the no-contention control. |
-| **Payload** | `PAYLOAD_BYTES=1048576 DURATION=5m` | `ES-3-*` cache variants, `TO-1` control | Padding rides only on `InventoryCreatedEvent`, so it does **not** inflate appends — it inflates snapshot rows and the per-command Jackson deep copy. It is a copy-on-write cost lever, and it is what separates strong-ref from weak-ref caching. |
-| **Reserve cost** | `RESERVE_DELAY_MS=5` then `50` | `TO-3`, `ES-4` (the only branches that implement it) | The counterpart to the payload sweep: it lengthens the *reserve* itself, not the payload. The sleep happens while the DB row lock (TO) or the pessimistic aggregate lock (ES) is held, so it is the lever that shows how each family degrades when domain logic stops being free. Throughput ceiling is roughly `workers / (ITEMS_PER_ORDER × delay)` on TO and `DISTINCT_ITEMS / delay` on ES — **lower `STEP_START`/`RATE` to match**, or the staircase saturates at step 0 and evaluates `INVALID`. |
-| **Fan-out** | `ITEMS_PER_ORDER=1` then `8` | one TO, one ES-3 | Each line is a *sequential* saga hop on ES; on TO it is one transaction. The clearest structural difference between the families. |
-| **Read load** | `READ_RATE=200` | one TO, one ES-3 | Tests the projection-decoupling claim. Deserves its own table — never fold it into the write numbers. |
-
-**Cap payload runs at 5 minutes** and check free disk first: 1 MiB snapshots at ~13/s is
-roughly 47 GB/hour.
-
-### Phase 4 — spike, on 6 (~1.5 h)
-
-```bash
-SCENARIO=spike ./k6/bench/bench.sh
-```
-
-Run on `TO-1`, `TO-2`, `TO-3`, `ES-1`, `ES-3-pesimistic`, `ES-3-optimistic`. Measures
-backlog build-up and recovery time — the async-outbox variants (TO-1/TO-2 with
-NOTIFY/LISTEN) against the saga. `drain_service_rate` is the payoff number here and is
-meaningless at low rates, so it only becomes real once a backlog exists.
-
-### Phase 5 — soak, on 4 (~4 h)
-
-```bash
-SCENARIO=soak RATE=<0.6 × min knee> ./k6/bench/bench.sh
-```
-
-Run only on your headline variants — one TO, `ES-1`, `ES-3-pesimistic`, and whichever
-ES-3 cache variant wins Phase 3. Catches projection-lag creep, heap drift, and DB growth
-per order that a 10-minute run cannot show. Everything here is drift-ratio based
-(last decile ÷ first decile).
-
-### Phase 6 — scale-out (optional)
-
-`ES-3-pesimistic-scaling` at the Phase 2 rate, then above the single-node knee. The only
-variant where horizontal scaling is on the table. Set `EXPECTED_REPLICAS` first.
-
-### Minimum viable campaign
-
-If time is short, Phases 1 and 2 alone (~10 h) give a defensible TO-vs-ES comparison.
-Add the contention sweep for the lock A/B and you have the thesis' core claims covered.
+One thing worth keeping from the old plan, because it is a property of the workload rather than of
+any variant list: **`RESERVE_DELAY_MS` lowers the achievable throughput ceiling** to roughly
+`workers / (ITEMS_PER_ORDER x delay)` on TO and `DISTINCT_ITEMS / delay` on ES. Lower
+`STEP_START`/`RATE` to match, or the staircase saturates at step 0 and evaluates `INVALID`.
+Named workload points in `points.env` already carry matched staircases for the cells that use it.
 
 ---
 
@@ -195,7 +128,7 @@ Add the contention sweep for the lock A/B and you have the thesis' core claims c
 | `drain_seconds = 0`, `drain_service_rate` null | Rate too low to build a backlog. Expected below the knee |
 
 **Single harness, on `main`.** `k6/`, `docker-compose.yml` and `docker-compose.bench.yml`
-now live in exactly one place — this worktree — shared by all eight variants; there is no
+now live in exactly one place — this worktree — shared by every variant; there is no
 `bench.env` and no per-branch copy left to keep in step. The variant branches still carry
 their own `k6/` and `bench.env`, but those are unsupported: running `./k6/bench/bench.sh`
 from a variant branch produces a different stack than `scripts/run-suite.sh` on `main` does.

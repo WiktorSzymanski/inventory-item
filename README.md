@@ -1,19 +1,24 @@
 # inventory-item — variant benchmark suite
 
 A Master's thesis benchmark comparing **Traditional Ownership** (`TO-1`..`TO-4`) against
-**Event Sourcing** (`ES-1`..`ES-4`) for the same inventory reservation domain. Each variant
-lives on its own branch and implements the same HTTP API.
+**Event Sourcing** (`ES-1`, `ES-2`, `ES-4`) for the same inventory reservation domain. Each
+variant lives on its own branch and implements the same HTTP API.
 
 **`main` holds the only harness and no application code at all.** There is no `src/`, no
-Gradle build and no `Dockerfile` here — those live on the eight variant branches. What `main`
-provides is the entry point for building and running the eight variants as a set, plus the
+Gradle build and no `Dockerfile` here — those live on the seven variant branches. What `main`
+provides is the entry point for building and running the seven variants as a set, plus the
 one shared `k6/` harness they are all measured with.
+
+`variants.env` is the registry and the only place the set is defined; every script reads it and
+nothing else. Branches that used to be variants and are not any more — `ES-3`, `TO-2-opt` and
+four others — are documented in [`docs/retired-variants.md`](docs/retired-variants.md), with what
+re-adding each one would take.
 
 ## Quick start
 
 ```bash
 scripts/build-images.sh                                   # one image per branch
-SCENARIO=steady RATE=60 DURATION=10m scripts/run-suite.sh  # benchmark all eight
+SCENARIO=steady RATE=60 DURATION=10m scripts/run-suite.sh  # benchmark all seven
 python3 k6/bench/compare.py bench-results/*_steady_*       # the thesis table
 ```
 
@@ -40,7 +45,7 @@ when iterating, not the workload.
 | `variants.env` | The registry. `<variant> <branch> <family> <capabilities>`. |
 | `points.env` | Named workload points (`W-base`, `C11`, …) binding a label to its knobs. |
 | `workload.env` | Optional sticky knobs for a campaign. Ships fully commented out. |
-| `k6/` | **The harness.** One copy, shared by all eight variants. |
+| `k6/` | **The harness.** One copy, shared by every variant. |
 | `docker-compose.yml` | The unified stack: services `api` and `postgres`, no family names. |
 | `scripts/build-images.sh` | Builds `inventory-reservation-<variant>:latest` from each branch's worktree. **The only script that touches branches.** |
 | `scripts/run-suite.sh` | Runs `main`'s harness against each variant's image, in turn. |
@@ -99,7 +104,7 @@ resolves from `.worktrees/<variant>/` and passes to `bench.sh`. Comparing agains
 `HEAD` — as `bench.sh` did on its own, since its `REPO_ROOT` is now `main` — is two unrelated
 clocks, and one docs-only commit here reported all eight variants `INVALID`.
 
-**Runs are sequential and each starts from a full teardown.** All eight variants publish the
+**Runs are sequential and each starts from a full teardown.** Every variant publishes the
 same host ports, so they cannot overlap. `run-suite.sh` pins one Compose project name (`iir`)
 for every variant and runs `down -v --remove-orphans` before each. The `-v` matters more than
 it looks: `reset.sh` only truncates tables, so without it a `TO`↔`ES` switch would inherit
@@ -116,7 +121,7 @@ Every knob `bench.sh` understands is passed straight through — `RATE`, `DURATI
 `DISTINCT_ITEMS`, `ITEMS_PER_ORDER`, `PAYLOAD_BYTES`, `WARMUP_ITERATIONS`, `STEP_*` and the
 rest. Set them per invocation, or pin them for a campaign in `workload.env`.
 
-**Both aggregate-cost levers are honoured on all eight branches** as of 2026-08-06.
+**Both aggregate-cost levers are honoured on every registered branch** as of 2026-08-06.
 
 | Knob | What it costs | Implemented as |
 |---|---|---|

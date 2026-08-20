@@ -5,8 +5,8 @@ time including a ~10% re-run allowance.
 
 Ported from `TO-3`'s copy on 2026-08-06 and rewritten against `scripts/run-suite.sh`. The
 original drove one branch at a time — `git checkout <branch> && docker compose down -v` then
-`./scripts/bench_run.sh` — which is exactly the loop `main` now owns. Every eight-command
-block in phase 1 collapses to a single command here.
+`./scripts/bench_run.sh` — which is exactly the loop `main` now owns. Every per-branch block in
+phase 1 collapses to a single command here.
 
 ---
 
@@ -14,14 +14,14 @@ block in phase 1 collapses to a single command here.
 
 ### What is still blocked
 
-The campaign design assumes `RESERVE_DELAY_MS` and `PAYLOAD_BYTES` are honoured on **all
-eight** branches. As of 2026-08-06 both are, so §6 is unconstrained — any pair of winners
-produces valid `C01`, `C10` and `C11` cells.
+The campaign design assumes `RESERVE_DELAY_MS` and `PAYLOAD_BYTES` are honoured on **every**
+branch. As of 2026-08-06 both are, so §6 is unconstrained — any pair of winners produces valid
+`C01`, `C10` and `C11` cells.
 
 | Knob | Honoured on | Implemented as |
 |---|---|---|
-| `PAYLOAD_BYTES` | all eight | TO: `additional_bytes` column (V6). ES: aggregate state from the creation event. |
-| `RESERVE_DELAY_MS` | all eight | TO: `reserve_delay_ms` column (V5, V2 on TO-3). ES: aggregate state, slept in the `@CommandHandler`. |
+| `PAYLOAD_BYTES` | all seven | TO: `additional_bytes` column (V6). ES: aggregate state from the creation event. |
+| `RESERVE_DELAY_MS` | all seven | TO: `reserve_delay_ms` column (V5, V2 on TO-3). ES: aggregate state, slept in the `@CommandHandler`. |
 
 `run-suite.sh` still warns if a knob is set for a variant that lacks it, reading
 `variants.env`'s capability column. Heed it if it ever fires: k6 sends both fields to every
@@ -133,14 +133,23 @@ past capacity runs exceeded — and a drain timeout is an automatic `INVALID`.
 
 ---
 
-## 2. Phase 1 — breakpoints (24 runs, ~15 h)
+## 2. Phase 1 — breakpoints (21 runs, ~13 h)
 
 Grouped **by workload point, not by variant**, so a mis-calibrated staircase surfaces on run
-1 of 8 rather than run 24 of 24. Each block below is all eight variants; `run-suite.sh` walks
-them in registry order (TO-1..TO-4 then ES-1..ES-4), tearing the stack down between each.
+1 of 7 rather than run 21 of 21. Each block below is all seven variants; `run-suite.sh` walks
+them in registry order (TO-1..TO-4, then ES-1, ES-2, ES-4), tearing the stack down between each.
+
+**The set is seven, not eight.** `ES-3` and `TO-2-opt` were retired from the registry on
+2026-08-20 — see [`retired-variants.md`](retired-variants.md) for why, and for what re-adding
+either would take. Older revisions of this runbook plan 24 runs across eight variants.
+
+**`ES-1`, `ES-2` and `ES-4` mean lock-free code as of 2026-08-20** — they adopted the trees of the
+former `ES-*-NullLock` branches, which are gone. A run directory from before that date carries the
+same name and `PessimisticLockFactory` code, so date any archived ES run before it enters a table
+here.
 
 `--continue-on-fail` is deliberate: one variant failing its staircase should not cost the
-other seven their runs. The end-of-suite table shows who failed.
+other six their runs. The end-of-suite table shows who failed.
 
 ### 2.1 The bracketing rule — apply after every block
 
@@ -191,15 +200,15 @@ python3 k6/bench/compare.py --knee bench-results/*_capacity_W-base_*
 Record every knee in §7 Table A, then:
 
 ```
-RATE = round(0.6 x the LOWEST knee across all eight W-base runs)
+RATE = round(0.6 x the LOWEST knee across all seven W-base runs)
 ```
 
-One rate for all eight. Comparing variants at different rates measures nothing, and this soak
+One rate for all seven. Comparing variants at different rates measures nothing, and this soak
 is the headline head-to-head table. Write the number into Table A before running §4.
 
 ---
 
-## 4. Phase 1 — soaks (8 runs, ~8 h)
+## 4. Phase 1 — soaks (7 runs, ~7 h)
 
 W-base, 45 min each, all at the single `RATE` from §3. Substitute the computed number:
 
@@ -380,7 +389,6 @@ env SCENARIO=capacity POINT=W-fan,C11 \
 | TO-4 | | | |
 | ES-1 | | | |
 | ES-2 | | | |
-| ES-3 | | | |
 | ES-4 | | | |
 
 **Lowest W-base knee:** ______  →  **`RATE` = 0.6 x that, rounded:** ______
@@ -395,7 +403,6 @@ env SCENARIO=capacity POINT=W-fan,C11 \
 | TO-4 | | | | | | |
 | ES-1 | | | | | | |
 | ES-2 | | | | | | |
-| ES-3 | | | | | | |
 | ES-4 | | | | | | |
 
 **`<TO-WIN>` =** ______   **`<ES-WIN>` =** ______
