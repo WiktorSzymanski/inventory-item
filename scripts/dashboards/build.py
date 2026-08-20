@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Generate both Grafana dashboards from scripts/dashboards/spec.py.
+"""Generate the Grafana dashboards from scripts/dashboards/spec.py.
 
     python3 -m scripts.dashboards.build
+    python3 -m scripts.dashboards.build --runs bench-results
 
-Writes monitoring/grafana/provisioning/dashboards/{the-dashboard,bench-replay}.json.
+Always writes monitoring/grafana/provisioning/dashboards/{the-dashboard,bench-replay}.json.
+With --runs it also writes bench-runs.json, the archived-run browser (see runs.py).
 Never edit those files by hand — edit spec.py and re-run this.
 """
+import argparse
 import json
 import os
 
@@ -262,13 +265,35 @@ def _summary_tables(panel_id, y):
     return [scalars, dimensioned]
 
 
+def _write(name, dashboard):
+    path = os.path.join(OUT_DIR, f"{name}.json")
+    with open(path, "w") as fh:
+        json.dump(dashboard, fh, indent=2, sort_keys=False)
+        fh.write("\n")
+    print(f"wrote {path} ({len(dashboard['panels'])} panels)")
+
+
 def main():
-    for name, dashboard in (("the-dashboard", build_live()), ("bench-replay", build_archived())):
-        path = os.path.join(OUT_DIR, f"{name}.json")
-        with open(path, "w") as fh:
-            json.dump(dashboard, fh, indent=2, sort_keys=False)
-            fh.write("\n")
-        print(f"wrote {path} ({len(dashboard['panels'])} panels)")
+    # bench-runs is rebuilt only when --runs names the directories to scan, and is otherwise
+    # left alone. Its dropdown is a list of runs baked into the JSON, so a bare `build` that
+    # regenerated it from a default location would quietly replace a campaign's worth of
+    # options with whatever happened to be in bench-results/ -- and the loss would only show
+    # up as a shorter dropdown, which is not something anyone checks.
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--runs", nargs="+", metavar="DIR", default=None,
+                        help="directories of completed runs (scanned 1-2 levels deep for "
+                             "meta.json); rebuilds bench-runs.json from them")
+    args = parser.parse_args()
+
+    _write("the-dashboard", build_live())
+    _write("bench-replay", build_archived())
+    if args.runs:
+        from . import runs as runs_mod
+        found = runs_mod.scan_runs(args.runs)
+        if not found:
+            raise SystemExit(f"no completed runs (meta.json) found under: {' '.join(args.runs)}")
+        _write("bench-runs", runs_mod.build_runs(found))
+        print(f"  bench-runs: {len(found)} runs, anchored at {runs_mod.ANCHOR_ISO}")
 
 
 if __name__ == "__main__":

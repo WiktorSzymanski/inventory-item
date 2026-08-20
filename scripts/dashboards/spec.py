@@ -348,6 +348,49 @@ SECTIONS = [
         Panel(title="HikariCP — connection timeouts", unit="ops", w=8,
               targets=[Target("timeouts", 'rate(hikaricp_connections_timeout_total{job="$job"}[1m])')],
               archived=None),
+        # The two halves of the same question, for both families: a lane is capped either by its
+        # THREADS or by the CONNECTIONS those threads borrow, and reading one without the other
+        # is how a saturated pool gets mistaken for a slow database.
+        #
+        # Both are broken out per pool, which the older "HikariCP connections" panel above is not:
+        # its targets carry no legend label, so two pools render as two anonymous series. That was
+        # harmless while every branch had one pool; it stopped being harmless once ES grew
+        # axon-jdbc-pool alongside the primary. TO-3 also briefly had app-pool/write-pool
+        # (2026-08-15 to 2026-08-17); per-pool legends outlive that and cost nothing.
+        #
+        # sum()-wrapped on purpose. Unaggregated, each expression returns one series PER REPLICA as
+        # soon as REPLICAS>1, and the per-pool legend then repeats with no way to tell the copies
+        # apart. `by (pool)` / `by (name)` keeps one line per pool across any replica count.
+        #
+        # Deliberately no tomcat_threads_*: it publishes nothing on either family, which is why
+        # test_spec.NEVER_COLLECTED blocks it. The HTTP lane's connection cost is still visible
+        # here — on both families the accept transaction runs on the Tomcat thread, so it shows up
+        # as active connections on the pool serving it.
+        #
+        # Coverage is uneven by branch, and that is a property of the branches rather than of the
+        # panel: executor_* exists wherever a ThreadPoolTaskExecutor bean does, plus TO-1/TO-2/TO-3/
+        # TO-4, which bind it by hand because their merged order pool is not one; saga_pool_* only on
+        # ES-4-NullLock-mod ({pool="command"|"retry"}) and ES-4-NullLock-A, which since the
+        # 400-connection envelope publishes all three of {pool="saga-worker"|"command"|"retry"}.
+        # Axon's pools are uninstrumented on the base ES branches, so an ES run that shows Hikari
+        # connections but no thread series is reporting correctly, not broken.
+        #
+        # THE "order-retry" TARGET BELOW IS DEAD AS OF 2026-08-18 and should be removed: TO-1, TO-2,
+        # TO-3 and TO-4 merged the retry pool into the worker pool, so NO branch publishes
+        # order_retry_pool_active any more — there is no separate pool that can be active, and the
+        # retried attempts are inside the order-worker executor_* series instead.
+        # order_retry_pool_queued does still exist on those four but means only "in backoff", so
+        # executor_queued_tasks minus it is the ready backlog.
+        Panel(title="Busy threads by pool (TO & ES)", unit="short", w=12,
+              targets=[Target("{{name}}", 'sum by (name) (executor_active_threads{job="$job"})'),
+                       Target("order-retry", 'sum(order_retry_pool_active{job="$job"})'),
+                       Target("saga {{pool}}", 'sum by (pool) (saga_pool_active{job="$job"})')],
+              archived=None),
+        Panel(title="Connections in use by pool (TO & ES)", unit="short", w=12,
+              targets=[Target("{{pool}} active", 'sum by (pool) (hikaricp_connections_active{job="$job"})'),
+                       Target("{{pool}} pending", 'sum by (pool) (hikaricp_connections_pending{job="$job"})'),
+                       Target("{{pool}} max", 'sum by (pool) (hikaricp_connections_max{job="$job"})')],
+              archived=None),
     ]),
     Section("PostgreSQL", [
         Panel(title="Database size", unit="bytes", w=8,

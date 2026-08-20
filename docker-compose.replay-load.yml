@@ -1,0 +1,144 @@
+# Fill the bench-replay archive from a directory of completed runs, then exit.
+#
+#   RUNS_DIR=./bench-results docker compose -f docker-compose.replay-load.yml up \
+#       --abort-on-container-failure
+#
+# Three one-shot services replace the manual sequence in docs/bench-replay.md §8 and §10:
+#
+#   scripts/prom_archive.sh bench-results/<run_id>/prom-snapshot   (once per run)
+#   python3 scripts/run_markers.py <dirs>
+#   python3 -m scripts.dashboards.build --runs <dirs>
+#
+# RUNS_DIR (default ./bench-results) is the "selected directory": it is bind-mounted at /runs
+# and scanned one AND two levels deep by scripts/dashboards/runs.py:scan_runs(), so both a
+# flat results directory and a campaign directory of per-phase subdirectories work as-is. A
+# dropdown is built from the runs that have both meta.json and prom-snapshot/ (scan_runs()'s
+# rule), while every prom-snapshot/ found is copied into the volume whether or not the run
+# finished — blocks the dropdown cannot reach are harmless, a missing block is not.
+#
+# Used STANDALONE, like docker-compose.replay.yml and for the same reason: docker-compose.yml
+# declares `image: ${IMAGE_TAG:?…}`, and Compose interpolates the whole merged file before it
+# looks at which service you asked for, so any command naming both files fails outright.
+#
+# No docker socket, no image build. The marker series is produced by the real
+# scripts/run_markers.py (--dry-run, which is exactly the OpenMetrics text it would have
+# backfilled itself), so the marker format lives in one place only.
+#
+# ─── PRECONDITION ────────────────────────────────────────────────────────────────────────
+# prometheus-replay MUST NOT be running. Backfilled blocks written underneath a live head
+# block corrupt the archive. prom_archive.sh and run_markers.py handle this with `docker
+# stop`, which needs the socket; this stack cannot see a container it does not own, so:
+#
+#   docker stop prometheus-replay      # if it is up — the volume survives, it is not `down -v`
+#
+# Run the loader first, start the viewer afterwards, and the question never arises.
+# ─────────────────────────────────────────────────────────────────────────────────────────
+services:
+  # Reads the runs, writes two things that nothing else can produce: the OpenMetrics text for
+  # the marker series (to a scratch volume, for replay-markers), and bench-runs.json itself —
+  # whose "Run" dropdown is a list baked into the JSON, so the archive and the dashboard have
+  # to be regenerated from the SAME directory or the dropdown lists runs the volume lacks.
+  #
+  # Only two paths of the repo are mounted, not the whole tree: build.py derives its output
+  # directory from its own __file__, so /repo/scripts pins REPO_ROOT to /repo and the
+  # dashboards directory is the one place it may write.
+  replay-scan:
+    image: python:3.12-slim
+    working_dir: /repo
+    volumes:
+      - ./scripts:/repo/scripts:ro
+      - ./monitoring/grafana/provisioning/dashboards:/repo/monitoring/grafana/provisioning/dashboards
+      - ${RUNS_DIR:-./bench-results}:/runs:ro
+      - replay-staging:/staging
+    environment:
+      # Runs as root (the mounted dashboards directory is host-owned and must stay that way),
+      # so anything it creates is handed back. Override if your uid is not 1000.
+      HOST_UID: ${HOST_UID:-1000}
+      HOST_GID: ${HOST_GID:-1000}
+    entrypoint: ["/bin/sh", "-euc"]
+    command:
+      - |
+        python3 scripts/run_markers.py /runs --dry-run > /staging/markers.om
+        python3 -m scripts.dashboards.build --runs /runs
+        chown "$$HOST_UID:$$HOST_GID" /repo/monitoring/grafana/provisioning/dashboards/*.json
+
+  # Merges each run's snapshot blocks into the archive. `cp -rn` (no-clobber) is what makes
+  # re-running safe: a block directory is an immutable ULID, so consecutive snapshots — which
+  # overlap heavily, each containing every block of the runs before it — skip what is already
+  # there instead of overwriting an archived block with a differently-compacted copy of
+  # itself. See scripts/prom_archive.sh for the long version.
+  #
+  # The chown is required, not tidiness: this container is root, but prom/prometheus runs as
+  # nobody (65534) and must be able to WRITE into /prometheus (it mmaps queries.active at
+  # startup) or it panics on boot with what looks like a broken volume. It also leaves the
+  # volume writable for replay-markers, which runs as nobody — hence this service running
+  # BEFORE the markers rather than after.
+  replay-archive:
+    image: alpine:3.20
+    volumes:
+      - ${RUNS_DIR:-./bench-results}:/runs:ro
+      - bench-replay-data:/prometheus
+    entrypoint: ["/bin/sh", "-euc"]
+    command:
+      - |
+        snaps=0; blocks=0
+        for snap in /runs/*/prom-snapshot /runs/*/*/prom-snapshot; do
+            [ -d "$$snap" ] || continue
+            snaps=$$((snaps + 1))
+            before=$$blocks
+            for block in "$$snap"/*/; do
+                [ -d "$$block" ] || continue
+                cp -rn "$$block" /prometheus/
+                blocks=$$((blocks + 1))
+            done
+            # An empty prom-snapshot/ is a run whose capture failed. scan_runs() checks that
+            # the directory EXISTS, not that it holds blocks, so such a run still reaches the
+            # dropdown -- and picking it draws 53 empty panels with nothing to say why.
+            [ "$$blocks" -gt "$$before" ] || echo "WARNING: no blocks in $$snap" >&2
+        done
+        # replay-scan already exits non-zero when no run qualifies, so reaching here with
+        # nothing to copy means the runs were found but their snapshots were not — a
+        # different fault, and one that would otherwise surface as 53 empty panels.
+        [ "$$snaps" -gt 0 ] || { echo "no prom-snapshot/ found under /runs" >&2; exit 1; }
+        chown -R 65534:65534 /prometheus
+        echo "archived $$blocks block(s) from $$snaps snapshot(s)"
+    depends_on:
+      replay-scan:
+        condition: service_completed_successfully
+
+  # Backfills bench_run_marker, without which every panel of bench-runs is a parse error
+  # (`$end` resolves empty and each query ends in `vector()`). Deliberately loud: the
+  # alternative is silently drawing the NEXT run's data past the selected run's end.
+  #
+  # Runs as nobody so the blocks it writes are owned by the uid prometheus-replay runs as,
+  # which is why no second chown is needed after this step.
+  replay-markers:
+    image: prom/prometheus:v2.52.0
+    user: "65534:65534"
+    entrypoint: ["/bin/promtool"]
+    command: ["tsdb", "create-blocks-from", "openmetrics", "/staging/markers.om", "/prometheus"]
+    volumes:
+      - bench-replay-data:/prometheus
+      - replay-staging:/staging:ro
+    depends_on:
+      replay-archive:
+        condition: service_completed_successfully
+
+volumes:
+  # NOT `external: true`, unlike docker-compose.replay.yml — creating the archive on a machine
+  # that has never had one is half the point of this file, and Compose does not auto-create
+  # external volumes. The explicit `name` keeps it un-prefixed, so it is the same volume the
+  # viewer stack mounts, whatever project name this file is run under.
+  #
+  # THE COST: `docker compose -f docker-compose.replay-load.yml down -v` WOULD DELETE THE
+  # ARCHIVE. There is never a reason to run it — every service here exits on its own. Tear
+  # the loader down with `down` (no -v) if you tear it down at all.
+  #
+  # REPLAY_VOLUME exists so a throwaway target can be named for testing this file, e.g.
+  # REPLAY_VOLUME=bench-replay-test. Leave it unset for real use.
+  bench-replay-data:
+    name: ${REPLAY_VOLUME:-bench-replay-data}
+
+  # Hand-off between replay-scan and replay-markers, project-scoped and disposable: it holds
+  # one OpenMetrics file that is rewritten from the runs on every load.
+  replay-staging:

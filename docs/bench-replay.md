@@ -7,7 +7,10 @@ unless something copies them out before the next run resets it. What survives on
 summary numbers extracted while the run was live — plus `report.pdf` and `meta.json`. Sections 1-7
 below are about turning that `dump.json` back into something viewable. Section 8 covers the better
 option for any *future* run: keep the actual TSDB and get full panel parity, not the ~30 signals
-`dump.json` can carry.
+`dump.json` can carry. Section 10 is how to browse those full-fidelity runs once you have them —
+a dashboard with a Run dropdown, every run drawn on one axis starting at its own t0 — and
+section 11 collapses building that archive into a single `docker compose` command against
+whichever results directory you name.
 
 This is how you turn a `dump.json` back into something you can look at in Grafana, months after
 the run happened, side by side with other runs. `scripts/replay_run.py` rebuilds a *viewable, not
@@ -145,13 +148,16 @@ curl -s 'http://localhost:9091/api/v1/query?query=count(replay_series)&time=1767
 
 ## 4. Dashboards — edit `spec.py`, never the JSON
 
-`scripts/dashboards/spec.py` is the single source of truth for **both** Grafana dashboards; it is
-the only file in this workflow a human edits. Panels declare `targets` (live PromQL, against the
+`scripts/dashboards/spec.py` is the single source of truth for **all three** Grafana dashboards; it
+is the only file in this workflow a human edits. Panels declare `targets` (live PromQL, against the
 scraping Prometheus) and `archived` (the `replay_*` equivalent, or `None` if `dump.json` cannot
-carry that signal). Regenerate the committed JSON after any change:
+carry that signal). `bench-runs` (section 10) is generated from `targets` too, rewritten by
+`scripts/dashboards/runs.py`, so it needs no third declaration per panel. Regenerate the committed
+JSON after any change:
 
 ```bash
-python3 -m scripts.dashboards.build
+python3 -m scripts.dashboards.build                       # the-dashboard + bench-replay
+python3 -m scripts.dashboards.build --runs bench-results  # ... and bench-runs
 ```
 
 This writes `monitoring/grafana/provisioning/dashboards/the-dashboard.json` (live dashboard,
@@ -280,7 +286,7 @@ run and merge its blocks into `bench-replay-data`. Every panel then works for th
 it did live.
 
 This is a separate, opt-in step you run *after* `bench.sh` finishes — never inside it. `bench.sh`
-and everything under `k6/` must stay byte-identical across all eight variant branches (the
+and everything under `k6/` must stay byte-identical across every variant branch (the
 acceptance test is `git diff --stat ES-2 HEAD -- k6 docker-compose.bench.yml` returning empty), so
 this can't be a step bolted onto the harness itself.
 
@@ -321,7 +327,10 @@ behaviour change), so:
 
 Every panel — including the 33 that `bench-replay` can never show, like `pg_stat_*`, WAL size,
 locks, checkpoints, GC pause, HikariCP, and the TO family's outbox/order-timing panels — now
-queries the archive instead of live Prometheus and renders that run's real data. `bench-replay`
+queries the archive instead of live Prometheus and renders that run's real data. (Step 3 is the
+tedious part, and section 10's `bench-runs` dashboard exists to remove it: same panels, same
+archive, but the run is chosen from a dropdown instead of typed into the time picker.)
+`bench-replay`
 still exists for its own purpose: overlaying several runs' `dump.json` extracts on one
 elapsed-time axis, which `the-dashboard` cannot do. `bench-replay` itself has no such dropdown and
 stays pinned to `prometheus-replay` — it only ever holds replayed data, so a switch would be
@@ -412,7 +421,7 @@ All four arrived through the merge of `jvm-spring-dashboard.json` and `inventory
 — legacy dashboards written against an older implementation. The merge test enforced that no name
 was *lost*, which is exactly how dead names got carried *forward*. `GC pause duration` kept its
 working avg/max targets and was retitled; the other three panels are gone. Recovering the middle
-two would mean changing the application under measurement across all eight variant branches
+two would mean changing the application under measurement across every variant branch
 mid-campaign, so they were removed rather than enabled.
 `MergeCoverage.test_never_collected_metrics_are_not_reintroduced` now fails if any of the nine
 names comes back.
@@ -429,3 +438,193 @@ One caveat found and cleared along the way: `ES-1`, `ES-2` and `ES-3` have no
 `percentiles-histogram` block in `application.yaml` at all, which looks like it should leave every
 latency quantile empty on those branches. It does not — they configure histograms programmatically
 via `MeterFilter` instead, and their archived runs' quantiles are populated.
+
+---
+
+## 10. `bench-runs` — one dropdown, one run, one axis
+
+Section 8 gets you full fidelity but costs a manual step per run: open `the-dashboard`, switch the
+datasource, then copy that run's `windows.full` out of `meta.json` into the time picker. Comparing
+four variants at one workload point means doing that four times, and any slip in the time range
+shows up as panels that look wrong rather than as an error. `bench-runs`
+(`monitoring/grafana/provisioning/dashboards/bench-runs.json`, uid `bench-runs`) removes the step:
+it carries a **"Run" dropdown**, and picking a run redraws all 53 panels over an axis that starts
+at that run's own t0.
+
+```bash
+python3 scripts/run_markers.py bench-results <other-results-dirs>          # once per new run
+python3 -m scripts.dashboards.build --runs bench-results <other-results-dirs>
+```
+
+Open it at `http://localhost:3001/d/bench-runs/` with the replay stack up (section 1). **Leave the
+time picker alone** — it is not how the run is selected, and moving it shows a different, mostly
+empty slice of the archive. A "Selected run" header panel names the current pick, since the axis
+itself gives no clue which run is on screen.
+
+### Clipping: why `run_markers.py` is not optional
+
+The axis is sized for the *longest* archived run, and the campaign ran back-to-back — the smallest
+start-to-next-start gap is 62.9 minutes against runs of up to 75.1. Without clipping, everything
+past the selected run's own end shows **the run that followed it**: ~13 minutes of a stranger's
+warm-up on a 60-minute run, and on the 10-minute `TO-3 W-fan` run from `bench-results/`, three
+consecutive runs drawn as one line. It reads as the runs having been merged together, which is the
+one thing this dashboard exists to avoid.
+
+Clipping needs each run's end expressed in anchor time, and no Grafana variable can compute it: a
+PromQL offset must be a literal duration, so the dropdown's value is already spoken for.
+`scripts/run_markers.py` publishes the missing number as data instead —
+
+```
+bench_run_marker{run, run_id, variant, point, offset, end_at} 1
+```
+
+— one series per run, sampled every 5 minutes across the anchor window (plus 30 minutes of padding
+on each side, because Grafana resolves `label_values()` over whatever range is on screen). The
+dashboard chains a hidden `$end` variable off the selected run's offset,
+`label_values(bench_run_marker{offset="$run"}, end_at)`, and every target is wrapped as
+
+```promql
+(<expr with per-selector offsets>) and on() (vector(time()) < vector($end))
+```
+
+`and on()` gates the left side on the right side existing while matching on no labels, so series,
+legends and grouping are untouched; the right side is a bare true/false on the evaluation instant.
+The wrap is applied once per target, not per selector — it is a property of the query's evaluation
+time, not of any one metric.
+
+If the markers are missing, `$end` resolves empty and every query ends in `vector()` — a parse
+error on every panel. That is the intended failure: the alternative is silently showing the next
+run's data as though it belonged to this one. 870 samples for 30 runs; the cost is nil.
+
+### How it re-anchors without touching the data
+
+Nothing is re-ingested: every run stays exactly where `prom_archive.sh` put it, at its real
+wall-clock time. What moves is the query. The dashboard's time range is pinned to a fixed anchor
+window (**2026-09-01T00:00:00Z**, spanning the longest run rounded up to 10 minutes), every
+selector is rewritten as `metric{...}[1m] offset $run`, and the `run` variable's *value* is that
+run's distance from the anchor — a PromQL duration such as `1677219s` — while its *label* is the
+run's name. Selecting a run subtracts its own age and pulls its window into the anchor's:
+
+```
+time range   [2026-09-01T00:00, +80m]        (never moves)
+TO-1 W-base  offset 1677219s  -> 2026-08-12T14:06Z
+ES-4 W-hot   offset 1588348s  -> 2026-08-13T14:47Z
+```
+
+The anchor sits *after* the campaign, not at `replay_run.py`'s 2026-01-01 origin, because reaching
+forward in time needs a **negative** offset and Prometheus rejects those without
+`--enable-feature=promql-negative-offset`. `scan_runs()` refuses to build a dashboard containing a
+run that starts after the anchor rather than emit queries that 400; if the campaign ever runs past
+2026-09-01, move `ANCHOR_EPOCH` in `scripts/dashboards/runs.py` (and `ANCHOR_RUNS` in
+`verify_dashboard_metrics.py`, which `test_runs.AnchorsAgree` keeps in step).
+
+Three consequences worth knowing:
+
+- **One run at a time, by construction.** A query carries one offset, so two runs cannot appear as
+  separate lines in one panel. `bench-replay` is still the overlay dashboard — from `dump.json`, so
+  ~20 panels, not 53. Toggling `bench-runs` between two runs is the full-fidelity substitute: the
+  axis does not move, so the panels diff against each other by eye.
+- **`$job` / `$db` / `$dbc` / `$apic` are constants here, not query variables.** A query variable
+  resolves against the dashboard's time range, and this range holds no data at all, so
+  `label_values()` would come back empty and every panel would query `{job=""}` and render blank.
+  The unified stack emits one value for each on both families (verified against archived TO and ES
+  runs), so there is nothing to choose.
+- **Runs shorter than the window leave empty space on the right.** The range spans the longest run,
+  and clipping stops each panel at its own end, so a 26-minute run simply goes blank a third of the
+  way across instead of continuing into the next run.
+
+### Which runs appear
+
+`scan_runs()` lists a run only when it has **both** `meta.json` (it finished) and `prom-snapshot/`
+(its TSDB was captured). A run archived from `dump.json` alone would otherwise fill all 53 panels
+with "No data" and no indication that the dashboard is fine and the data is simply not there.
+Directories are scanned one and two levels deep, so a campaign directory of per-phase subdirectories
+works as a single argument. Options are grouped by workload point, then variant, then start time —
+"same workload, next variant" being the comparison actually being made.
+
+A bare `python3 -m scripts.dashboards.build` deliberately leaves `bench-runs.json` untouched: its
+dropdown is a list baked into the JSON, and regenerating it from a default location would quietly
+replace a campaign's worth of options with whatever happened to be in `bench-results/`. The only
+symptom would be a shorter dropdown.
+
+### Verified end to end
+
+Clipping, 2026-08-14: rendering `TO-3 W-fan` (10.0 minutes long) before the fix drew three
+consecutive runs across 45 minutes of the axis; after it, the same URL draws that run's own 10
+minutes and nothing else. The long case is intact in the other direction — `TO-1 W-base` (73.4
+minutes: 60 of load, 13 of drain) still returns data at t0+73min and stops at t0+74min, so the
+drain tail that `order_e2e_time` lands in is not truncated.
+
+2026-08-14, 30 runs (26 from the breakpoint campaign plus 4 earlier ones):
+
+- `verify_dashboard_metrics.py --dashboard runs --run "<label>"` — **0 ERROR** on all 99 targets,
+  which is what proves the offset rewrite produces valid PromQL for every expression in `spec.py`;
+  84/99 return data on a TO run, 81/99 on an ES run, and the difference is exactly the family split
+  (outbox/order-timing/executor/Spring-Data empty on ES; projection lag, saga, aggregate cache,
+  events-processed empty on TO).
+- All 30 dropdown options return application data at their own t0+10min.
+- Grafana's own interpolation was checked by rendering the "Offered vs accepted vs terminal" panel
+  through `/render/d-solo/bench-runs/?var-run=...` for `TO-1 W-base` and `ES-4 W-hot`: both drew
+  the full capacity ramp starting at 00:00 on an identical axis, saturating at ~300 and ~200 req/s
+  respectively. (The replay Grafana on :3001 has no image renderer attached — that check ran
+  against a throwaway Grafana + `grafana-image-renderer` pair on the same network, since
+  `docker-compose.yml`'s renderer belongs to the benchmark stack.)
+
+Two gaps are properties of the captured data, not of this dashboard, and they apply to every
+archived run: **HTTP error rate** is empty because these runs threw no 4xx/5xx, and the five
+**container** panels (CPU, memory rss/working set, network rx/tx) are empty because cadvisor
+emitted no `name` label in these runs — only `id`, with just two docker-scoped series. `$dbc` and
+`$apic` therefore match nothing. Verify with
+`count(container_memory_rss{name!=""})` over any run's window before reading anything into it.
+
+---
+
+## 11. `docker-compose.replay-load.yml` — rebuild the archive from a directory of runs
+
+Sections 8 and 10 leave you running four things by hand: create the volume, `prom_archive.sh`
+once per run, `run_markers.py`, `build.py --runs`. `docker-compose.replay-load.yml` is those
+steps as one command, pointed at whichever results directory you name:
+
+```bash
+RUNS_DIR=./bench-results-2/bench-results/breakpoint \
+  docker compose -f docker-compose.replay-load.yml up --abort-on-container-failure
+COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml up -d
+```
+
+`RUNS_DIR` defaults to `./bench-results`. It is bind-mounted read-only at `/runs` and scanned one
+**and** two levels deep, so a campaign directory of per-phase subdirectories is a valid single
+argument. Unlike section 1, **the volume does not have to exist first**: this file declares
+`bench-replay-data` non-external precisely so `up` creates it on a machine that has never had an
+archive — which is also the one hazard worth naming: `down -v` *with this file* would delete the
+archive. Nothing here needs tearing down; every service exits on its own.
+
+**`prometheus-replay` must not be running.** Blocks written underneath a live head block corrupt
+the archive. `prom_archive.sh` and `run_markers.py` avoid that with `docker stop`, which needs the
+socket; this stack has no socket and cannot see a container it does not own, so the ordering is
+yours to keep: load first, then start the viewer, or `docker stop prometheus-replay` before you
+load.
+
+Three one-shot services, chained on `service_completed_successfully`, on stock images:
+
+| service | image | does |
+|---|---|---|
+| `replay-scan` | `python:3.12-slim` | `run_markers.py --dry-run` into a scratch volume, then `build.py --runs` — which rewrites `bench-runs.json`, so the dropdown and the volume are built from the same directory |
+| `replay-archive` | `alpine` | `cp -rn` every `prom-snapshot/*/` block into the volume, then `chown -R 65534:65534` |
+| `replay-markers` | `prom/prometheus` | `promtool tsdb create-blocks-from openmetrics` for `bench_run_marker`, as `nobody` so its blocks need no second chown |
+
+Only `scripts/` and the provisioning `dashboards/` directory are mounted from the repo (`build.py`
+derives its output path from its own `__file__`, so `/repo/scripts` is what pins `REPO_ROOT`), and
+generated JSON is chowned back to `${HOST_UID:-1000}:${HOST_GID:-1000}` — override those if your
+uid is not 1000. Re-running is safe in both halves: `cp -rn` skips blocks already archived, and
+promtool rewrites the markers with the same values.
+
+Two things it reports that are easy to miss otherwise: `WARNING: no blocks in …` for a run whose
+snapshot directory exists but is empty (`scan_runs()` checks only that the directory exists, so
+such a run reaches the dropdown and draws 53 empty panels), and the block table promtool prints
+for the markers it wrote.
+
+Verified 2026-08-15 against `bench-results/` on a throwaway volume: 7 runs scanned, 8 blocks
+archived from 9 snapshots (one empty, warned), markers backfilled, and with a Prometheus mounted
+on the result `count(count by (__name__)({__name__=~".+"} offset 1697395s))` returned **616**
+metric names at the anchor while the clipped form of a panel query returned data at t0+10min and
+nothing past that run's `end_at`.

@@ -39,17 +39,28 @@ import urllib.request
 DASHBOARDS = {
     "live": "monitoring/grafana/provisioning/dashboards/the-dashboard.json",
     "archived": "monitoring/grafana/provisioning/dashboards/bench-replay.json",
+    "runs": "monitoring/grafana/provisioning/dashboards/bench-runs.json",
 }
 # Matches scripts/replay_run.py: every archived run is re-anchored to this epoch, so an instant
 # query at "now" sees nothing — the samples sit years in the past, far outside the 5-minute
 # staleness window. Evaluate inside the anchored window instead.
 ANCHOR_EPOCH = 1767225600
+# scripts/dashboards/runs.py ANCHOR_EPOCH. Duplicated rather than imported because this script
+# runs as a path script (`python3 scripts/verify_dashboard_metrics.py`), which puts scripts/ on
+# sys.path, not the repo root — `from scripts.dashboards import runs` would not resolve.
+# test_runs.AnchorsAgree fails if the two drift apart.
+ANCHOR_RUNS = 1788220800
 
 DEFAULT_VARS = {
     "live": {"job": "inventory-to", "db": "inventory", "dbc": "postgres-to",
              "apic": "inventoryitemreservation-api-to-1", "__rate_interval": "1m",
              "__interval": "15s", "__range": "1h"},
     "archived": {"runs": ".*", "__rate_interval": "1m", "__range": "3650d"},
+    # $run is not listed: its value is a per-run offset read out of the dashboard's own
+    # variable options, so --run picks a run rather than a raw duration.
+    "runs": {"job": "inventory", "db": "inventory", "dbc": "postgres",
+             "apic": ".*-api-[0-9]+", "__rate_interval": "1m", "__interval": "15s",
+             "__range": "1h"},
 }
 
 # PromQL function and keyword names, so they are not mistaken for metric names. Label names need
@@ -116,6 +127,33 @@ def targets(dashboard_path):
                 yield panel["title"], target.get("legendFormat") or "-", target["expr"]
 
 
+def pick_run(dashboard_path, wanted):
+    """(label, offset) for one option of bench-runs' `run` variable."""
+    with open(dashboard_path) as fh:
+        options = next(v for v in json.load(fh)["templating"]["list"]
+                       if v["name"] == "run")["options"]
+    if not options:
+        sys.exit(f"{dashboard_path} has no runs; rebuild it with build.py --runs <dir>")
+    if wanted:
+        matches = [o for o in options if wanted in o["text"]]
+        if not matches:
+            sys.exit(f"no run matching {wanted!r}. Options:\n  "
+                     + "\n  ".join(o["text"] for o in options))
+        options = matches
+    return options[0]["text"], options[0]["value"]
+
+
+def marker_end(prom, offset):
+    """The selected run's end, from the marker series scripts/run_markers.py backfills."""
+    res = prom.get("/api/v1/query", query=f'bench_run_marker{{offset="{offset}"}}',
+                   time=ANCHOR_RUNS + 60)
+    series = res.get("data", {}).get("result", [])
+    if not series:
+        sys.exit(f"no bench_run_marker with offset={offset}. Backfill the markers first:\n"
+                 f"  python3 scripts/run_markers.py <run-dirs>")
+    return series[0]["metric"]["end_at"]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -123,6 +161,9 @@ def main():
     ap.add_argument("--prometheus", help="default: :9090 for live, :9091 for archived")
     ap.add_argument("--var", action="append", default=[], metavar="NAME=VALUE",
                     help="override a template variable, e.g. --var job=inventory-es")
+    ap.add_argument("--run", metavar="SUBSTRING",
+                    help="--dashboard runs: which run's option to check (matched against the "
+                         "dropdown label); default is the first option")
     args = ap.parse_args()
 
     variables = dict(DEFAULT_VARS[args.dashboard])
@@ -131,22 +172,41 @@ def main():
         variables[name.lstrip("$")] = value
 
     prom = Prom(args.prometheus or
-                ("http://localhost:9091" if args.dashboard == "archived" else "http://localhost:9090"))
+                ("http://localhost:9090" if args.dashboard == "live" else "http://localhost:9091"))
     known = prom.known_names()
+
+    if args.dashboard == "runs":
+        # Mirrors what Grafana does with the two chained variables: $run is picked from the
+        # dropdown, $end follows from the marker series carrying that same offset as a label.
+        label, offset = pick_run(DASHBOARDS["runs"], args.run)
+        variables["run"] = offset
+        variables["end"] = marker_end(prom, offset)
+        print(f"run: {label}  ($run = {offset}, $end = {variables['end']})")
 
     # Archived samples live at the anchor epoch, so probe across a run-length spread of offsets:
     # a per-step metric has one sample per capacity step and is absent between them.
-    offsets = [60, 300, 600, 1200, 1800, 3600] if args.dashboard == "archived" else [None]
+    #
+    # bench-runs works the other way round: its samples sit at their real wall-clock time and the
+    # QUERY carries the offset, so the probe times are inside its own (later) anchor window and
+    # only need to be far enough in for a 1m rate to have data on both sides.
+    if args.dashboard == "archived":
+        anchor, offsets = ANCHOR_EPOCH, [60, 300, 600, 1200, 1800, 3600]
+    elif args.dashboard == "runs":
+        anchor, offsets = ANCHOR_RUNS, [600, 1800, 3000]
+    else:
+        anchor, offsets = 0, [None]
 
     buckets = {"OK": [], "EMPTY": [], "MISSING": [], "ERROR": []}
     for title, legend, expr in targets(DASHBOARDS[args.dashboard]):
         query = expr
-        for name, value in variables.items():
-            query = query.replace(f"${name}", value)
+        # Longest name first: with both `run` and `runs` in play, replacing `$run` first would
+        # turn `$runs` into a value followed by a stray "s".
+        for name in sorted(variables, key=len, reverse=True):
+            query = query.replace(f"${name}", variables[name])
         try:
             hits = 0
             for offset in offsets:
-                hits = prom.instant(query, None if offset is None else ANCHOR_EPOCH + offset)
+                hits = prom.instant(query, None if offset is None else anchor + offset)
                 if hits:
                     break
         except RuntimeError as exc:
