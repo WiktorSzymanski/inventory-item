@@ -182,6 +182,20 @@ run_one() {
     # the image is the only thing that differs between variants.
     (
         cd "$MAIN_ROOT"
+
+        # There is no per-variant environment hook here any more. `variants.d/<variant>.env` was
+        # sourced at this point until 2026-08-18; every file it ever held exported
+        # ORDER_WORKER_THREADS=200, and docker-compose now defaults that variable to 200 for every
+        # variant, so the whole mechanism was a no-op. See the ORDER_WORKER_THREADS note in
+        # variants.env for why 200 is the family-wide value.
+        #
+        # If a knob ever genuinely has to differ BETWEEN variants in one suite, this is where it
+        # goes: compose gives every variable a default, and a default always SETS the variable and
+        # therefore overrides the branch's own application.yaml, so a branch shipping a different
+        # width cannot express it and the difference shows up as a quietly mis-resourced run rather
+        # than as an error. Exporting the value globally is not an alternative in that case. Source
+        # it inside this subshell so it cannot leak into the next variant.
+
         VARIANT="$variant" \
         VARIANT_FAMILY="$(family_of "$variant")" \
         IMAGE_TAG="$(image_tag "$variant")" \
