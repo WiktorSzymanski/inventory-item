@@ -39,10 +39,20 @@ class CommandGatewayConfig {
          * [ConcurrencyRetryScheduler] now hands that task to [sagaCommandExecutor] instead, so
          * first attempts and retries share one pool and this one only serves out the backoff.
          *
-         * The width stays 30 so the change is TOPOLOGY ALONE against the two-lane runs it is read
-         * against. These threads now do nothing but call `execute(...)`, and the backoff itself is
-         * served in the executor's DelayedWorkQueue on no thread at all, so the cost of keeping
-         * them is nil.
+         * The width is therefore 1. A thread here does nothing but call `execute(...)` on the
+         * command pool -- microseconds, non-blocking against an unbounded queue -- and the backoff
+         * itself is served in the executor's DelayedWorkQueue on no thread at all, so a single
+         * timer thread serves any retry rate this harness can produce. It was held at 30 through
+         * the port so that change would be TOPOLOGY ALONE against the two-lane runs it is read
+         * against; that comparison has been made, and 29 threads kept only to resemble a shape
+         * this branch no longer has are 29 threads that invite the old reading of this pool.
+         *
+         * The one path that would occupy this thread with real work is the
+         * RejectedExecutionException fallback in [ConcurrencyRetryScheduler], which runs the
+         * dispatch inline rather than dropping it. [sagaCommandExecutor] is built on an unbounded
+         * LinkedBlockingQueue, so it can only reject while shutting down -- but note that at width
+         * 1 that fallback now stalls every other retry's backoff, not one lane of thirty. It is
+         * counted: `inventory_retry_handoff_rejected`.
          *
          * THE CONNECTION BUDGET IS UNCHANGED, which is what makes those runs comparable. One busy
          * thread can hold TWO `axon-jdbc-pool` connections at the same time:
@@ -82,7 +92,7 @@ class CommandGatewayConfig {
          * rejection rate, not as an obvious error. Watch
          * `hikaricp_connections_timeout_total{pool="axon-jdbc-pool"}` on every run here.
          */
-        private const val RETRY_POOL_SIZE = 30
+        private const val RETRY_POOL_SIZE = 1
 
         /**
          * The ONLY execution width on this branch: first attempts, retries and the saga's terminal
