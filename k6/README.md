@@ -58,6 +58,8 @@ Each run does: build → reset DB + restart API → seed → warmup → settle �
 | `ITEMS_PER_ORDER` | 4 | Lines per order — each costs one *sequential* saga hop |
 | `PAYLOAD_BYTES` | 0 | Aggregate padding — copy-on-write and snapshot cost |
 | `RESERVE_DELAY_MS` | 0 | Artificial per-reserve sleep inside the aggregate — the domain-work cost axis (every variant since 2026-08-06) |
+| `WARMUP_ITERATIONS` | 5000 | Orders submitted before the measured window opens |
+| `WARMUP_RATE` | **none** | Orders/s the warmup is delivered at. No default — a run without one aborts at k6 init. `points.env` sets it per point |
 | `READ_RATE` | 0 | Optional concurrent read load (separate scenario) |
 | `SEED` | 1337 | RNG seed; identical item sequence across variants |
 | `SKIP_BUILD` | 0 | Skip gradle+docker build (only if the image is already current) |
@@ -65,6 +67,13 @@ Each run does: build → reset DB + restart API → seed → warmup → settle �
 
 `ITEMS_PER_ORDER` must be `<= DISTINCT_ITEMS`; the harness refuses otherwise. Set
 `ALLOW_DUP_LINES=true` to deliberately hit one aggregate twice in an order.
+
+The warmup is fixed-iteration *and* fixed-rate. Fixed iterations so a fast variant does not
+open its window with deeper event-store, snapshot and cache state than a slow one; fixed
+rate so it does not open with a *backlog* either. Keep `WARMUP_RATE` below the slowest
+variant's sustained rate at the workload in question — roughly half is the rule used in
+`points.env` — otherwise the warmup queues work that the settle phase then has to undo, and
+past the 60s `SETTLE_S` cap it cannot.
 
 ### Reading results
 

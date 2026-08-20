@@ -170,19 +170,60 @@ function seedProfile() {
     };
 }
 
+// Warmup delivers a fixed iteration COUNT at a fixed RATE, so both the aging depth and the
+// backlog handed to T0 are identical across variants. See CONFIG.warmupRate for why the old
+// 50-VU closed loop could only provide the first of those two.
+//
+// WARMUP_MAX_DURATION is now a validation ceiling rather than an executor setting:
+// constant-arrival-rate has no maxDuration, and the shared-iterations one it replaced would
+// silently stop early on hitting it — delivering fewer than WARMUP_ITERATIONS orders while
+// still exiting 0, which is exactly how the fixed-iteration invariant could break unnoticed.
 function warmupProfile() {
+    const rate = CONFIG.warmupRate;
+    if (rate <= 0) {
+        throw new Error(
+            'WARMUP_RATE is not set. It is a per-point calibration knob, not a harness ' +
+            'default: set it in points.env for the point being run (roughly half the ' +
+            'slowest variant\'s sustained rate there), or pass WARMUP_RATE=<orders/s> ' +
+            'explicitly. There is deliberately no fallback — the rate that warms W-base ' +
+            'overloads C11 by more than 3x, and warming up above capacity is the failure ' +
+            'this replaced.',
+        );
+    }
+    // Rounded UP, never down: the delivered count is rate x seconds + 1 (the executor fires
+    // at t=0 as well), so WARMUP_ITERATIONS is a floor rather than an exact figure — 200 at
+    // 100/s delivers 201. What matters is that the number is a pure function of the knobs
+    // and not of how fast the variant is, which is the property the fixed-iteration warmup
+    // exists to give. Expect the count in warmup/k6.log to sit slightly above the knob.
+    const seconds = Math.ceil(CONFIG.warmupIters / rate);
+    const cap = durationSeconds(CONFIG.warmupMaxDur);
+    if (seconds > cap) {
+        throw new Error(
+            `warmup would run ${seconds}s (${CONFIG.warmupIters} iterations at ${rate}/s) ` +
+            `but WARMUP_MAX_DURATION is ${CONFIG.warmupMaxDur} (${cap}s). Raise the cap or ` +
+            `WARMUP_RATE. Lowering WARMUP_ITERATIONS also works, but it changes the state ` +
+            `every variant starts from, so it has to change for a whole comparison or not ` +
+            `at all.`,
+        );
+    }
     return {
         name: 'warmup',
         steps: [],
-        totalSeconds: durationSeconds(CONFIG.warmupMaxDur),
+        totalSeconds: seconds,
+        // A dropped iteration here means the VU pool, not the system, decided how many
+        // warmup orders were submitted — the fixed-iteration invariant broken silently,
+        // since k6 would still exit 0. Failing the threshold is what makes bench.sh die.
+        thresholds: { dropped_iterations: ['count==0'] },
         scenarios: {
             warmup: {
-                executor: 'shared-iterations',
+                executor: 'constant-arrival-rate',
                 exec: 'order',
-                iterations: CONFIG.warmupIters,
-                vus: CONFIG.warmupVus,
-                maxDuration: CONFIG.warmupMaxDur,
+                rate,
+                timeUnit: '1s',
+                duration: `${seconds}s`,
+                gracefulStop: '60s',
                 tags: { phase: 'warmup' },
+                ...vus(rate),
             },
         },
     };

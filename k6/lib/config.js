@@ -53,13 +53,32 @@ export const CONFIG = {
     spikeFactor: num('SPIKE_FACTOR', 4),
     soakDuration: str('SOAK_DURATION', '45m'),
 
-    // ---- warmup: fixed ITERATIONS, never a duration --------------------------
-    // A duration-based warmup gives a fast variant proportionally more warmup events,
-    // so variants would enter the measured window with different event-store depth,
-    // snapshot count and cache state — a systematic bias against the very thing under
-    // measurement. Fixed iterations make the starting state identical everywhere.
+    // ---- warmup: fixed ITERATIONS, delivered at a fixed RATE ------------------
+    // Two separate invariants, and the warmup needs both.
+    //
+    // Fixed ITERATIONS, never a duration: a duration-based warmup gives a fast variant
+    // proportionally more warmup events, so variants would enter the measured window
+    // with different event-store depth, snapshot count and cache state — a systematic
+    // bias against the very thing under measurement. Fixed iterations make the starting
+    // state identical everywhere.
+    //
+    // Fixed RATE, never a VU count: this used to be 50 closed-loop VUs. POST
+    // /inventory/orders returns 202 after persisting one event — min admission latency
+    // is ~4ms on every archived run — so the loop submitted 277-1543 orders/s, at or
+    // above the capacity staircase's PEAK and far above every variant's sustained rate
+    // (200/s at W-base, 89/s at W-fan). Warmup therefore handed T0 a backlog of up to
+    // WARMUP_ITERATIONS orders for the settle phase to undo, and twice in the archive it
+    // could not: ES-4-NullLock/W-fan and TO-3-newT/W-hot both hit the 60s SETTLE_S cap
+    // and opened their measured window on top of the leftovers. Lowering the VU count
+    // does not fix this — at a 4ms floor even 4 VUs submit ~1000/s — so the rate is set
+    // explicitly instead.
+    //
+    // WARMUP_RATE has NO default on purpose. It belongs to the workload point, not to
+    // the harness: ~100/s warms W-base at about half its sustained rate and overloads
+    // C11 (whose staircase peaks at 29/s) by more than 3x. points.env carries it beside
+    // STEP_*, and warmupProfile() refuses to run without one.
     warmupIters: int('WARMUP_ITERATIONS', 5000),
-    warmupVus: int('WARMUP_VUS', 50),
+    warmupRate: int('WARMUP_RATE', 0),
     warmupMaxDur: str('WARMUP_MAX_DURATION', '5m'),
 
     // ---- optional read load (separate scenario, default off) -----------------

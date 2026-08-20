@@ -29,6 +29,10 @@ export const options = {
     // is produced post-run by k6/bench/evaluate.py from the Prometheus dump.
     thresholds: {
         'checks{phase:measure}': ['rate>0.99'],
+        // A profile may add its own. The warmup uses this to assert it actually delivered
+        // WARMUP_ITERATIONS orders: a threshold breach is the only signal that reaches
+        // bench.sh, because k6 exits 0 on a scenario that simply ran short.
+        ...(PROFILE.thresholds || {}),
     },
 };
 

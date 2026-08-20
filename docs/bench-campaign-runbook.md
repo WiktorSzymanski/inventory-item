@@ -266,9 +266,22 @@ of repeated bytes TOASTs to roughly 12 kB, so the disk-bloat premise is far weak
 original design assumed.)
 
 All `P=1 MiB` runs carry `WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m`. The default 5000
-would exceed the 5 min warmup cap at 1 MiB and silently deliver *fewer* iterations, destroying
-the identical-starting-state property the fixed-iteration warmup exists for. Confirm the full
-count in `<run>/warmup/k6.log`.
+would exceed the 5 min warmup cap at 1 MiB. That used to fail *silently* — the old
+`shared-iterations` warmup stopped at `maxDuration` having delivered fewer iterations and
+still exited 0, destroying the identical-starting-state property the fixed-iteration warmup
+exists for. It is now a hard init-time abort, and a short delivery additionally trips a
+`dropped_iterations` threshold, so the run cannot proceed on a truncated warmup. Confirm the
+count in `<run>/warmup/k6.log` all the same.
+
+**Every C cell must be given a `WARMUP_RATE`.** `points.env` sets one for the W points but
+deliberately records `WARMUP_RATE=0` (uncalibrated) for `C01`/`C10`/`C11`, because a cell
+that re-tunes the staircase has a capacity far below the W point it composes with — `C11`
+peaks at 29/s against W-base's 595 — and silently inheriting W-base's 100/s would warm up at
+more than 3x the cell's ceiling. A `0` aborts the run at k6 init; a shell-set value wins over
+it without editing `points.env`. Pick roughly **half the slower winner's sustained rate** in
+that cell, which after §6.1 you have from `tipping_point.py`. Before then, a conservative
+first guess is ~25% of the staircase peak (C01 ~40/s, C10 ~15/s, C11 ~8/s); at 500 iterations
+those are 13s, 34s and 63s of warmup.
 
 ### 6.1 Cell breakpoints (6 runs)
 
@@ -278,17 +291,20 @@ Staircases are first guesses; §2.1 applies, and within a cell both winners must
 
 ```bash
 # C01 - delay only - staircase 10/15/10 (peak 145)
-env SCENARIO=capacity POINT=W-base,C01 DRAIN_TIMEOUT=3600 \
+env SCENARIO=capacity POINT=W-base,C01 WARMUP_RATE=<half slower winner's sustained> \
+    DRAIN_TIMEOUT=3600 \
     scripts/run-suite.sh --only <TO-WIN>,<ES-WIN> --continue-on-fail
 
 # C10 - payload only - staircase 5/5/10 (peak 50)
 env SCENARIO=capacity POINT=W-base,C10 \
-    WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m DRAIN_TIMEOUT=3600 \
+    WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m \
+    WARMUP_RATE=<half slower winner's sustained> DRAIN_TIMEOUT=3600 \
     scripts/run-suite.sh --only <TO-WIN>,<ES-WIN> --continue-on-fail
 
 # C11 - both - staircase 2/3/10 (peak 29)
 env SCENARIO=capacity POINT=W-base,C11 \
-    WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m DRAIN_TIMEOUT=3600 \
+    WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m \
+    WARMUP_RATE=<half slower winner's sustained> DRAIN_TIMEOUT=3600 \
     scripts/run-suite.sh --only <TO-WIN>,<ES-WIN> --continue-on-fail
 ```
 
@@ -321,10 +337,10 @@ a point cannot carry:
 
 | Cell | `CELL_ARGS` |
 |---|---|
-| C00 | *(none)* |
-| C01 | *(none)* |
-| C10 | `WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m` |
-| C11 | `WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m` |
+| C00 | *(none — inherits W-base's `WARMUP_RATE=100`)* |
+| C01 | `WARMUP_RATE=<half slower winner's sustained>` |
+| C10 | `WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m WARMUP_RATE=<half slower winner's sustained>` |
+| C11 | `WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m WARMUP_RATE=<half slower winner's sustained>` |
 
 Soak is 45 min at C00 and C01, and **15 min** at C10 and C11 (add `SOAK_DURATION=15m`).
 
@@ -358,12 +374,14 @@ levers. Breakpoints only, at the most-stressed cell. Staircases start very low �
 §2.1 here more than anywhere else.
 
 Both staircases below override C11's own 2/3/10 default — the calibration knobs are for
-exactly this, per the note in §2.1.
+exactly this, per the note in §2.1. `WARMUP_RATE` is a calibration knob too and must be
+re-stated here: composing `W-hot,C11` resolves it to C11's uncalibrated `0`, which aborts.
 
 ```bash
 # W-hot at C11 - staircase 2/2/10 (peak 20)
 env SCENARIO=capacity POINT=W-hot,C11 \
     WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m \
+    WARMUP_RATE=<half slower winner's sustained> \
     STEP_START=2 STEP_INC=2 STEP_COUNT=10 DRAIN_TIMEOUT=3600 \
     scripts/run-suite.sh --only <TO-WIN>,<ES-WIN> --continue-on-fail
 
@@ -371,6 +389,7 @@ env SCENARIO=capacity POINT=W-hot,C11 \
 # 16 lines x 1 MiB per order - the heaviest run in the campaign. Check df -h / first.
 env SCENARIO=capacity POINT=W-fan,C11 \
     WARMUP_ITERATIONS=500 WARMUP_MAX_DURATION=20m \
+    WARMUP_RATE=<half slower winner's sustained> \
     STEP_START=1 STEP_INC=1 STEP_COUNT=10 DRAIN_TIMEOUT=3600 \
     scripts/run-suite.sh --only <TO-WIN>,<ES-WIN> --continue-on-fail
 ```

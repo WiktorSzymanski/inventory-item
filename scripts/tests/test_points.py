@@ -54,10 +54,49 @@ class PointResolution(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
 
     def test_calibration_knob_may_be_overridden(self):
-        # Campaign 4.2's bracketing rule expects staircases to be re-tuned.
+        # Campaign 4.2's bracketing rule expects staircases to be re-tuned. STEP_START is
+        # read back unchanged from the point; its value tracks points.env (0 since the
+        # phase-1 staircases were retuned), the assertion that matters is that the
+        # STEP_INC override survived.
         r = resolve({"POINT": "W-base", "STEP_INC": "80"}, ("STEP_INC", "STEP_START"))
         self.assertEqual(r.returncode, 0)
-        self.assertEqual(r.stdout.split("\n")[:2], ["80", "40"])
+        self.assertEqual(r.stdout.split("\n")[:2], ["80", "0"])
+
+    def test_warmup_rate_is_a_calibration_knob(self):
+        # It has to be in POINT_CALIBRATION_KNOBS, not merely present in points.env: only
+        # knobs snapshot_shell_knobs captures can be overridden from the shell at all, and
+        # the phase-2 runbook overrides this one per cell.
+        r = resolve({"POINT": "W-base", "WARMUP_RATE": "7"}, ("WARMUP_RATE",))
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(r.stdout.split("\n")[0], "7")
+
+    def test_point_supplies_the_warmup_rate(self):
+        r = resolve({"POINT": "W-fan"}, ("WARMUP_RATE",))
+        self.assertEqual(r.stdout.split("\n")[0], "40")
+
+    def test_a_cell_does_not_inherit_the_workload_points_warmup_rate(self):
+        """W-base warms at 100/s; C11's staircase peaks at 29/s. Composing them must NOT
+        leave the cell warming at more than 3x its own ceiling, which is what silent
+        inheritance would do — so C11 re-states WARMUP_RATE as 0 ("uncalibrated"), and k6
+        refuses to start on a 0."""
+        r = resolve({"POINT": "W-base,C11"}, ("WARMUP_RATE",))
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(r.stdout.split("\n")[0], "0")
+
+    def test_every_staircase_retuning_point_states_a_warmup_rate(self):
+        """A point that re-tunes STEP_* has a capacity unlike the point it composes with,
+        so leaving WARMUP_RATE unstated would silently inherit the other one's. Guards
+        against a future cell being added with a staircase but no warmup rate."""
+        with open(os.path.join(ROOT, "points.env")) as fh:
+            rows = [ln.split("#")[0].split() for ln in fh
+                    if ln.split("#")[0].split()]
+        for row in rows:
+            knobs = [f.split("=")[0] for f in row[1:]]
+            if any(k.startswith("STEP_") for k in knobs):
+                self.assertIn("WARMUP_RATE", knobs,
+                              f"point {row[0]} re-tunes the staircase but states no "
+                              f"WARMUP_RATE, so it would inherit one calibrated for a "
+                              f"different workload")
 
     def test_two_points_disagreeing_on_an_identity_knob_is_fatal(self):
         """The conflict check used to compare only against __SHELL_$key, captured before

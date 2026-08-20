@@ -167,7 +167,7 @@ KNOBS=(
     RESERVE_DELAY_MS
     ITEM_PREFIX ALLOW_DUP_LINES RATE DURATION STEP_START STEP_INC STEP_COUNT
     STEP_RAMP_S STEP_PLATEAU_S STEP_TRIM SPIKE_BASE SPIKE_FACTOR SOAK_DURATION
-    WARMUP_ITERATIONS WARMUP_VUS WARMUP_MAX_DURATION READ_RATE READ_MODE
+    WARMUP_ITERATIONS WARMUP_RATE WARMUP_MAX_DURATION READ_RATE READ_MODE
     READ_PAGE_SIZE VU_HEADROOM VU_CEILING
 )
 
@@ -206,11 +206,13 @@ log "seed: creating ${DISTINCT_ITEMS:-6} items"
 T_SEED="$(date +%s)"
 run_k6 seed seed >"$RUN_DIR/seed/k6.log" 2>&1 || die "seed failed (see $RUN_DIR/seed/k6.log)"
 
-# Warmup is fixed-ITERATION, never fixed-duration. A duration-based warmup hands a fast
-# variant proportionally more warmup events, so variants would enter the measured window
-# with different event-store depth, snapshot count and cache state — a systematic bias
-# against exactly what is under measurement.
-log "warmup: ${WARMUP_ITERATIONS:-5000} iterations"
+# Warmup is fixed-ITERATION and fixed-RATE. Fixed iterations so a fast variant does not
+# enter the measured window with more event-store depth, snapshot count and cache state
+# than a slow one. Fixed rate so it does not enter with a BACKLOG either: the old 50-VU
+# closed loop submitted at up to 1543/s against variants sustaining 89-422/s, leaving the
+# settle phase below to undo thousands of queued orders. WARMUP_RATE has no default and
+# comes from the point (points.env); k6 refuses the run without one.
+log "warmup: ${WARMUP_ITERATIONS:-5000} iterations at ${WARMUP_RATE:-<unset>}/s"
 T_WARMUP="$(date +%s)"
 run_k6 warmup warmup >"$RUN_DIR/warmup/k6.log" 2>&1 || die "warmup failed (see $RUN_DIR/warmup/k6.log)"
 T_WARMUP_END="$(date +%s)"

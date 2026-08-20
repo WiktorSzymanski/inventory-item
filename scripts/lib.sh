@@ -246,7 +246,7 @@ require_not_root() {
 # ---------------------------------------------------------------- workload points
 
 POINT_IDENTITY_KNOBS="DISTINCT_ITEMS ITEMS_PER_ORDER PAYLOAD_BYTES RESERVE_DELAY_MS"
-POINT_CALIBRATION_KNOBS="STEP_START STEP_INC STEP_COUNT"
+POINT_CALIBRATION_KNOBS="STEP_START STEP_INC STEP_COUNT WARMUP_RATE"
 
 # Capture what the SHELL set, before any point expands. Afterwards a point-set knob and a
 # shell-set knob are indistinguishable, so the conflict check would have nothing to compare

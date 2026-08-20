@@ -212,6 +212,25 @@ class MetaRecordsThePoint(unittest.TestCase):
         self.assertNotIn('${POINT_RESOLVED:-${POINT:-}}', self.script)
 
 
+class KnobForwarding(unittest.TestCase):
+    """k6 >= 2.0 does not forward system env into __ENV, so a knob missing from bench.sh's
+    KNOBS array never reaches the script no matter who set it."""
+
+    def knobs(self):
+        with open(BENCH_SH) as fh:
+            body = fh.read().split("KNOBS=(")[1].split(")")[0]
+        return body.split()
+
+    def test_warmup_rate_is_forwarded(self):
+        # Without this the rate resolved from points.env is silently dropped and every run
+        # aborts at k6 init with "WARMUP_RATE is not set".
+        self.assertIn("WARMUP_RATE", self.knobs())
+
+    def test_warmup_iterations_and_cap_are_forwarded(self):
+        self.assertIn("WARMUP_ITERATIONS", self.knobs())
+        self.assertIn("WARMUP_MAX_DURATION", self.knobs())
+
+
 class UnresolvedPointIsRefused(unittest.TestCase):
     """`POINT=W-hot ./k6/bench/bench.sh` used to run the DEFAULT workload.
 

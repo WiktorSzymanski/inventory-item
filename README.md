@@ -26,9 +26,13 @@ Narrow it down while iterating:
 
 ```bash
 scripts/build-images.sh --only ES-4,TO-1
-SCENARIO=steady RATE=30 DURATION=3m WARMUP_ITERATIONS=2000 \
+SCENARIO=steady RATE=30 DURATION=3m WARMUP_ITERATIONS=2000 WARMUP_RATE=30 \
   scripts/run-suite.sh --only ES-4,TO-1
 ```
+
+`WARMUP_RATE` has no default and a run without one aborts at k6 init. A named `POINT`
+supplies it from `points.env`; a run like the one above names none, so set it by hand —
+matching `RATE` is the sane choice for `steady`.
 
 **Do not shrink a smoke run below a few thousand orders.** `completion_ratio_inverse` is a
 validity check with a 0.001 limit, so it needs enough orders that a couple of stragglers at
@@ -118,8 +122,9 @@ itself, discarding the provenance stamp and running something the suite never re
 ## Knobs, and one that is not universal
 
 Every knob `bench.sh` understands is passed straight through — `RATE`, `DURATION`,
-`DISTINCT_ITEMS`, `ITEMS_PER_ORDER`, `PAYLOAD_BYTES`, `WARMUP_ITERATIONS`, `STEP_*` and the
-rest. Set them per invocation, or pin them for a campaign in `workload.env`.
+`DISTINCT_ITEMS`, `ITEMS_PER_ORDER`, `PAYLOAD_BYTES`, `WARMUP_ITERATIONS`, `WARMUP_RATE`,
+`STEP_*` and the rest. Set them per invocation, or pin them for a campaign in
+`workload.env`. `WARMUP_RATE` is the one knob with no default: see `points.env`.
 
 **Both aggregate-cost levers are honoured on every registered branch** as of 2026-08-06.
 
