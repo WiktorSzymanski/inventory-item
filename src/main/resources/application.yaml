@@ -29,12 +29,36 @@ axon:
     pool:
       # Must comfortably exceed the saga per-node claim (ceil(total-segments/replicas) = 60
       # at REPLICAS=1), because every saga worker holds a connection while it reads its
-      # associations, and the 64-thread saga dispatch executor competes for the same pool.
+      # associations, and the 82-thread saga dispatch executor competes for the same pool.
       # At 150 the 60-thread claim exhausted it (active=150, waiting=97) and sagas that
       # failed to dispatch never retried, stranding orders in PENDING forever.
-      # (docker-compose passes AXON_JDBC_POOL_SIZE, which Spring's relaxed binding maps
-      # onto this property and therefore overrides the value below.)
+      #
+      # THE VALUE BELOW IS NOT WHAT RUNS. docker-compose passes AXON_JDBC_POOL_SIZE (350 since
+      # 2026-08-16), which Spring's relaxed binding maps onto this property and therefore
+      # overrides it. CommandGatewayConfig sizes the command pool to consume that 350 exactly —
+      # 2 x (82 command + 30 retry + 60 saga + 3 projections) — so a run that exports a smaller
+      # value is running a lane wider than the pool that serves it. The 300 here is left as the
+      # standalone/`bootRun` default; see CommandGatewayConfig.RETRY_POOL_SIZE for the derivation
+      # and for why the 99 Tomcat threads are deliberately outside it.
       size: 300
+  # Tighten gap tracking so tokens don't accumulate the permanent gaps left by rolled-back appends
+  # (see AxonConfig.eventStorageEngine). Defaults would be 10000 / 60000, which is what the ES-2
+  # baseline runs — this branch departs from it because the lock-free write path makes rollbacks
+  # ordinary. Values kept identical to ES-3/ES-4.
+  #
+  # max-gap-offset is a CORRECTNESS knob, not just a token-size one. GapAwareTrackingToken drops
+  # every gap more than this many indices behind the token, so an event whose row commits after
+  # the token has advanced that far past it is skipped by every tracking processor permanently.
+  # This branch is lock-free (NullLockFactory), so rolled-back appends are routine at ANY replica
+  # count, not only above 1 — the ES-2 reference run at REPLICAS=2 burnt ~8717 global_index values
+  # in 180s, and each one is a permanent gap because appends autocommit on their own connection.
+  # 500 indices at that rate is a ~1.4s window, shrinking under a capacity staircase. Exposure is
+  # still small — index assignment and commit happen in one autocommitted statement — but treat a
+  # non-zero completion_ratio_inverse on ANY run here as a reason to suspect this value first.
+  eventstore:
+    max-gap-offset: 500
+    gap-timeout-ms: 5000
+    gap-cleaning-threshold: 250
 
 snapshot:
   enabled: true
@@ -73,6 +97,23 @@ events_applied_count: true
 
 server:
   port: 8080
+  tomcat:
+    threads:
+      # 99, down from Boot's default 200, and the same number TO-3 and the other NullLock variants
+      # run so the families admit at the same width. This is NOT free headroom: the accept command
+      # is dispatched with sendAndWait on the Tomcat thread and SimpleCommandBus handles it there,
+      # so every in-flight POST holds two axon-jdbc-pool connections exactly as a command thread
+      # does. CommandGatewayConfig's budget deliberately excludes these 99 — read its
+      # RETRY_POOL_SIZE doc before changing this, because raising it is a POOL change that looks
+      # like an admission-control one.
+      #
+      # accept-count stays at Boot's default 100: offered load beyond max threads queues there and
+      # is REFUSED past it, surfacing as 502 from nginx rather than as backpressure. Check the 5xx
+      # rate before reading a run as merely slow.
+      max: ${HTTP_THREADS:99}
+      # Literal, NOT ${HTTP_THREADS:16}: that spelling looks like a floor of 16 but actually pins
+      # min-spare to whatever HTTP_THREADS is set to, starting every thread up front.
+      min-spare: 16
 
 springdoc:
   swagger-ui:

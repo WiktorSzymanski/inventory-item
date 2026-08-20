@@ -192,8 +192,8 @@ class OrderReservationSaga {
         // means N sequential aggregate loads + appends on 1 of those. Retries for every OTHER
         // in-flight command queue behind that, burn their attempts against the 500ms backoff cap,
         // and exhaust in turn — a contention spike amplifying itself into a rejection cascade. The
-        // pool this resubmits to is the one already sized for blocking command dispatch, and it
-        // stays wider than the retry pool, which the Axon connection budget caps at 23.
+        // pool this resubmits to is the one already sized for blocking command dispatch, and at 64
+        // it stays wider than the 30-thread retry pool.
         val disposition = {
             releaseAll(orderId, toRelease)
             sendFailOrder(orderId, "$stage command failed: ${cause.javaClass.simpleName}")

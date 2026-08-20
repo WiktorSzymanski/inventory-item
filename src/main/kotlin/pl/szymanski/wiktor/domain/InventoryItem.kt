@@ -11,8 +11,14 @@ import pl.szymanski.wiktor.service.command.ReleaseReservationCommand
 import pl.szymanski.wiktor.service.command.SagaReserveItemCommand
 
 // ES-2: Jackson cannot access private Kotlin fields by default — field visibility lets it serialize all aggregate state into the snapshot
+// ES-2-NullLock: routed to the "inventoryItemRepository" bean, which is built LOCK-FREE with
+// NullLockFactory; the snapshot trigger is configured on that repository, not here, because Axon
+// ignores `snapshotTriggerDefinition` on the annotation once `repository` is set. Naming the
+// repository here is not decoration — @Aggregate registration wins over any manual
+// configureAggregate, so without this attribute the bean would be ignored and the aggregate would
+// keep Axon's default pessimistic lock.
 @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
-@Aggregate(snapshotTriggerDefinition = "inventorySnapshotTrigger")
+@Aggregate(repository = "inventoryItemRepository")
 class InventoryItem {
 
     @AggregateIdentifier
@@ -55,8 +61,14 @@ class InventoryItem {
 
         // Paid only once the reserve is known to succeed, and inside the command handler rather
         // than the event-sourcing handler: the latter runs on every replay and snapshot load, which
-        // would make the delay a startup cost instead of a per-reserve one. The aggregate's lock is
-        // held throughout — that is the point, it models slow domain logic.
+        // would make the delay a startup cost instead of a per-reserve one.
+        //
+        // NOTE the lever means something different here than on TO or on a lock-holding ES branch.
+        // This aggregate is loaded LOCK-FREE, so the sleep blocks nothing: concurrent commands on the
+        // same item sleep in parallel and then all try to append the same sequence number. It widens
+        // the conflict window rather than serialising anything, so raising it drives optimistic
+        // retries up, not queueing. k6/README's framing of RESERVE_DELAY_MS as ES's analogue of TO's
+        // held row lock does not apply to this branch.
         if (reserveDelayMs > 0) {
             Thread.sleep(reserveDelayMs.toLong())
         }
