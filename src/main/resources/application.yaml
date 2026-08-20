@@ -29,15 +29,19 @@ axon:
     pool:
       # Must comfortably exceed the saga per-node claim (ceil(total-segments/replicas) = 60
       # at REPLICAS=1), because every saga worker holds a connection while it reads its
-      # associations, and the 82-thread saga dispatch executor competes for the same pool.
+      # associations, and the 112-thread saga dispatch executor competes for the same pool.
       # At 150 the 60-thread claim exhausted it (active=150, waiting=97) and sagas that
       # failed to dispatch never retried, stranding orders in PENDING forever.
       #
       # THE VALUE BELOW IS NOT WHAT RUNS. docker-compose passes AXON_JDBC_POOL_SIZE (350 since
       # 2026-08-16), which Spring's relaxed binding maps onto this property and therefore
       # overrides it. CommandGatewayConfig sizes the command pool to consume that 350 exactly —
-      # 2 x (82 command + 30 retry + 60 saga + 3 projections) — so a run that exports a smaller
-      # value is running a lane wider than the pool that serves it. The 300 here is left as the
+      # 2 x (112 command + 60 saga + 3 projections) — so a run that exports a smaller value is
+      # running a lane wider than the pool that serves it. The retry pool does NOT appear in that
+      # sum since the 2026-08-20 port from ES-4: it only times the backoff and hands the attempt to
+      # the command pool, so its threads open no transaction and take no connection. The two-lane
+      # shape this branch ran until then spent the same 350 as 2 x (82 + 30 + 60 + 3), which is what
+      # makes runs from either side of the port comparable. The 300 here is left as the
       # standalone/`bootRun` default; see CommandGatewayConfig.RETRY_POOL_SIZE for the derivation
       # and for why the 99 Tomcat threads are deliberately outside it.
       size: 300

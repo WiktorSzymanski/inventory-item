@@ -2,18 +2,25 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**This branch is `ES-1-NullLock`, not `ES-1`.** It is `ES-1` — the uncached, unsnapshotted ES
-baseline — with the aggregate lock removed: `AxonConfig` declares an `inventoryItemRepository`
-bean built with `NullLockFactory` and `InventoryItem` names it on `@Aggregate`, so nothing
-serialises concurrent commands on one item and conflicts are resolved by the event store's
-unique constraint plus `ConcurrencyRetryScheduler`. It exists to be run as a pair with `ES-1`
-(`scripts/run-suite.sh --only ES-1,ES-1-NullLock` from `main`, ideally at `DISTINCT_ITEMS=1`),
-which is the only way to read the lock's cost apart from the cache's.
+**This branch is `ES-1`: the uncached, unsnapshotted ES baseline, and LOCK-FREE since
+2026-08-20.** `AxonConfig` declares an `inventoryItemRepository` bean built with
+`NullLockFactory` and `InventoryItem` names it on `@Aggregate`, so nothing serialises
+concurrent commands on one item and conflicts are resolved by the event store's unique
+constraint plus `ConcurrencyRetryScheduler`.
 
-It departs from `ES-1` in **two** things, not one: the lock, and `ES-3`/`ES-4`'s gap-tracking
-tuning (`axon.eventstore.max-gap-offset` and friends), which is load-bearing here because
-lock-free rollbacks leave permanent `global_index` gaps at every replica count. Every `ES-1_*`
-run in `bench-results/` measured the other write path.
+This code was `ES-1-NullLock` until 2026-08-20, when it was adopted onto `ES-1` wholesale and
+the suffixed branch was retired — it was the default, and the pessimistic `ES-1` was the
+obsolete one. There is no lock A/B left in the suite: **nothing in the registry still builds
+`PessimisticLockFactory` except `ES-3`.** The old write path is still reachable at `ec63eca`
+(the adoption commit's first parent) if the comparison is ever wanted back.
+
+**Three things separate this from the pre-2026-08-20 `ES-1`, not one.** The lock;
+`ES-3`/`ES-4`'s gap-tracking tuning (`axon.eventstore.max-gap-offset` and friends), which is
+load-bearing here because lock-free rollbacks leave permanent `global_index` gaps at every
+replica count; and the lane widths (command pool 112, retry 30-as-timer, Tomcat 99, where the
+old branch ran 64/23 and Boot's default 200). **Any `ES-1_*` run in `bench-results/` from
+before that date measured the other write path** — the variant name did not change, so date the
+run before it enters a table.
 
 ## Commands
 
@@ -232,7 +239,10 @@ caching and snapshotting on top of the same domain, which is the comparison they
 - **`config/AxonConfig.kt`** — `JdbcEventStorageEngine` over the `domain_event_entry` /
   `snapshot_event_entry` tables, wrapped by `TimedEventStorageEngine`.
 - **`config/ConcurrencyRetryScheduler.kt`** — retries `ConcurrencyException` only;
-  5 attempts, `25ms * 2^n` capped at 500 ms.
+  5 attempts, `25ms * 2^n` capped at 500 ms. **The retry pool TIMES the backoff; it does not
+  execute the retry** — see below.
+- **`config/CommandGatewayConfig.kt`** — the two pools and the connection budget they are
+  derived from.
 - **`repository/`** — Spring Data JDBC `CrudRepository` read models: `InventoryProjection`
   (`inventory_state`) and `OrderProjection` (`orders`).
 - **`subscription/`** — `InventoryProjectionUpdater`, `OrderProjectionUpdater` (tracking
@@ -244,6 +254,50 @@ Config lives in `src/main/resources/application.yaml`. Flyway migrations in
 
 Swagger UI at `/swagger-ui.html` · Grafana `http://localhost:3000` ·
 Prometheus `http://localhost:9090`.
+
+### One pool, not two: retries execute on the command pool
+
+Ported from `ES-4` on 2026-08-20, where it arrived as `ES-4-NullLock-oneExec`. `ES-1`, `ES-2`
+and `ES-4` now share this topology; **`ES-3` does not**, so it is the one ES design point where
+a retry still executes on a retry pool.
+
+The two-lane shape was never a design choice — it was a consequence nobody opted into. Axon's
+`RetryingCallback.RetryDispatch.run()` calls `commandBus.dispatch()` **inline** and the
+autoconfigured `SimpleCommandBus` handles on the calling thread, so the whole retried command —
+aggregate load, `reserveDelayMs` sleep, append, commit — executes wherever the scheduled task
+runs. `ConcurrencyRetryScheduler` now hands that task to `sagaCommandExecutor`, so first
+attempts, retries and the saga's terminal dispositions all share one pool. It is the ES
+analogue of TO's `ORDER_RETRY_EXECUTE_ON_RETRY_POOL=false`.
+
+The connection budget is unchanged, which is what keeps runs from either side of the port
+comparable:
+
+```
+before  2 x ( 82 command + 30 retry + 60 saga + 3 projections) = 350
+after   2 x (112 command +  0 retry + 60 saga + 3 projections) = 350
+```
+
+Retry threads leave the sum because a thread that only calls `execute(...)` opens no
+transaction and takes no `axon-jdbc-pool` connection, and the backoff is served in the
+`DelayedWorkQueue` on no thread at all. Equal executing threads (175), equal connections (350,
+the `AXON_JDBC_POOL_SIZE` default), identical retry policy, identical Tomcat cap.
+`RetryDispatchTargetTest` asserts both the hand-off and that sum.
+
+**Two effects push opposite ways, which is the question.** A retry now rejoins an unbounded
+FIFO at the **tail**, behind first attempts admitted after it, so its real wait becomes backoff
++ queue depth; and `OrderReservationSaga` submits `abandon()`/release/fail-order to the same
+executor, so a saturated pool delays terminal dispositions behind retried work — watch
+`saga_command_failed_total{stage="abandon-rejected"}`.
+
+**What to read.** Threads are named `saga-command-N` and `retry-timer-N`, and both pools publish
+`saga_pool_{active,queued,size}` plus Micrometer's `executor_*`. Expect
+`saga_pool_active{pool="retry"}` at ~0 — sustained activity there means a retry executed on the
+timer, which is exactly what must not happen. `saga_pool_queued{pool="retry"}` is the in-flight
+retry count (delayed tasks in the queue), **not** threads waiting for a slot.
+`inventory_retry_handoff_rejected_total` should be 0: it counts retries that ran on the timer
+thread after the command pool refused the hand-off, which the unbounded queue makes possible
+only at shutdown. Setting `ConcurrencyRetryScheduler` to `DEBUG` prints
+`[RETRY] executing on saga-command-N` per retry.
 
 ### Two traps that have caused real bugs
 
