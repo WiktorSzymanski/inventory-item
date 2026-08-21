@@ -14,27 +14,15 @@ export REPO_ROOT
 API_SVC="${API_SVC:-api}"
 DB_SVC="${DB_SVC:-postgres}"
 PROM_JOB="${PROM_JOB:-inventory}"
-# UNANCHORED with hyphen bounds. The api service is scaled with deploy.replicas and so
-# carries no container_name, which means cadvisor sees `<project>-api-1`, `-2`, ...
-# queries.promql matches it with an anchored name=~"$CRE", and Prometheus anchors regexes
-# fully — so the leading and trailing .* are required. A bare `api` would also match
-# sibling containers.
-API_CONTAINER_RE="${API_CONTAINER_RE:-.*-api-.*}"
+# An exact name, not a pattern. docker-compose.yml pins `container_name: api`, so cadvisor
+# reports exactly that -- no `<project>-api-N` shape to tolerate and no dependence on
+# COMPOSE_PROJECT_NAME. queries.promql applies it as an anchored name=~"$CRE" and Prometheus
+# anchors regexes fully, so this matches the api container and no sibling.
+API_CONTAINER_RE="${API_CONTAINER_RE:-api}"
 DB_NAME="${DB_NAME:-inventory}"
 DB_USER="${DB_USER:-inventory}"
 VARIANT_FAMILY="${VARIANT_FAMILY:-}"
 export API_SVC DB_SVC PROM_JOB API_CONTAINER_RE DB_NAME DB_USER VARIANT_FAMILY
-
-# .env is the SINGLE source of truth for the replica count: docker compose auto-loads it,
-# so whatever REPLICAS says there is what actually runs. Sourcing it here (rather than
-# duplicating the number in bench.env) removes the trap of two independent knobs for the
-# same physical quantity, where editing one silently invalidated the run.
-if [ -f "$REPO_ROOT/.env" ]; then
-    # shellcheck disable=SC1091
-    set -a; . "$REPO_ROOT/.env"; set +a
-fi
-EXPECTED_REPLICAS="${REPLICAS:-1}"
-export EXPECTED_REPLICAS
 
 : "${VARIANT:?VARIANT must be set (scripts/run-suite.sh sets it from variants.env)}"
 # Guarded here for the same reason VARIANT is, and just as loudly. docker-compose.yml
@@ -57,10 +45,10 @@ dc() { "${DC_ARGS[@]}" "$@"; }
 PROM_URL="${PROM_URL:-http://localhost:9090}"
 REPORTER_URL="${REPORTER_URL:-http://localhost:8686}"
 HEALTH_URL="${HEALTH_URL:-http://localhost:8080/actuator/health}"
-# URL k6 uses from inside the compose network. Every branch now fronts its API with the
-# same nginx load balancer, so the default is uniform; the API service is never addressed
-# directly, because at REPLICAS>1 it has no single address.
-BENCH_BASE_URL="${BENCH_BASE_URL:-http://nginx:8080}"
+# URL k6 uses from inside the compose network. It addresses the API service directly: there
+# is one container and no proxy in front of it, so no hop is measured that is not the
+# application. HEALTH_URL above reaches the same container via its published host port.
+BENCH_BASE_URL="${BENCH_BASE_URL:-http://api:8080}"
 export PROM_URL REPORTER_URL HEALTH_URL BENCH_BASE_URL
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }

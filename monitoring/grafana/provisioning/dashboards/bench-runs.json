@@ -229,17 +229,17 @@
         "name": "apic",
         "label": "API container",
         "type": "constant",
-        "query": ".*-api-[0-9]+",
+        "query": "api|.*-api-[0-9]+",
         "current": {
           "selected": false,
-          "text": ".*-api-[0-9]+",
-          "value": ".*-api-[0-9]+"
+          "text": "api|.*-api-[0-9]+",
+          "value": "api|.*-api-[0-9]+"
         },
         "options": [
           {
             "selected": true,
-            "text": ".*-api-[0-9]+",
-            "value": ".*-api-[0-9]+"
+            "text": "api|.*-api-[0-9]+",
+            "value": "api|.*-api-[0-9]+"
           }
         ],
         "hide": 2

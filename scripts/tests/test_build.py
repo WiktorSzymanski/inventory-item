@@ -10,22 +10,21 @@ from scripts.dashboards import build
 # job     monitoring/prometheus/prometheus.yml declares exactly these three scrape jobs.
 # datname pg_database_size_bytes reports every database in the cluster.
 # name    cadvisor's container name label. Every service in docker-compose.yml pins a
-#         container_name except `api`, which is scaled by deploy.replicas and so gets
-#         `<project>-api-N` from Compose (project `iir` by default, per scripts/lib.sh).
+#         container_name, the single un-scaled `api` included, so COMPOSE_PROJECT_NAME
+#         never appears here.
 STACK_LABEL_VALUES = {
     "job": ["cadvisor", "inventory", "postgres"],
     "datname": ["inventory", "postgres", "template0", "template1"],
-    "name": ["cadvisor", "grafana", "grafana-renderer", "grafana-reporter", "iir-api-1",
-             "iir-api-2", "k6", "nginx", "postgres", "postgres-exporter", "prometheus"],
+    "name": ["api", "cadvisor", "grafana", "grafana-renderer", "grafana-reporter",
+             "k6", "postgres", "postgres-exporter", "prometheus"],
 }
 
 # Which label each query variable draws its options from.
 VAR_LABEL = {"job": "job", "db": "datname", "dbc": "name", "apic": "name"}
 
-# The option Grafana must land on for `current: {}` to resolve usefully. `apic` is a list
-# because the api service scales, and every replica is a legitimate option.
+# The option Grafana must land on for `current: {}` to resolve usefully.
 VAR_EXPECTED = {"job": ["inventory"], "db": ["inventory"], "dbc": ["postgres"],
-                "apic": ["iir-api-1", "iir-api-2"]}
+                "apic": ["api"]}
 
 
 def grafana_filter(regex, values):
@@ -84,11 +83,13 @@ class LiveVariableRegexesSelectRealValues(unittest.TestCase):
         self.assertNotIn("postgres-exporter",
                          grafana_filter(self.vars["dbc"]["regex"], STACK_LABEL_VALUES["name"]))
 
-    def test_api_container_regex_is_not_pinned_to_one_project_name(self):
-        """COMPOSE_PROJECT_NAME is a knob; the regex must match the shape, not `iir`."""
+    def test_api_container_regex_is_an_exact_match(self):
+        """The api pins `container_name: api`, so the variable must select that and only
+        that -- not a leftover container from another Compose project, and not a longer
+        name that merely contains `api`."""
         selected = grafana_filter(self.vars["apic"]["regex"],
-                                  ["otherproj-api-1", "cadvisor", "nginx"])
-        self.assertEqual(selected, ["otherproj-api-1"])
+                                  ["api", "otherproj-api-1", "api-es", "cadvisor"])
+        self.assertEqual(selected, ["api"])
 
     def test_no_regex_uses_a_capturing_group(self):
         """Grafana substitutes the FIRST capturing group's match for the option's value when

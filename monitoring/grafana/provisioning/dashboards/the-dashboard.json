@@ -98,7 +98,7 @@
           "refId": "apic-variable"
         },
         "definition": "label_values(container_memory_rss, name)",
-        "regex": "/^.*-api-[0-9]+$/",
+        "regex": "/^api$/",
         "refresh": 2,
         "sort": 1,
         "includeAll": false,

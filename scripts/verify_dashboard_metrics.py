@@ -48,12 +48,12 @@ ANCHOR_RUNS = 1788220800
 
 DEFAULT_VARS = {
     "live": {"job": "inventory-to", "db": "inventory", "dbc": "postgres-to",
-             "apic": "inventoryitemreservation-api-to-1", "__rate_interval": "1m",
+             "apic": "api", "__rate_interval": "1m",
              "__interval": "15s", "__range": "1h"},
     # $run is not listed: its value is a per-run offset read out of the dashboard's own
     # variable options, so --run picks a run rather than a raw duration.
     "runs": {"job": "inventory", "db": "inventory", "dbc": "postgres",
-             "apic": ".*-api-[0-9]+", "__rate_interval": "1m", "__interval": "15s",
+             "apic": "api|.*-api-[0-9]+", "__rate_interval": "1m", "__interval": "15s",
              "__range": "1h"},
 }
 

@@ -5,15 +5,11 @@ global:
 scrape_configs:
   - job_name: inventory
     metrics_path: /actuator/prometheus
-    # DNS discovery, not a static target: the api service is scaled with deploy.replicas,
-    # so the number of endpoints behind the name varies. At REPLICAS=1 this resolves to
-    # exactly one target. The `instance` label becomes a container IP rather than
-    # `api:8080` — harmless, because every expression in queries.promql is sum()-wrapped.
-    dns_sd_configs:
-      - names: ['api']
-        type: A
-        port: 8080
-        refresh_interval: 5s
+    # A static target, not DNS discovery: the api service is a single container, so the
+    # endpoint count no longer varies and the `instance` label reads `api:8080` instead
+    # of a container IP.
+    static_configs:
+      - targets: ['api:8080']
 
   - job_name: postgres
     static_configs:

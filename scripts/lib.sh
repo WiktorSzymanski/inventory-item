@@ -30,17 +30,16 @@ RESULTS_DIR="$REPO_ROOT/bench-results"
 #
 # Without this each worktree gets its own project name from its directory basename, so
 # `down` in one project cannot remove containers left by another — and since every
-# variant publishes the same host ports (8080 nginx, 9090 prometheus, 3000 grafana, 5432
+# variant publishes the same host ports (8080 api, 9090 prometheus, 3000 grafana, 5432
 # postgres), a leftover stack from the previous variant fails the next one with nothing but
 # a port conflict or a health timeout to go on. With a single project name, one
 # `down -v --remove-orphans` provably clears whatever ran last, including across a TO->ES
 # switch where even the service names differ (--remove-orphans is what catches those).
 #
-# Container names become iir-api-1, iir-api-2, ... — the api service carries no
-# container_name (it is scaled by deploy.replicas), so Compose names it <project>-api-N.
-# That is fine: k6/bench/common.sh sets API_CONTAINER_RE to `.*-api-.*`, and every cadvisor
-# query in queries.promql matches on it. The leading and trailing `.*` are required because
-# Prometheus anchors regexes fully; the hyphens keep it off sibling containers.
+# The project name does not leak into container names: every service in docker-compose.yml,
+# the api included, pins its own container_name. So cadvisor reports a plain `api`,
+# k6/bench/common.sh sets API_CONTAINER_RE to exactly that, and every cadvisor query in
+# queries.promql matches on it regardless of what this project is called.
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-iir}"
 
 log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }

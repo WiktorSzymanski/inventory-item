@@ -49,20 +49,13 @@ END $$;
 ANALYZE;
 SQL
 
-log "reset: starting $API_SVC (x${EXPECTED_REPLICAS}) and nginx"
-# nginx is named explicitly because --no-deps suppresses it: it depends ON the api service,
-# not the other way round, and it owns the published :8080 that HEALTH_URL points at.
-# --no-deps still does its real job, which is keeping postgres from being restarted.
-dc up -d --no-deps "$API_SVC" nginx >/dev/null
+log "reset: starting $API_SVC"
+# --no-deps does its real job here, which is keeping postgres from being restarted. There is
+# nothing else to name: the api publishes :8080 itself, so HEALTH_URL below probes the very
+# container this line started, with no proxy in between.
+dc up -d --no-deps "$API_SVC" >/dev/null
 
 "$(dirname "${BASH_SOURCE[0]}")/wait-healthy.sh" "$HEALTH_URL" "${HEALTH_TIMEOUT:-180}"
-
-# Health is observed THROUGH the load balancer, so a 200 only proves that one replica came
-# up. Assert the full count here rather than letting evaluate.py's targets_scraped check
-# return INVALID after an entire measured run has already been spent on a short stack.
-ACTUAL_REPLICAS=$(dc ps -q "$API_SVC" | wc -l | tr -d '[:space:]')
-[ "$ACTUAL_REPLICAS" = "$EXPECTED_REPLICAS" ] || \
-    die "expected $EXPECTED_REPLICAS $API_SVC replicas (REPLICAS in .env), found $ACTUAL_REPLICAS"
 
 REMAINING=$(psql_q "SELECT coalesce(sum(n_live_tup),0) FROM pg_stat_user_tables WHERE relname <> 'flyway_schema_history'")
 log "reset: complete (live tuples after reset: ${REMAINING:-unknown})"

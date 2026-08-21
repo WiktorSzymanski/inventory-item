@@ -113,11 +113,13 @@ def check_validity(checks, meta, dump, summary, cfg, limits):
                  round(1.0 - cfg["min_completion_ratio"], 6)
                  if cfg.get("min_completion_ratio") is not None else None)
 
-    # At REPLICAS=1 the JVM-local LockFactory serialises every writer to an aggregate, so no
-    # 23505 can occur and no command can exhaust its retries. A non-zero count therefore does
-    # not mean "contention" — it falsifies that assumption, and the single-node baseline this
-    # run is supposed to produce cannot be trusted. Above 1 the count is expected and is the
-    # contention signal itself, so the check only applies to single-node runs.
+    # On a single node the JVM-local LockFactory serialises every writer to an aggregate, so
+    # no 23505 can occur and no command can exhaust its retries. A non-zero count therefore
+    # does not mean "contention" — it falsifies that assumption, and the single-node baseline
+    # this run is supposed to produce cannot be trusted. The stack has no replica knob any
+    # more, so `expected` is always 1 and this gate is always armed; the guard stays because
+    # runs archived from the multi-node era recorded expected_replicas > 1, where a non-zero
+    # count was the expected contention signal rather than a fault.
     # An absent `command_failed` series means zero, not "no data" — the counter is only
     # created on first increment. So a dict without the key must PASS, while a missing
     # `saga_completed` entirely (TO-*, where the saga does not exist) must skip.

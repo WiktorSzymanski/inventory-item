@@ -292,7 +292,7 @@ meta = {
     "prom_job": "$PROM_JOB",
     "db_name": "$DB_NAME",
     "api_container_re": "${API_CONTAINER_RE:-}",
-    "expected_replicas": int("${EXPECTED_REPLICAS:-1}"),
+    "expected_replicas": 1,
     "k6_exit_code": int("$K6_EXIT"),
     "config": config,
     "steps": steps,

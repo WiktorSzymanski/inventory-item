@@ -31,30 +31,29 @@ class DerivedConfig(unittest.TestCase):
     def test_prom_job_is_family_neutral(self):
         self.assertEqual(source_common(self.BASE, "PROM_JOB").stdout, "inventory")
 
-    def test_container_regex_is_unanchored_and_hyphen_bounded(self):
-        # Prometheus anchors regexes fully, so the leading/trailing .* are required;
-        # the hyphens stop it matching a sibling container.
-        self.assertEqual(source_common(self.BASE, "API_CONTAINER_RE").stdout, ".*-api-.*")
+    def test_container_regex_is_the_exact_container_name(self):
+        # docker-compose.yml pins `container_name: api`, so there is no <project>-api-N
+        # shape left to match around and no COMPOSE_PROJECT_NAME dependence.
+        self.assertEqual(source_common(self.BASE, "API_CONTAINER_RE").stdout, "api")
 
-    def test_container_regex_selects_the_api_replicas_and_nothing_else(self):
+    def test_container_regex_selects_the_api_container_and_nothing_else(self):
         """Pinning the literal string above proves nothing about what it selects — and this
         regex is only ever consumed by Prometheus, which anchors it fully. So apply it the
-        way queries.promql's `name=~"$CRE"` does, against the container names the unified
-        stack actually produces at REPLICAS=2 (project `iir`, api scaled by deploy.replicas
-        and therefore unnamed; every other service pins a container_name)."""
+        way queries.promql's `name=~"$CRE"` does, against the container names the stack
+        actually produces (every service, api included, pins a container_name)."""
         cre = source_common(self.BASE, "API_CONTAINER_RE").stdout
         pattern = re.compile(f"^(?:{cre})$")          # Prometheus semantics: fully anchored
-        names = ["iir-api-1", "iir-api-2", "postgres", "postgres-exporter", "nginx",
-                 "cadvisor", "prometheus", "grafana", "grafana-renderer",
-                 "grafana-reporter", "k6"]
-        self.assertEqual([n for n in names if pattern.match(n)],
-                         ["iir-api-1", "iir-api-2"])
+        names = ["api", "postgres", "postgres-exporter", "cadvisor", "prometheus",
+                 "grafana", "grafana-renderer", "grafana-reporter", "k6"]
+        self.assertEqual([n for n in names if pattern.match(n)], ["api"])
 
-    def test_container_regex_is_not_pinned_to_one_project_name(self):
-        """COMPOSE_PROJECT_NAME is overridable in scripts/lib.sh, so `iir` must not be
-        baked in."""
+    def test_container_regex_does_not_catch_a_foreign_project(self):
+        """A leftover container from another Compose project keeps that project's prefix.
+        The exact name must not match it — nor the substring `api` inside a longer name."""
         cre = source_common(self.BASE, "API_CONTAINER_RE").stdout
-        self.assertRegex("otherproject-api-1", f"^(?:{cre})$")
+        pattern = re.compile(f"^(?:{cre})$")
+        for name in ["otherproject-api-1", "iir-api-1", "api-es", "rapid"]:
+            self.assertIsNone(pattern.match(name), name)
 
     def test_variant_is_taken_from_the_environment(self):
         env = dict(self.BASE, VARIANT="TO-1")

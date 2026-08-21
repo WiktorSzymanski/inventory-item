@@ -1,7 +1,5 @@
-# Benchmark overlay. Byte-identical on all 11 variant branches — it only touches services
-# whose names are the same everywhere (prometheus, k6). BASE_URL deliberately stays in each
-# branch's own docker-compose.yml, because the API service name genuinely differs
-# (api-es / api-to / nginx) and the overlay must not know it.
+# Benchmark overlay. It touches only prometheus and k6, never the service under test:
+# BASE_URL lives in docker-compose.yml, and the overlay must not know the API's address.
 #
 # Usage:  docker compose -f docker-compose.yml -f docker-compose.bench.yml ...
 # k6/bench/common.sh wires this up automatically via $DC.

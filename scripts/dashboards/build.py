@@ -149,13 +149,12 @@ def build_live():
         #   db     pg_database_size_bytes also reports postgres/template0/template1.
         #   dbc    the DB container is named `postgres`. Must NOT catch `postgres-exporter`,
         #          hence the trailing anchor.
-        #   apic   the api service is scaled by deploy.replicas and so has no container_name;
-        #          cadvisor sees `<project>-api-N`. The project name is a knob
-        #          (COMPOSE_PROJECT_NAME, `iir` by default), so match the shape, not `iir`.
+        #   apic   the api service pins `container_name: api`, so cadvisor sees exactly
+        #          `api` -- no project prefix and no replica suffix to match around.
         [_var("job", "API job", "label_values(up, job)", DS, regex="/^inventory$/"),
          _var("db", "Database", "label_values(pg_database_size_bytes, datname)", DS, regex="/^inventory$/"),
          _var("dbc", "DB container", "label_values(container_memory_rss, name)", DS, regex="/^postgres$/"),
-         _var("apic", "API container", "label_values(container_memory_rss, name)", DS, regex="/^.*-api-[0-9]+$/")])
+         _var("apic", "API container", "label_values(container_memory_rss, name)", DS, regex="/^api$/")])
     dash["refresh"] = "5s"
     panels, _, _, _ = _layout(spec.SECTIONS, lambda p: p.targets, DS)
     dash["panels"] = panels

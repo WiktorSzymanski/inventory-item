@@ -24,10 +24,11 @@ arrives as a literal tilde and gradle rejects it.
 running elevated makes `bench-results/` root-owned, which blocks every later run. The
 harness refuses to start as root.
 
-**There is no `bench.env`.** `main` owns the only harness now; `EXPECTED_REPLICAS` is
-derived from `REPLICAS` in `.env` — the file Compose itself acts on — by
-`k6/bench/common.sh`. If it disagrees with the running container count, every run fails the
-`targets_scraped` validity check.
+**There is no `bench.env`, and no replica knob.** `main` owns the only harness now, and the
+stack is single-node by construction: `docker-compose.yml` runs exactly one `api` container,
+pinned with `container_name: api` and publishing `:8080` to the host itself. There is no
+nginx in front of it and nothing to scale. `.env` holds only the Postgres and Hikari
+connection sizes, which Compose reads directly.
 
 ---
 
@@ -132,7 +133,7 @@ Named workload points in `points.env` already carry matched staircases for the c
 | `bench-results/ is not writable` | Left root-owned by an earlier `sudo` run; the error prints the `chown` |
 | `INVALID` on `git_clean` | Uncommitted `src/` changes. Commit |
 | `INVALID` on `backlog_drained` | Backlog never cleared — the e2e histogram is truncated. The variant is saturated; lower `RATE` |
-| `INVALID` on `targets_scraped` | `EXPECTED_REPLICAS` (derived from `REPLICAS` in `.env`) disagrees with reality |
+| `INVALID` on `targets_scraped` | Prometheus is not scraping `api:8080` — check the api container is up and `up{job="inventory"}` |
 | `e2e_p95` is `-` in the table | No orders completed in the window, or the run is INVALID |
 | `drain_seconds = 0`, `drain_service_rate` null | Rate too low to build a backlog. Expected below the knee |
 

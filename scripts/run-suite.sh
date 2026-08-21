@@ -32,7 +32,7 @@
 # (an ordinary host directory) and the external `bench-replay-data` volume (for Grafana
 # replay). SNAPSHOT_TSDB=0 / ARCHIVE_TSDB=0 work too, matching bench_run.sh's knob names.
 #
-# WHY SEQUENTIAL. Every variant publishes the same host ports (8080 nginx, 9090
+# WHY SEQUENTIAL. Every variant publishes the same host ports (8080 api, 9090
 # prometheus, 3000 grafana, 5432 postgres), so they physically cannot overlap — and even if
 # they could, sharing a machine would make every number a measure of contention with the
 # neighbour rather than of the variant.

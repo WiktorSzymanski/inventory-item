@@ -327,7 +327,10 @@ def build_runs(found):
          _const_var("job", "API job", "inventory"),
          _const_var("db", "Database", "inventory"),
          _const_var("dbc", "DB container", "postgres"),
-         _const_var("apic", "API container", ".*-api-[0-9]+")])
+         # An alternation, unlike the live dashboard's plain `api`: this dashboard queries
+         # ARCHIVED TSDBs, and runs recorded before the api gained a container_name carry
+         # the old Compose-generated `<project>-api-N` name instead.
+         _const_var("apic", "API container", "api|.*-api-[0-9]+")])
 
     def pick(panel):
         if not panel.targets:
