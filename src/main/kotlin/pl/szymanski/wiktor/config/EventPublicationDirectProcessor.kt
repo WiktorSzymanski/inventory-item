@@ -4,6 +4,7 @@ import org.slf4j.LoggerFactory
 import org.springframework.aop.framework.AopProxyUtils
 import org.springframework.context.ApplicationContext
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.jdbc.core.RowMapper
 import org.springframework.modulith.events.core.EventSerializer
 import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Transactional
@@ -15,8 +16,9 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Single delivery path, driven on this branch by [pl.szymanski.wiktor.publisher.OutboxPollingPublisher]
- * (TO-2 additionally feeds it from a NOTIFY listener).
+ * Single delivery path, shared by BOTH of this branch's delivery processes: the fast poll tick
+ * ([pl.szymanski.wiktor.publisher.OutboxPollingPublisher]) and the fallback sweep
+ * ([IncompleteEventRepublisher]). TO-2 feeds the same core from a NOTIFY listener instead of a tick.
  *
  * The claim UPDATE and the listener invocation run in one transaction: a listener failure rolls
  * the claim back, leaving the row incomplete for the next poll (at-least-once). The claim
@@ -36,6 +38,9 @@ class EventPublicationDirectProcessor(
     private val log = LoggerFactory.getLogger(this::class.java)
 
     private data class ListenerInvoker(val target: Any, val method: Method)
+
+    /** A publication's id and its position, so the drain can advance its cursor from a page. */
+    data class PublicationRef(val id: UUID, val seq: Long)
 
     private val invokers = ConcurrentHashMap<String, ListenerInvoker>()
 
@@ -75,6 +80,64 @@ class EventPublicationDirectProcessor(
                ORDER BY publication_date""",
             UUID::class.java,
             olderThan.toMillis() / 1000.0,
+        ).filterNotNull()
+
+    /**
+     * One page of publications after the drain's cursor — the cursor path's only read.
+     *
+     * The whole change is in `seq > ?`. [findIncompleteIds] has to prove that nothing is
+     * undelivered by walking the entire `completion_date IS NULL` region. This branch gets away
+     * with that today only because it runs behind, so that region is full of live rows and the walk
+     * ends at the first one; a branch that caught up would be walking nothing but the dead entries
+     * its own completions left behind. This query starts PAST that region: everything below the
+     * cursor, live or dead, is never touched.
+     *
+     * `ORDER BY seq` costs nothing, unlike [findIncompleteIds]'s `ORDER BY publication_date`, which
+     * has to sort whatever that walk returned. Here the cursor moves the scan's START, so the
+     * ordered read is a forward walk of idx_event_publication_seq_incomplete in index order and
+     * sorts nothing.
+     *
+     * `completion_date IS NULL` is carried so the planner can use that PARTIAL index, and it also
+     * skips rows the sweep already delivered. It is not a correctness guard: [process] claims each
+     * row atomically, so a row completed between this read and its delivery is skipped there.
+     */
+    fun findAfterCursor(cursor: Long, limit: Int): List<PublicationRef> =
+        jdbcTemplate.query(
+            """SELECT id, seq FROM event_publication
+               WHERE seq > ? AND completion_date IS NULL
+               ORDER BY seq
+               LIMIT ?""",
+            RowMapper { rs, _ -> PublicationRef(rs.getObject("id", UUID::class.java), rs.getLong("seq")) },
+            cursor,
+            limit,
+        )
+
+    /**
+     * One page of publications the cursor has already passed but that were never delivered — the
+     * fallback sweep's only read.
+     *
+     * These exist by design, not by accident. A publication's `seq` is assigned when its row is
+     * INSERTed, and on the reserve path that INSERT is statement 1 of
+     * `OrderWriteCommandHandler.write` while the `inventory_state` row locks are taken by statement
+     * 4. So a transaction can hold a low seq and commit long after a higher one — sequence order is
+     * not commit order, and the drain, which advances to the highest seq it has SEEN, moves past
+     * rows that were not yet visible. A delivery that throws lands here too: the claim rolls back
+     * with it, and the drain's cursor advances anyway.
+     *
+     * Bounded by [limit] because that set is no longer the rare leftover the unbounded
+     * [findIncompleteIds] was written for.
+     */
+    fun findIncompleteUpTo(cursor: Long, minAge: Duration, limit: Int): List<UUID> =
+        jdbcTemplate.queryForList(
+            """SELECT id FROM event_publication
+               WHERE completion_date IS NULL AND seq <= ?
+                 AND publication_date < now() - make_interval(secs => ?)
+               ORDER BY seq
+               LIMIT ?""",
+            UUID::class.java,
+            cursor,
+            minAge.toMillis() / 1000.0,
+            limit,
         ).filterNotNull()
 
     // listener_id format: "full.ClassName.methodName(full.ParamType)"

@@ -16,13 +16,50 @@ spring:
     locations: classpath:db/migration
   modulith:
     events:
+      # Cadence of the MAIN delivery process, OutboxPollingPublisher.drain(). Compose pins PT0.1S.
       polling-interval:  ${POOLING_INTERVAL:PT1S}  # interval between polling runs; tune per your latency requirement
+      # Cadence of the SECOND delivery process, IncompleteEventRepublisher — active in cursor mode
+      # only, where it owns every publication the drain's cursor advanced past. PT1M/PT1M matches
+      # TO-2 exactly, so TO-1 vs TO-2 differs only in the wake-up (tick vs NOTIFY). Left there
+      # deliberately rather than tuned: outbox.sweep.rescued measures how much work that actually
+      # is, and that number should decide the cadence, not a guess.
+      republication-interval: ${OUTBOX_SWEEP_INTERVAL:PT1M}
+      republication-min-age:  ${OUTBOX_SWEEP_MIN_AGE:PT1M}   # min age before an incomplete publication is swept
   task:
     scheduling:
+      # FOUR, not 2. This pool now runs the 0.1 s drain, the 1 min sweep, and OutboxMetrics' TWO
+      # 5 s methods. At 2 a slow sweep pass would stall the drain — the one thing V8 exists to keep
+      # fast — and would still starve a gauge on top of it.
       pool:
-        size: 2   # so a long drain() tick doesn't starve the outbox.backlog gauge
+        size: 4
 
 app:
+  outbox-cursor:
+    # How the drain finds its next page. THIS IS THE A/B.
+    #
+    # true  (CURSOR) — read `seq > cursor`, advance the cursor to the page's highest seq. The scan
+    #                  starts past everything already delivered, so an idle tick costs one index
+    #                  descent instead of walking the whole `completion_date IS NULL` region and its
+    #                  tombstones. Rows the cursor moves past undelivered are swept by
+    #                  IncompleteEventRepublisher, the second delivery process.
+    # false (SCAN)   — the pre-V8 behaviour every earlier TO-1 run measured: ONE unbounded
+    #                  findIncompleteIds per tick and no second process at all (the republisher
+    #                  no-ops, unlike TO-2's, which falls back to a scan).
+    #
+    # An env knob precisely so both modes run from ONE image: two builds differ in more than the
+    # thing under test. OutboxPollingPublisher logs the mode at startup so a run cannot record the
+    # wrong one.
+    enabled: ${OUTBOX_CURSOR_ENABLED:true}
+  event-delivery:
+    # Publications per drain page. Bounds how much a single tick materialises when the branch is
+    # behind — and TO-1 is routinely ~10 minutes behind, so this is not hypothetical here.
+    batch-size: ${EVENT_DELIVERY_BATCH_SIZE:1000}
+  outbox-sweep:
+    # Bounds on ONE sweep pass. batch-size x max-batches is the hard ceiling, so a pass cannot run
+    # unboundedly long however far behind the cursor the strands have piled up. Interval and
+    # min-age are the two spring.modulith.events.republication-* keys above.
+    batch-size: ${OUTBOX_SWEEP_BATCH_SIZE:1000}           # publications per sweep page
+    max-batches: ${OUTBOX_SWEEP_MAX_BATCHES:10}           # pages per sweep; caps one pass's duration
   outbox-purge:
     # Deletes delivered publications so event_publication stops growing without bound. See
     # OutboxPurger. The win is not the disk it frees: autovacuum's default trigger is

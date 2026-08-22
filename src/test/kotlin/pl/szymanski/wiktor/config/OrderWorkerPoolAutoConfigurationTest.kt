@@ -17,6 +17,7 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.task.TaskExecutor
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor
 import org.springframework.scheduling.TaskScheduler
 import org.springframework.scheduling.annotation.EnableScheduling
 import pl.szymanski.wiktor.service.OrderWorkerPool
@@ -128,6 +129,75 @@ class OrderWorkerPoolAutoConfigurationTest {
             val core = registry.find("executor.pool.core").tag("name", "orderWorkerExecutor").gauge()
             assertNotNull(core, "executor.pool.core{name=orderWorkerExecutor} missing")
             assertEquals(3.0, core!!.value(), "app.order-worker.threads=3 for this test")
+        }
+    }
+
+    /**
+     * The `@Async` fallback the V8 cursor port must not disturb.
+     *
+     * `AsyncExecutionAspectSupport.getDefaultExecutor` asks for a UNIQUE `TaskExecutor` bean;
+     * failing that, for one literally named `taskExecutor`; failing that, it falls back to
+     * `SimpleAsyncTaskExecutor` — a new thread per invocation. So the fallback holds exactly when
+     * two conditions do: more than one `TaskExecutor` in the context, and no bean under that name.
+     *
+     * Note what this test measures rather than what the surrounding comments have long claimed.
+     * Boot's `taskScheduler` is a `ThreadPoolTaskScheduler`, which IS a `TaskExecutor`, so the
+     * ambiguity exists on every TO branch with or without `outboxPollerExecutor` — this branch's
+     * second delivery pool is not what causes it. `app.outbox-poller.threads` is asserted anyway
+     * because the OTHER half of the guard is real: `outboxPollerExecutor` must stay a
+     * `TaskExecutor` and stay SHARED between the drain and the sweep. Handing the sweep a pool of
+     * its own would let the two processes together put twice the pool's width of deliveries in
+     * flight, which is invisible in every log and every dashboard.
+     */
+    @Test
+    fun `the @Async fallback conditions hold, and the poller pool stays a shared TaskExecutor`() {
+        runner.withUserConfiguration(OutboxPollerConfig::class.java)
+            .withPropertyValues("app.outbox-poller.threads=2")
+            .run { context ->
+                assertInstanceOf(
+                    ThreadPoolTaskExecutor::class.java, context.getBean("outboxPollerExecutor"),
+                    "the drain and the sweep share this bean; a plain ExecutorService would drop " +
+                        "it out of the TaskExecutor set and change what @Async resolution sees",
+                )
+
+                val executors = context.getBeanNamesForType(TaskExecutor::class.java).toList()
+                assertTrue(
+                    executors.containsAll(listOf("orderWorkerExecutor", "outboxPollerExecutor")),
+                    "both delivery-side pools must be TaskExecutors; found $executors",
+                )
+                assertTrue(
+                    executors.size > 1,
+                    "@Async falls back only while the by-type lookup is ambiguous; found $executors",
+                )
+
+                // The two names that end the fallback. `taskExecutor` is the tie-breaker Spring
+                // reaches for after the by-type lookup fails; `applicationTaskExecutor` carries it
+                // as an alias, so Boot creating one would resolve the ambiguity from either side.
+                assertFalse(
+                    context.containsBean("taskExecutor"),
+                    "a bean named `taskExecutor` resolves the ambiguity and ends the fallback",
+                )
+                assertFalse(
+                    context.containsBean("applicationTaskExecutor"),
+                    "applicationTaskExecutor is aliased to `taskExecutor` and ends the fallback",
+                )
+            }
+    }
+
+    /**
+     * The claim above, isolated: the ambiguity is Boot's scheduler, not the outbox poller. Without
+     * this the previous test would read as evidence that TO-1's second pool is what moves `@Async`
+     * off the order pool — which `variants.env` and several KDocs on this branch and TO-2 assert,
+     * and which is not what the context actually contains.
+     */
+    @Test
+    fun `the TaskExecutor ambiguity exists without the outbox poller at all`() {
+        runner.run { context ->
+            val executors = context.getBeanNamesForType(TaskExecutor::class.java).toList()
+            assertEquals(
+                setOf("orderWorkerExecutor", "taskScheduler"), executors.toSet(),
+                "Boot's taskScheduler is a ThreadPoolTaskScheduler, hence already a TaskExecutor",
+            )
         }
     }
 }
