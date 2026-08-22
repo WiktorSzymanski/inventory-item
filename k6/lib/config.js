@@ -51,7 +51,7 @@ export const CONFIG = {
     stepTrim: num('STEP_TRIM', 0.4),
     spikeBase: int('SPIKE_BASE', 25),
     spikeFactor: num('SPIKE_FACTOR', 4),
-    soakDuration: str('SOAK_DURATION', '45m'),
+    soakDuration: str('SOAK_DURATION', '60m'),
 
     // ---- warmup: fixed ITERATIONS, delivered at a fixed RATE ------------------
     // Two separate invariants, and the warmup needs both.
