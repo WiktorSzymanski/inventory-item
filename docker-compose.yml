@@ -46,20 +46,32 @@ services:
       DB_MAX_CONNECTIONS:  "${DB_MAX_CONNECTIONS:-350}"
       ORDER_WORKER_THREADS: "${ORDER_WORKER_THREADS:-200}"
       HTTP_THREADS: "${HTTP_THREADS:-99}"
-      # TO-2 only, and inert everywhere else (Spring ignores unknown properties). Selects how the
-      # outbox drain finds its next page: CURSOR reads `seq > cursor`, SCAN proves absence over the
-      # whole `completion_date IS NULL` region. It has to be listed HERE — compose passes only the
-      # variables it names, so an unlisted one never reaches the container and the A/B would
-      # silently not happen. The default matches TO-2's application.yaml, so the usual
+      # TO-1 and TO-2, and inert everywhere else (Spring ignores unknown properties). Selects how
+      # the outbox drain finds its next page: CURSOR reads `seq > cursor`, SCAN proves absence over
+      # the whole `completion_date IS NULL` region. It has to be listed HERE — compose passes only
+      # the variables it names, so an unlisted one never reaches the container and the A/B would
+      # silently not happen. The default matches BOTH branches' application.yaml, so the usual
       # compose-default trap (a default always SETS the variable, overriding the branch's own yaml)
       # costs nothing here.
       #
-      #   OUTBOX_CURSOR_ENABLED=false ./scripts/run-suite.sh --only TO-2   # pre-V8 baseline
-      #   ./scripts/run-suite.sh --only TO-2                              # cursor
+      #   OUTBOX_CURSOR_ENABLED=false ./scripts/run-suite.sh --only TO-1   # pre-V8 baseline
+      #   ./scripts/run-suite.sh --only TO-1                              # cursor
       #
       # Same commit, same image, both runs — which is the only way the comparison isolates the
       # drain topology instead of everything else that differs between two builds.
+      #
+      # The two branches differ in what SCAN means for the second delivery process: TO-2 falls back
+      # to an unbounded republishing scan, TO-1's fallback poll switches off entirely, because
+      # TO-1's scan drain already selects every incomplete row every tick. Both reproduce the
+      # pre-V8 branch, which is the point.
       OUTBOX_CURSOR_ENABLED: "${OUTBOX_CURSOR_ENABLED:-true}"
+      # Cadence of the fallback poll / republisher, on TO-1 and TO-2. NO `:-default` on purpose:
+      # a compose default always SETS the variable and would override whatever the branch's own
+      # application.yaml says. Written bare, compose forwards these only when the host has them
+      # set, so an unset run keeps each branch's shipped default (PT1M/PT1M on both today) and a
+      # run that wants to tune the sweep can still do it without a rebuild.
+      OUTBOX_SWEEP_INTERVAL:
+      OUTBOX_SWEEP_MIN_AGE:
     ports:
       - "8080:8080"
     depends_on:
