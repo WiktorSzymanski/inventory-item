@@ -44,7 +44,11 @@ import java.util.concurrent.TimeUnit
  *    batch commits and releases its snapshot before the next one starts.
  *
  * 3. **A sweep is bounded by [maxBatches]**, so one pass cannot run unboundedly long no matter how
- *    far behind the table has fallen.
+ *    far behind the table has fallen. Note that [batchSize] x [maxBatches] / [interval] is also the
+ *    purge's deletion RATE, and it has to exceed the branch's publication rate or the table grows
+ *    without bound however often the sweep runs. Moving [interval] without moving the bound with it
+ *    changes that rate silently — which is why the defaults are 2,000 x 120 per minute (4,000/s),
+ *    the same ceiling the old 2,000 x 10 per five seconds gave.
  *
  * Only rows with a non-NULL completion_date are eligible, so nothing in flight is ever touched. A
  * row deleted between a reader's findIncompleteIds() and its delivery attempt is harmless: the
@@ -57,13 +61,13 @@ class OutboxPurger(
     meterRegistry: MeterRegistry,
     @Value("\${app.outbox-purge.enabled:true}")
     private val enabled: Boolean,
-    @Value("\${app.outbox-purge.interval:PT5S}")
+    @Value("\${app.outbox-purge.interval:PT1M}")
     private val interval: Duration,
-    @Value("\${app.outbox-purge.min-age:PT5S}")
+    @Value("\${app.outbox-purge.min-age:PT1M}")
     private val minAge: Duration,
     @Value("\${app.outbox-purge.batch-size:2000}")
     private val batchSize: Int,
-    @Value("\${app.outbox-purge.max-batches:10}")
+    @Value("\${app.outbox-purge.max-batches:120}")
     private val maxBatches: Int,
 ) {
     private val log = LoggerFactory.getLogger(this::class.java)

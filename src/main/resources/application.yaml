@@ -57,21 +57,38 @@ app:
     # enabled=false is the controlled A/B: it reproduces the unbounded table growth WITHOUT
     # reverting V7, so a run can separate the autovacuum trigger's effect from the purge's.
     enabled: ${OUTBOX_PURGE_ENABLED:true}
-    interval: ${OUTBOX_PURGE_INTERVAL:PT5S}               # sweep period
+    interval: ${OUTBOX_PURGE_INTERVAL:PT1M}               # sweep period
     # A DELIVERED row is needed by nobody, so this only has to exceed the delivery latency, not the
     # republisher's interval: IncompleteEventRepublisher selects on `completion_date IS NULL` and
-    # never looks at completed rows. This was PT60S, mirroring republication-min-age below — but
-    # that governs INCOMPLETE rows, so the mirror was wrong and expensive. Measured on
-    # TO-2_capacity_W-base_20260819T222842Z, holding 60 s of delivered rows at ~3,500
+    # never looks at completed rows.
+    #
+    # This was PT60S, was cut to PT5S, and is back at PT1M. Both moves were right at the time and
+    # the variable underneath them changed in between. The cut was measured on
+    # TO-2_capacity_W-base_20260819T222842Z: holding 60 s of delivered rows at ~3,500
     # publications/s puts ~210k rows of ballast under the table, which is what n_dead_tup peaking
-    # at 318,866 was standing on. 5 s, with the 5 s sweep above, keeps only what is genuinely
-    # in flight.
-    min-age: ${OUTBOX_PURGE_MIN_AGE:PT5S}                 # how long a delivered row is kept
+    # at 318,866 was standing on — and back then that ballast was expensive because the drain
+    # walked the whole `completion_date IS NULL` region ~25x/s and every completion left a dead
+    # entry in it. V8's cursor removed that walk: the drain now reads `seq > cursor` and never
+    # touches the delivered region at all. Ballast still costs disk and cache, but it no longer
+    # sits in front of the hot query.
+    #
+    # What still reads that region: OutboxMetrics' backlog count (5 s) and the behind-cursor sweep
+    # (1 min). Those are the two series to watch if this proves to have been the wrong call.
+    min-age: ${OUTBOX_PURGE_MIN_AGE:PT1M}                 # how long a delivered row is kept
     batch-size: ${OUTBOX_PURGE_BATCH_SIZE:2000}           # rows per batch; each batch is ONE transaction
-    # Hard bound, not a nicety. This runs on Spring's default scheduler pool — ONE thread, no
-    # spring.task.scheduling section anywhere in this file — shared with OutboxMetrics (5 s) and
-    # IncompleteEventRepublisher (1 min). An unbounded sweep would starve both.
-    max-batches: ${OUTBOX_PURGE_MAX_BATCHES:10}           # batches per sweep; caps one sweep's duration
+    # Raised 10 -> 120 with the interval, and it HAD to be. batch-size x max-batches is the hard
+    # ceiling on one sweep, so the two knobs together set the deletion RATE: 20k rows every 5 s is
+    # 4,000/s, and the same 20k every 60 s would be 333/s — an order of magnitude under this
+    # branch's ~1,100-3,500 publications/s, so the purge would fall permanently behind and the
+    # table would grow without bound. 120 x 2,000 per minute is 4,000/s, the same ceiling as
+    # before, just delivered in one pass instead of twelve.
+    #
+    # Still a hard bound, not a nicety: OutboxPurger runs on its OWN thread (see its KDoc — an
+    # earlier version of this comment wrongly claimed it shares Spring's scheduler pool, which is
+    # exactly what that thread exists to avoid), and each batch is its own transaction, so a long
+    # sweep neither starves the scheduler nor pins the xmin horizon. What the bound protects is
+    # the sweep's duration relative to its own period.
+    max-batches: ${OUTBOX_PURGE_MAX_BATCHES:120}          # batches per sweep; caps one sweep's duration
   order-worker:
     # 200 = the 150 worker + 50 retry threads this branch used to run, merged. This ONE pool runs
     # first attempts and retried attempts alike, so the branch has the same executing width and the
