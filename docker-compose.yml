@@ -46,6 +46,20 @@ services:
       DB_MAX_CONNECTIONS:  "${DB_MAX_CONNECTIONS:-350}"
       ORDER_WORKER_THREADS: "${ORDER_WORKER_THREADS:-200}"
       HTTP_THREADS: "${HTTP_THREADS:-99}"
+      # TO-2 only, and inert everywhere else (Spring ignores unknown properties). Selects how the
+      # outbox drain finds its next page: CURSOR reads `seq > cursor`, SCAN proves absence over the
+      # whole `completion_date IS NULL` region. It has to be listed HERE — compose passes only the
+      # variables it names, so an unlisted one never reaches the container and the A/B would
+      # silently not happen. The default matches TO-2's application.yaml, so the usual
+      # compose-default trap (a default always SETS the variable, overriding the branch's own yaml)
+      # costs nothing here.
+      #
+      #   OUTBOX_CURSOR_ENABLED=false ./scripts/run-suite.sh --only TO-2   # pre-V8 baseline
+      #   ./scripts/run-suite.sh --only TO-2                              # cursor
+      #
+      # Same commit, same image, both runs — which is the only way the comparison isolates the
+      # drain topology instead of everything else that differs between two builds.
+      OUTBOX_CURSOR_ENABLED: "${OUTBOX_CURSOR_ENABLED:-true}"
     ports:
       - "8080:8080"
     depends_on:
