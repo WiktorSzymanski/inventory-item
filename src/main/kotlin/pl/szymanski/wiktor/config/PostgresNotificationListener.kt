@@ -4,11 +4,11 @@ import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
 import org.postgresql.PGConnection
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
 import java.sql.DriverManager
 import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
@@ -32,20 +32,20 @@ import java.util.concurrent.TimeUnit
 @Component
 class PostgresNotificationListener(
     processor: EventPublicationDirectProcessor,
+    cursorStore: OutboxCursorStore,
+    // The pool is a bean now, not built here: IncompleteEventRepublisher submits to the same one,
+    // so the two delivery processes share one width instead of each having their own. See
+    // PollingEventPublicationConfig.eventDeliveryExecutor.
+    @Qualifier("eventDeliveryExecutor") executor: ExecutorService,
     @Value("\${spring.datasource.url}") private val jdbcUrl: String,
     @Value("\${spring.datasource.username}") private val dbUser: String,
     @Value("\${spring.datasource.password}") private val dbPassword: String,
-    @Value("\${app.event-delivery.threads:20}") private val deliveryThreads: Int,
     @Value("\${app.event-delivery.batch-size:1000}") private val batchSize: Int,
+    @Value("\${app.outbox-cursor.enabled:true}") private val cursorEnabled: Boolean,
 ) {
     private val channel = "event_publication_notify"
 
-    private val executor: ExecutorService =
-        Executors.newFixedThreadPool(deliveryThreads) { r ->
-            Thread(r, "event-delivery").apply { isDaemon = true }
-        }
-
-    private val drainLoop = EventDrainLoop(processor, executor, batchSize)
+    private val drainLoop = EventDrainLoop(processor, executor, batchSize, cursorStore, cursorEnabled)
 
     @Volatile
     private var running = true
@@ -58,6 +58,10 @@ class PostgresNotificationListener(
         drainThread.start()
         listenerThread = Thread(::connectionLoop, "pg-notify-listener").apply { isDaemon = true }
         listenerThread.start()
+        log.info(
+            "[OUTBOX] drain mode={} (app.outbox-cursor.enabled), batch-size={}",
+            if (cursorEnabled) "CURSOR" else "SCAN", batchSize,
+        )
     }
 
     private fun connectionLoop() {
@@ -103,8 +107,8 @@ class PostgresNotificationListener(
         drainLoop.stop()
         listenerThread.interrupt()
         drainThread.join(TimeUnit.SECONDS.toMillis(5))
-        executor.shutdown()
-        executor.awaitTermination(5, TimeUnit.SECONDS)
+        // The delivery pool is shut down by Spring (eventDeliveryExecutor's destroyMethod). Doing
+        // it here as well would close it under the sweep, which is still a live bean at this point.
         log.info("PostgreSQL LISTEN stopped")
     }
 

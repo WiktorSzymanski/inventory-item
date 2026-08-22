@@ -18,14 +18,25 @@ import java.util.concurrent.atomic.AtomicBoolean
  * drain, and the drain itself is closed — [drainAll] blocks on every task in a page before
  * fetching the next one, so deliveries in flight can never exceed the executor's width.
  *
- * This is TO-1's `OutboxPollingPublisher.drain()` contract with the scheduler tick replaced
- * by a NOTIFY signal, so delivery keeps NOTIFY's latency instead of waiting out a fixed
+ * **Two ways to find the next page**, chosen by [cursorEnabled]:
+ *
+ *  - **cursor** (default) — [drainFromCursor] reads `seq > cursor` and advances the cursor to the
+ *    page's highest seq. The read starts past everything already delivered, so an idle drain costs
+ *    one index descent rather than a walk of the whole `completion_date IS NULL` region.
+ *  - **scan** (`app.outbox-cursor.enabled=false`) — [drainByScan], the behaviour every TO-2 run
+ *    before this change measured. Kept so the two can be A/B'd from ONE image, which is the only
+ *    way the comparison is not confounded by everything else that differs between two builds.
+ *
+ * Either way this is TO-1's `OutboxPollingPublisher.drain()` contract with the scheduler tick
+ * replaced by a NOTIFY signal, so delivery keeps NOTIFY's latency instead of waiting out a fixed
  * interval.
  */
 class EventDrainLoop(
     private val processor: EventPublicationDirectProcessor,
     private val executor: ExecutorService,
     private val batchSize: Int,
+    private val cursorStore: OutboxCursorStore,
+    private val cursorEnabled: Boolean,
 ) {
     private val pending = AtomicBoolean(false)
     private val wakeup = Semaphore(0)
@@ -67,14 +78,62 @@ class EventDrainLoop(
         }
     }
 
+    fun drainAll() {
+        if (cursorEnabled) drainFromCursor() else drainByScan()
+    }
+
     /**
-     * Deliver every incomplete publication, in pages of [batchSize].
+     * Deliver forward from the persisted cursor, in pages of [batchSize].
+     *
+     * The cursor advances to the page's highest seq **unconditionally** — after a page in which
+     * some, or even all, deliveries failed. That is deliberate, and it is what makes the fast path
+     * fast: a cursor that could be held back by one bad row would stall behind it and the drain
+     * would degrade to the scan it replaces. The rows it moves past are not lost, they are handed
+     * to the other process — [IncompleteEventRepublisher] sweeps everything still incomplete BELOW
+     * the cursor.
+     *
+     * The cursor is read once per pass and carried in a local, so a multi-page drain does not
+     * re-read it; it is written once per page, after that page's `future.get()` barrier, which is
+     * the only point at which the page's outcome is known.
+     */
+    private fun drainFromCursor() {
+        var cursor = cursorStore.load()
+        while (running) {
+            val page = processor.findAfterCursor(cursor, batchSize)
+            if (page.isEmpty()) return
+
+            val delivered = page
+                .map { ref -> executor.submit<Boolean> { deliver(ref.id) } }
+                .map { future -> runCatching { future.get() }.getOrDefault(false) }
+                .count { it }
+
+            // maxOf, not last(): the query is ordered, but the cursor must not depend on that.
+            cursor = page.maxOf { it.seq }
+            cursorStore.save(cursor)
+
+            if (delivered < page.size) {
+                // Not an error and not a reason to stop — the sweep owns these now. Logged
+                // because a page that delivers NOTHING while the cursor keeps moving is what a
+                // broken listener looks like from here, and it is otherwise invisible.
+                log.warn(
+                    "Drain page of {} delivered {}; cursor advanced to {}, {} left to the sweep",
+                    page.size, delivered, cursor, page.size - delivered,
+                )
+            }
+            // A short page means the backlog is exhausted. Anything committed since has
+            // raised its own signal.
+            if (page.size < batchSize) return
+        }
+    }
+
+    /**
+     * Deliver every incomplete publication, in pages of [batchSize]. The pre-cursor behaviour.
      *
      * Paging keeps a large backlog from being materialised in one go — the open-loop
      * breakpoint run stranded 439k publications, which as a single unbounded fetch would be 439k UUIDs
      * and 439k queued tasks.
      */
-    fun drainAll() {
+    private fun drainByScan() {
         while (running) {
             val ids = processor.findIncompleteIds(Duration.ZERO, batchSize)
             if (ids.isEmpty()) return
@@ -86,6 +145,7 @@ class EventDrainLoop(
 
             // Every row in a full page failing means delivery is broken, not merely behind;
             // refetching would spin on the same rows. Bail and let the republisher retry.
+            // The cursor path needs no such guard: it cannot refetch a page it has passed.
             if (delivered == 0) {
                 log.error("Drain page of {} publication(s) delivered nothing; ending pass", ids.size)
                 return

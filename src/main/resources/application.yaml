@@ -17,12 +17,37 @@ spring:
     locations: classpath:db/migration
   modulith:
     events:
-      republication-interval: PT1M   # backup poller; NOTIFY/LISTEN is the primary delivery path
-      republication-min-age: PT1M    # minimum age before an incomplete publication is swept
+      # Cadence of the SECOND delivery process. In cursor mode this stops being a crash backstop
+      # and becomes the owner of every publication the drain's cursor advanced past — see
+      # IncompleteEventRepublisher. Left at PT1M deliberately: outbox.sweep.rescued measures how
+      # much work that actually is, and that number should decide the cadence, not a guess.
+      republication-interval: ${OUTBOX_SWEEP_INTERVAL:PT1M}
+      republication-min-age: ${OUTBOX_SWEEP_MIN_AGE:PT1M}   # min age before an incomplete publication is swept
 
 app:
+  outbox-cursor:
+    # How the drain finds the next page.
+    #
+    # true  (CURSOR) — read `seq > cursor`, advance the cursor to the page's highest seq. The scan
+    #                  starts past everything already delivered, so an idle drain costs one index
+    #                  descent instead of walking the whole `completion_date IS NULL` region and its
+    #                  tombstones. Rows the cursor moves past undelivered are swept by
+    #                  IncompleteEventRepublisher.
+    # false (SCAN)   — the pre-V8 behaviour every earlier TO-2 run measured.
+    #
+    # This is the A/B, and it is an env knob precisely so both modes run from ONE image: two builds
+    # differ in more than the thing under test. PostgresNotificationListener logs the mode at
+    # startup so a run cannot record the wrong one.
+    enabled: ${OUTBOX_CURSOR_ENABLED:true}
+  outbox-sweep:
+    # Bounds on ONE sweep pass, in cursor mode. Strands are routine there, not rare, so the sweep
+    # is a real delivery path and needs the same "one pass cannot run unboundedly long" guarantee
+    # OutboxPurger has. Interval and min-age are the two spring.modulith.events.republication-*
+    # keys above, left at PT1M until outbox.sweep.rescued says what the strand rate actually is.
+    batch-size: ${OUTBOX_SWEEP_BATCH_SIZE:1000}           # publications per sweep page
+    max-batches: ${OUTBOX_SWEEP_MAX_BATCHES:10}           # pages per sweep; caps one pass's duration
   event-delivery:
-    threads: ${EVENT_DELIVERY_THREADS:20}                 # workers delivering a drain page; caps deliveries in flight
+    threads: ${EVENT_DELIVERY_THREADS:20}                 # workers delivering a page; caps deliveries in flight
     batch-size: ${EVENT_DELIVERY_BATCH_SIZE:1000}         # publications per drain page; bounds a large backlog's fetch
   outbox-purge:
     # Deletes delivered publications so event_publication stops growing without bound. See

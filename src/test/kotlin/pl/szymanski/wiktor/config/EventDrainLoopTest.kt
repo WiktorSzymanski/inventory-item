@@ -18,12 +18,20 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * Covers the contract the drain loop exists for: a NOTIFY burst must collapse into one drain, and a
  * drain must never leave committed work behind.
+ *
+ * These run in SCAN mode — `app.outbox-cursor.enabled=false`, the pre-V8 topology — because that
+ * mode is still shipped as the A/B baseline and has to keep behaving exactly as it did. The cursor
+ * mode's own contract is in [OutboxCursorDrainTest].
  */
 class EventDrainLoopTest {
 
     private val processor = mockk<EventPublicationDirectProcessor>(relaxed = true)
+    private val cursorStore = mockk<OutboxCursorStore>(relaxed = true)
     private val executor: ExecutorService = Executors.newFixedThreadPool(4)
     private var loopThread: Thread? = null
+
+    private fun scanLoop(batchSize: Int) =
+        EventDrainLoop(processor, executor, batchSize, cursorStore, cursorEnabled = false)
 
     @AfterEach
     fun tearDown() {
@@ -45,7 +53,7 @@ class EventDrainLoopTest {
         every { processor.findIncompleteIds(any<Duration>(), any<Int>()) } returnsMany
             listOf(page1, page2, page3)
 
-        EventDrainLoop(processor, executor, batchSize = 2).drainAll()
+        scanLoop(batchSize = 2).drainAll()
 
         (page1 + page2 + page3).forEach { verify(exactly = 1) { processor.process(it) } }
         // Stops on the short page instead of issuing a fourth, certainly-empty query.
@@ -59,7 +67,7 @@ class EventDrainLoopTest {
             listOf(page, emptyList())
         every { processor.process(page[1]) } throws RuntimeException("listener blew up")
 
-        EventDrainLoop(processor, executor, batchSize = 3).drainAll()
+        scanLoop(batchSize = 3).drainAll()
 
         page.forEach { verify(exactly = 1) { processor.process(it) } }
     }
@@ -70,7 +78,7 @@ class EventDrainLoopTest {
         every { processor.findIncompleteIds(any<Duration>(), any<Int>()) } returns page
         every { processor.process(any()) } throws RuntimeException("delivery is broken")
 
-        EventDrainLoop(processor, executor, batchSize = 2).drainAll()
+        scanLoop(batchSize = 2).drainAll()
 
         // Without the no-progress guard this refetches the same full page forever.
         verify(exactly = 1) { processor.findIncompleteIds(any<Duration>(), any<Int>()) }
@@ -91,7 +99,7 @@ class EventDrainLoopTest {
             emptyList()
         }
 
-        val loop = EventDrainLoop(processor, executor, batchSize = 10)
+        val loop = scanLoop(batchSize = 10)
         startLoop(loop)
 
         loop.signal()
@@ -115,7 +123,7 @@ class EventDrainLoopTest {
             if (calls.incrementAndGet() == 1) listOf(id) else { laterPass.countDown(); emptyList() }
         }
 
-        val loop = EventDrainLoop(processor, executor, batchSize = 10)
+        val loop = scanLoop(batchSize = 10)
         // Fires while the first pass is between its fetch and its completion — the window
         // where clearing `pending` after the drain instead of before would lose the wake-up.
         every { processor.process(id) } answers { loop.signal() }
