@@ -18,8 +18,12 @@ import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
 import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.RejectedExecutionHandler
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 @Configuration
 @EnableScheduling
@@ -72,48 +76,94 @@ class PollingEventPublicationConfig {
      * `destroyMethod` is named rather than inferred. Spring's inference prefers `close()`, which on
      * Java 21 ExecutorService blocks until every task finishes — a shutdown that hangs behind an
      * in-flight delivery.
+     *
+     * **The queue is BOUNDED on this branch, and that is the whole safety argument for pushing the
+     * payload.** `Executors.newFixedThreadPool` hands out an unbounded LinkedBlockingQueue, which
+     * was survivable while a NOTIFY was a wake-up: the drain coalesced any burst into one pass and
+     * submitted at most one bounded page at a time. A payload-carrying NOTIFY cannot coalesce —
+     * every notification carries different bytes — so the listener submits per row, and with an
+     * unbounded queue that is exactly the open loop commit 2185068 removed: a commit burst becomes
+     * a delivery burst that drives the order-worker pool into row contention (measured then at
+     * db_write p95 404 ms and conflict_ratio 4.64, against TO-1's 0.96 ms / 0.37).
+     *
+     * [BlockingSubmitPolicy] turns a full queue into backpressure instead of a rejection, so the
+     * bound propagates: the listener thread stops draining PostgreSQL's async-notify queue, that
+     * queue fills, and committing writers slow down at pg_notify. The limit is enforced against the
+     * producers rather than absorbed in RAM.
      */
     @Bean(name = ["eventDeliveryExecutor"], destroyMethod = "shutdown")
     fun eventDeliveryExecutor(
         @Value("\${app.event-delivery.threads:20}") threads: Int,
+        @Value("\${app.event-delivery.queue-capacity:1000}") queueCapacity: Int,
     ): ExecutorService =
-        Executors.newFixedThreadPool(threads) { r ->
-            Thread(r, "event-delivery").apply { isDaemon = true }
-        }
+        ThreadPoolExecutor(
+            threads, threads, 0L, TimeUnit.MILLISECONDS,
+            ArrayBlockingQueue(queueCapacity),
+            { r -> Thread(r, "event-delivery").apply { isDaemon = true } },
+            BlockingSubmitPolicy(),
+        )
 }
 
 /**
- * The second delivery process: everything the cursor drain moved past without delivering.
+ * Rejection policy that does not reject: a submit onto a full queue BLOCKS the submitting thread
+ * until a slot frees.
  *
- * With `app.outbox-cursor.enabled=true` this is no longer the rare-leftover backstop it was
- * written as. [EventDrainLoop] advances its cursor to the highest seq it has SEEN, and a
- * publication's seq is assigned at INSERT — statement 1 of `OrderWriteCommandHandler.write`, while
- * the `inventory_state` row locks are statement 4. Under contention a transaction therefore holds a
- * low seq and commits well after higher ones have been drained, so rows are left behind the cursor
- * as a matter of course. Failed deliveries land here too, since the claim rolls back with them.
+ * `CallerRunsPolicy` is the usual answer and is wrong here. The caller is the single
+ * `pg-notify-listener` thread; having it run a delivery inline would stop it reading notifications
+ * for the duration, and a delivery can take as long as an order-worker submit plus a commit. Worse,
+ * it would silently exceed the pool's width — the thing the bound exists to guarantee.
  *
- * Which makes this a bounded, executor-backed sweep rather than an unbounded serial loop. The old
- * shape delivered one row at a time on Spring's single shared scheduler thread — with strands
- * routine that would block OutboxMetrics for seconds at a time and cap rescue throughput at
- * whatever one thread can do.
+ * Blocking on `queue.put` keeps the width exact and pushes the wait onto the one thread whose
+ * stalling IS the backpressure signal: while it waits, PostgreSQL's async-notify queue grows and
+ * `pg_notify` at commit gets slower, which is the bound reaching the writers.
+ *
+ * The shutdown check is not optional. `queue.put` on a pool that will never run another task blocks
+ * forever, so a submit racing @PreDestroy would hang shutdown; after `shutdown()` the honest answer
+ * is a rejection.
+ */
+class BlockingSubmitPolicy : RejectedExecutionHandler {
+    override fun rejectedExecution(r: Runnable, executor: ThreadPoolExecutor) {
+        if (executor.isShutdown) {
+            throw RejectedExecutionException("event delivery pool is shut down")
+        }
+        try {
+            executor.queue.put(r)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw RejectedExecutionException("interrupted while waiting for delivery queue space", e)
+        }
+    }
+}
+
+/**
+ * The second delivery process: everything the NOTIFY path did not deliver.
+ *
+ * On TO-2 this sweeps up what the cursor drain advanced past. Here there is no advancing cursor to
+ * be behind — the drain runs only on (re)connect — so this is a plain bounded scan of whatever is
+ * still incomplete, and it owns three distinct populations:
+ *
+ * - **Events too large for a NOTIFY payload.** V10's trigger sends nothing above ~8 kB, so for
+ *   those rows this pass is not a backstop, it is the delivery path. `PAYLOAD_BYTES` at the
+ *   campaign's C10/C11 cells puts every seeded `InventoryCreatedEvent` here.
+ * - **Notifications sent while no LISTEN was active.** NOTIFY is fire-and-forget; the reconnect
+ *   drain covers most of this, this covers the rest.
+ * - **Failed deliveries**, whose claim rolled back with them.
+ *
+ * Bounded and executor-backed rather than an unbounded serial loop: the old shape delivered one row
+ * at a time on Spring's single shared scheduler thread, which would block OutboxMetrics for seconds
+ * and cap rescue throughput at whatever one thread can do.
  *
  * Interval and min-age are unchanged at PT1M/PT1M: `outbox.sweep.rescued` measures how much work
  * actually falls to this path, and that number is what should decide the cadence. Both are env
  * knobs, so tuning needs no rebuild.
- *
- * With the cursor disabled this reverts exactly to the old unbounded scan, so the A/B compares two
- * whole topologies and not a half-changed one.
  */
 @Component
 class IncompleteEventRepublisher(
     private val processor: EventPublicationDirectProcessor,
-    private val cursorStore: OutboxCursorStore,
     @Qualifier("eventDeliveryExecutor") private val executor: ExecutorService,
     meterRegistry: MeterRegistry,
     @Value("\${spring.modulith.events.republication-min-age:PT1M}")
     private val minAge: Duration,
-    @Value("\${app.outbox-cursor.enabled:true}")
-    private val cursorEnabled: Boolean,
     @Value("\${app.outbox-sweep.batch-size:1000}")
     private val batchSize: Int,
     @Value("\${app.outbox-sweep.max-batches:10}")
@@ -122,25 +172,43 @@ class IncompleteEventRepublisher(
     private val log = LoggerFactory.getLogger(this::class.java)
 
     /**
-     * Rows this path delivered that the drain did not — the strand rate, and the single number that
-     * says whether the cursor's eager advance is cheap or expensive on this workload.
+     * Rows this path delivered that the push path did not.
+     *
+     * On this branch that is mostly the oversize population, so it doubles as the count of events
+     * that did not fit in a NOTIFY. A non-zero value at a workload with no padding means
+     * notifications are being LOST, which is a different and much more interesting fault.
      */
     private val rescued: Counter = meterRegistry.counter("outbox.sweep.rescued")
 
     @Scheduled(fixedDelayString = "\${spring.modulith.events.republication-interval:PT1M}")
-    fun republishIncomplete() {
-        if (cursorEnabled) sweepBehindCursor() else republishByScan()
-    }
+    fun republishIncomplete() = sweepByScan()
 
-    private fun sweepBehindCursor() {
-        // Read once. A cursor that moved on during the sweep only means the next sweep covers
-        // more; widening the window mid-pass would let one pass run unboundedly.
-        val cursor = cursorStore.load()
+    /**
+     * Deliver everything still incomplete, in bounded pages, oldest first.
+     *
+     * **Position-free, unlike TO-2's, and it has to be.** TO-2 sweeps `seq <= cursor` because its
+     * drain runs continuously and leaves strands *behind* an advancing cursor. Here the drain runs
+     * only on (re)connect, so the cursor is frozen at wherever startup left it — usually 0, on an
+     * empty table — and `seq <= 0` matches nothing. A cursor-bounded sweep on this branch is not
+     * merely narrow, it is empty: an event that misses its NOTIFY would never be delivered at all.
+     * Verified the hard way, with a 20 kB event stranded at seq 200 under a cursor of 0.
+     *
+     * That matters more here than it would on TO-2. This branch's fallback is not only a crash
+     * backstop: an event too large for a NOTIFY payload gets no notification by design (V10), so
+     * this pass is its ONLY delivery path.
+     *
+     * Bounded and executor-backed for the reasons the cursor sweep was: one pass must not run
+     * unboundedly long, and it must not deliver one row at a time on Spring's shared scheduler
+     * thread. The page is unordered, like the drain's — see [EventPublicationDirectProcessor
+     * .findIncompleteIds] — so the planner can go straight at the partial index instead of walking
+     * a growing prefix of delivered rows.
+     */
+    private fun sweepByScan() {
         var total = 0
         var batches = 0
 
         while (batches < maxBatches) {
-            val ids = processor.findIncompleteUpTo(cursor, minAge, batchSize)
+            val ids = processor.findIncompleteIds(minAge, batchSize)
             batches++
             if (ids.isEmpty()) break
 
@@ -152,8 +220,7 @@ class IncompleteEventRepublisher(
             rescued.increment(delivered.toDouble())
             total += delivered
 
-            // Same no-progress guard as the scan drain, and for the same reason: the sweep's query
-            // is not a cursor, so a page that delivers nothing is refetched verbatim.
+            // The query is not a cursor, so a page that delivers nothing is refetched verbatim.
             if (delivered == 0) {
                 log.error("Sweep page of {} publication(s) delivered nothing; ending pass", ids.size)
                 break
@@ -165,13 +232,7 @@ class IncompleteEventRepublisher(
         if (batches >= maxBatches) {
             log.info("[OUTBOX] sweep hit its batch bound: {} rescued in {} batches, more remain", total, batches)
         } else {
-            log.debug("[OUTBOX] sweep rescued {} publication(s) below cursor {}", total, cursor)
-        }
-    }
-
-    private fun republishByScan() {
-        processor.findIncompleteIds(minAge).forEach { id ->
-            if (deliver(id)) rescued.increment()
+            log.debug("[OUTBOX] sweep rescued {} publication(s) the push path did not deliver", total)
         }
     }
 

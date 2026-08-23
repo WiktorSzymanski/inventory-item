@@ -76,7 +76,7 @@ class EventDrainLoopTest {
     fun `a full page that delivers nothing ends the pass instead of spinning`() {
         val page = ids(2)
         every { processor.findIncompleteIds(any<Duration>(), any<Int>()) } returns page
-        every { processor.process(any()) } throws RuntimeException("delivery is broken")
+        every { processor.process(any<UUID>()) } throws RuntimeException("delivery is broken")
 
         scanLoop(batchSize = 2).drainAll()
 

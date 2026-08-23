@@ -26,18 +26,20 @@ spring:
 
 app:
   outbox-cursor:
-    # How the drain finds the next page.
+    # How the RECOVERY drain finds the next page. On this branch that is all it is.
     #
-    # true  (CURSOR) — read `seq > cursor`, advance the cursor to the page's highest seq. The scan
-    #                  starts past everything already delivered, so an idle drain costs one index
-    #                  descent instead of walking the whole `completion_date IS NULL` region and its
-    #                  tombstones. Rows the cursor moves past undelivered are swept by
+    # On TO-2 this selects the delivery path itself, and the cursor exists to keep an idle drain from
+    # walking the whole `completion_date IS NULL` region ~25x/s. Here the V10 trigger puts the event
+    # in the notification, so EventDrainLoop is signalled only on (re)connect — the query it chooses
+    # runs a handful of times per process, not continuously, and neither setting is on the hot path.
+    #
+    # Left in place, defaulted true, and deliberately not removed: V8's column, index and cursor
+    # table stay exactly as TO-2 has them so the A/B between the two branches varies one thing, the
+    # delivery trigger. Compose pins OUTBOX_CURSOR_ENABLED=true for every run anyway.
+    #
+    # true  (CURSOR) — read `seq > cursor`; rows the cursor moves past are swept by
     #                  IncompleteEventRepublisher.
-    # false (SCAN)   — the pre-V8 behaviour every earlier TO-2 run measured.
-    #
-    # This is the A/B, and it is an env knob precisely so both modes run from ONE image: two builds
-    # differ in more than the thing under test. PostgresNotificationListener logs the mode at
-    # startup so a run cannot record the wrong one.
+    # false (SCAN)   — the pre-V8 absence proof over the whole incomplete region.
     enabled: ${OUTBOX_CURSOR_ENABLED:true}
   outbox-sweep:
     # Bounds on ONE sweep pass, in cursor mode. Strands are routine there, not rare, so the sweep
@@ -49,6 +51,12 @@ app:
   event-delivery:
     threads: ${EVENT_DELIVERY_THREADS:20}                 # workers delivering a page; caps deliveries in flight
     batch-size: ${EVENT_DELIVERY_BATCH_SIZE:1000}         # publications per drain page; bounds a large backlog's fetch
+    # Deliveries accepted but not yet started. THE bound on this branch: NOTIFY carries the event, so
+    # the listener submits one task per notification and cannot coalesce a burst the way a wake-up
+    # does. When this fills, submitting blocks the listener thread, PostgreSQL's async-notify queue
+    # backs up and writers slow at pg_notify -- backpressure reaching the producers instead of an
+    # unbounded queue absorbing it. Watch outbox_notify_queue_depth against this number.
+    queue-capacity: ${EVENT_DELIVERY_QUEUE_CAPACITY:1000}  # tasks queued ahead of the delivery pool
   outbox-purge:
     # Deletes delivered publications so event_publication stops growing without bound. See
     # OutboxPurger — a delivered row has served the outbox guarantee and keeping it forever cost

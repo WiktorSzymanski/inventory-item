@@ -6,6 +6,7 @@ import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 @Component
 class OutboxMetrics(
@@ -16,15 +17,19 @@ class OutboxMetrics(
 
     private val backlog = meterRegistry.gauge("outbox.backlog", AtomicLong(0))
 
-    /** Where the drain has got to. Flat while the drain is stalled, which no other series shows. */
-    private val cursorPosition = meterRegistry.gauge("outbox.cursor.position", AtomicLong(0))
-
     /**
-     * Publications assigned a seq that the cursor has not reached. Reads the SEQUENCE's high-water
-     * mark, not `max(seq)`: `last_value` is O(1) and needs no index, and it counts rows still
-     * uncommitted — which is the population the lag is actually about.
+     * How full PostgreSQL's async-notify queue is, 0..1 — the SERVER side of this branch's
+     * backpressure, and the one number that says whether the bound has reached the writers.
+     *
+     * Delivery here is push: when the delivery pool saturates, `pg-notify-listener` blocks on submit
+     * and stops draining this queue, so it grows and `pg_notify` at commit gets slower. Nothing else
+     * in the metric set shows that — `outbox_backlog` stays low precisely because the rows are being
+     * delivered, just behind a queue. A rising value alongside a pinned `outbox_notify_queue_depth`
+     * is the signature of backpressure working as designed; approaching 1.0 is the failure mode,
+     * where NOTIFY starts failing at commit.
      */
-    private val cursorLag = meterRegistry.gauge("outbox.cursor.lag", AtomicLong(0))
+    private val notifyQueueUsage: AtomicReference<Double> =
+        meterRegistry.gauge("outbox.notify.queue.usage", AtomicReference(0.0)) { it.get() }!!
 
     /**
      * The oldest publication still undelivered. `min(seq)` on the partial index is its leftmost
@@ -43,26 +48,35 @@ class OutboxMetrics(
     }
 
     /**
-     * Separate from [updateBacklog] and defensive: on a database migrated before V8 these objects
-     * do not exist, and a throwing @Scheduled method would take the backlog gauge down with it.
+     * Separate from [updateBacklog] and defensive: a throwing @Scheduled method would take the
+     * backlog gauge down with it.
+     *
+     * `outbox.cursor.position` and `outbox.cursor.lag` are deliberately NOT published on this
+     * branch. V8's cursor is still in the schema, but delivery no longer reads it — [EventDrainLoop]
+     * runs only on reconnect — so the cursor sits still while the sequence advances, and a lag gauge
+     * computed against the sequence high-water mark would climb forever and read as a completely
+     * stalled drain. That exact gauge lied on TO-2-fix-A for the same reason, and "stalled drain" is
+     * a plausible enough result that a bench run cannot catch it. Neither series is referenced by
+     * `queries.promql` or by either dashboard, so nothing downstream loses a panel.
+     *
+     * `outbox.oldest.incomplete.seq` survives: min(seq) over the partial index is one index descent
+     * and still means what it says — the oldest thing not yet delivered, by whichever path.
      */
     @Scheduled(fixedDelay = 5_000)
-    fun updateCursor() {
+    fun updateNotifyQueue() {
         runCatching {
-            val position = jdbcTemplate.queryForObject(
-                "SELECT position FROM outbox_cursor WHERE id = 1", Long::class.java,
-            ) ?: 0L
-            val highWater = jdbcTemplate.queryForObject(
-                "SELECT last_value FROM event_publication_seq_seq", Long::class.java,
-            ) ?: 0L
+            val usage = jdbcTemplate.queryForObject(
+                "SELECT pg_notification_queue_usage()", Double::class.java,
+            ) ?: 0.0
             val oldest = jdbcTemplate.queryForObject(
                 "SELECT coalesce(min(seq), 0) FROM event_publication WHERE completion_date IS NULL",
                 Long::class.java,
             ) ?: 0L
 
-            cursorPosition.set(position)
-            cursorLag.set((highWater - position).coerceAtLeast(0))
+            // Held as a Double, not the AtomicLong the other gauges use: this is a 0..1 fraction
+            // and every realistic value would round to 0 as a long.
+            notifyQueueUsage.set(usage)
             oldestIncompleteSeq.set(oldest)
-        }.onFailure { e -> log.debug("[OUTBOX] cursor metrics unavailable", e) }
+        }.onFailure { e -> log.debug("[OUTBOX] notify-queue metrics unavailable", e) }
     }
 }

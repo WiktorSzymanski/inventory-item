@@ -94,7 +94,7 @@ class OutboxCursorDrainTest {
         every { cursorStore.load() } returns 0L
         val p = page(from = 1, n = 3)
         every { processor.findAfterCursor(any(), any()) } returnsMany listOf(p, emptyList())
-        every { processor.process(any()) } throws RuntimeException("listener blew up")
+        every { processor.process(any<UUID>()) } throws RuntimeException("listener blew up")
 
         cursorLoop(batchSize = 3).drainAll()
 

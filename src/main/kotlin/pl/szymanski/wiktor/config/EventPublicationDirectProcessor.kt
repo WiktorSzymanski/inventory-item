@@ -18,6 +18,12 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Single delivery path shared by the NOTIFY listener and the backup poller.
  *
+ * Two entry points, one body. [process] taking a [NotifiedPublication] is this branch's fast path:
+ * the V10 trigger puts the event in the notification, so there is nothing to look up and delivery
+ * costs one statement. [process] taking a bare id is what the fallback sweep and the reconnect
+ * catch-up use, because an id is all they have; it re-reads the three columns and then runs the
+ * identical tail.
+ *
  * The claim UPDATE and the listener invocation run in one transaction: a listener failure rolls
  * the claim back, leaving the row incomplete for the backup poller (at-least-once). The claim
  * doubles as an idempotency guard — whichever path claims a row first delivers it; the other sees
@@ -44,6 +50,40 @@ class EventPublicationDirectProcessor(
 
     @Transactional
     fun process(publicationId: UUID) {
+        if (!claim(publicationId)) return
+
+        val row = jdbcTemplate.queryForMap(
+            "SELECT event_type, serialized_event, listener_id FROM event_publication WHERE id = ?",
+            publicationId,
+        )
+        deliver(
+            row["event_type"] as String,
+            row["serialized_event"] as String,
+            row["listener_id"] as String,
+        )
+        log.debug("Publication {} delivered and marked COMPLETED", publicationId)
+    }
+
+    /**
+     * Deliver a publication whose contents arrived in the NOTIFY message — the push path's only
+     * touch of the outbox is the claim.
+     *
+     * Identical in every observable way to [process] above except that the three columns it would
+     * have re-read are already in hand. The claim is NOT one of the things the payload can replace:
+     * it is the completion write, it is the idempotency guard against the sweep and against a
+     * redundant notification, and its rollback on a listener failure is what keeps delivery
+     * at-least-once rather than at-most-once.
+     */
+    @Transactional
+    fun process(pub: NotifiedPublication) {
+        if (!claim(pub.id)) return
+
+        deliver(pub.eventType, pub.serializedEvent, pub.listenerId)
+        log.debug("Publication {} delivered from its notification and marked COMPLETED", pub.id)
+    }
+
+    /** Take the row, or report that someone else already had it. */
+    private fun claim(publicationId: UUID): Boolean {
         val claimed = jdbcTemplate.update(
             """UPDATE event_publication
                SET completion_date = ?, status = 'COMPLETED'
@@ -52,23 +92,22 @@ class EventPublicationDirectProcessor(
         )
         if (claimed == 0) {
             log.debug("Publication {} already delivered by another path, skipping", publicationId)
-            return
+            return false
         }
+        return true
+    }
 
-        val row = jdbcTemplate.queryForMap(
-            "SELECT event_type, serialized_event, listener_id FROM event_publication WHERE id = ?",
-            publicationId,
-        )
-        val eventType = Class.forName(row["event_type"] as String)
-        val event = eventSerializer.deserialize(row["serialized_event"] as String, eventType)
-        val invoker = invokers.computeIfAbsent(row["listener_id"] as String) { resolveInvoker(it, eventType) }
+    /** Deserialize and invoke, from the publication's three payload columns however they arrived. */
+    private fun deliver(eventTypeName: String, serializedEvent: String, listenerId: String) {
+        val eventType = Class.forName(eventTypeName)
+        val event = eventSerializer.deserialize(serializedEvent, eventType)
+        val invoker = invokers.computeIfAbsent(listenerId) { resolveInvoker(it, eventType) }
 
         try {
             invoker.method.invoke(invoker.target, event)
         } catch (e: InvocationTargetException) {
             throw e.targetException as? RuntimeException ?: RuntimeException(e.targetException)
         }
-        log.debug("Publication {} delivered and marked COMPLETED", publicationId)
     }
 
     fun findIncompleteIds(olderThan: Duration): List<UUID> =
