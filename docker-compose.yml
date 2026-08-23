@@ -72,6 +72,19 @@ services:
       # run that wants to tune the sweep can still do it without a rebuild.
       OUTBOX_SWEEP_INTERVAL:
       OUTBOX_SWEEP_MIN_AGE:
+      # Delivery pool width and the queue in front of it. Bare for the same reason as the two above:
+      # every TO branch ships its own default in application.yaml and a compose default would
+      # silently overwrite all of them.
+      #
+      # EVENT_DELIVERY_QUEUE_CAPACITY exists only on TO-2-push and is inert elsewhere. There the
+      # NOTIFY carries the event, so the listener submits one delivery per notification and cannot
+      # collapse a burst the way a wake-up does; that queue is the only thing bounding deliveries in
+      # flight. Filling it blocks the listener, which backs up PostgreSQL's async-notify queue and
+      # slows writers at pg_notify — so this knob sets where backpressure starts, and lowering it
+      # moves the limit onto the producers sooner. Watch outbox_notify_queue_depth against it, and
+      # outbox_notify_queue_usage for the server side.
+      EVENT_DELIVERY_THREADS:
+      EVENT_DELIVERY_QUEUE_CAPACITY:
     ports:
       - "8080:8080"
     depends_on:
