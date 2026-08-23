@@ -42,10 +42,15 @@ class PostgresNotificationListener(
     @Value("\${spring.datasource.password}") private val dbPassword: String,
     @Value("\${app.event-delivery.batch-size:1000}") private val batchSize: Int,
     @Value("\${app.outbox-cursor.enabled:true}") private val cursorEnabled: Boolean,
+    // The third arm, and the only one that cannot strand a row: it consumes up to
+    // pg_snapshot_xmin instead of up to the highest seq it has seen. Off by default so every
+    // archived TO-2 run keeps meaning what it meant. Only consulted when cursorEnabled.
+    @Value("\${app.outbox-cursor.watermark:false}") private val watermarkEnabled: Boolean,
 ) {
     private val channel = "event_publication_notify"
 
-    private val drainLoop = EventDrainLoop(processor, executor, batchSize, cursorStore, cursorEnabled)
+    private val drainLoop =
+        EventDrainLoop(processor, executor, batchSize, cursorStore, cursorEnabled, watermarkEnabled && cursorEnabled)
 
     @Volatile
     private var running = true
@@ -59,9 +64,20 @@ class PostgresNotificationListener(
         listenerThread = Thread(::connectionLoop, "pg-notify-listener").apply { isDaemon = true }
         listenerThread.start()
         log.info(
-            "[OUTBOX] drain mode={} (app.outbox-cursor.enabled), batch-size={}",
-            if (cursorEnabled) "CURSOR" else "SCAN", batchSize,
+            "[OUTBOX] drain mode={} (app.outbox-cursor.enabled/.watermark), batch-size={}",
+            when {
+                !cursorEnabled -> "SCAN"
+                watermarkEnabled -> "WATERMARK"
+                else -> "CURSOR"
+            },
+            batchSize,
         )
+        if (watermarkEnabled && !cursorEnabled) {
+            log.warn(
+                "[OUTBOX] OUTBOX_CURSOR_WATERMARK=true is INERT with OUTBOX_CURSOR_ENABLED=false: " +
+                    "the watermark IS a cursor, so the scan arm has nowhere to put it. Running SCAN.",
+            )
+        }
     }
 
     private fun connectionLoop() {

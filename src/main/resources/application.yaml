@@ -39,6 +39,34 @@ app:
     # differ in more than the thing under test. PostgresNotificationListener logs the mode at
     # startup so a run cannot record the wrong one.
     enabled: ${OUTBOX_CURSOR_ENABLED:true}
+    # WHERE the cursor is allowed to stop, once `enabled` has decided it exists at all.
+    #
+    # false (SEQ)       — stop at the highest `seq` the pass has SEEN. But seq is a BIGSERIAL
+    #                     handed out at INSERT, and on the reserve path that INSERT is statement 1
+    #                     of OrderWriteCommandHandler.write while the inventory_state locks are
+    #                     statement 4 — so a transaction holds a low seq and commits after higher
+    #                     ones, and the cursor moves past rows it never saw. They land BELOW it,
+    #                     where only the 60 s sweep reaches them.
+    # true  (WATERMARK) — stop at pg_snapshot_xmin, below which every transaction is already
+    #                     decided. Nothing can appear behind it, so nothing is stranded. Costs
+    #                     head-of-line blocking: one slow writer holds xmin and delivery waits.
+    #
+    # Measured on TO-2_capacity_W-base_20260822T111030Z (INVALID, 20% completion): at ~90 orders/s
+    # the backlog was 494 against a cursor lag of 14 — almost all of it stranded below the cursor —
+    # and 58,623 rows had been rescued by t=1200 s. TO-1, whose poller runs ten minutes behind and
+    # therefore never reads at the tip, stranded 0. Each 60 s rescue lands as one batch, and every
+    # OrderCreatedEvent in it enqueues onto a 200-thread pool with an unbounded queue.
+    #
+    # Requires V9. **Defaults to TRUE on this branch, which is what this branch IS.** The A/B is
+    # therefore TO-2 (seq cursor) against TO-2-fix-A (watermark): two branches, two images — not
+    # one image with a knob, because V9's column and index mean the two arms could never have
+    # shared a build anyway. That keeps every archived TO-2 run meaning exactly what it meant, and
+    # it needs no docker-compose passthrough — compose forwards only the variables it names, and
+    # this one no longer has to be named.
+    #
+    # The ${...} form is kept so a local run can still flip the arm without a rebuild:
+    # `OUTBOX_CURSOR_WATERMARK=false ./gradlew bootRun` exercises the seq path from this image.
+    watermark: ${OUTBOX_CURSOR_WATERMARK:true}
   outbox-sweep:
     # Bounds on ONE sweep pass, in cursor mode. Strands are routine there, not rare, so the sweep
     # is a real delivery path and needs the same "one pass cannot run unboundedly long" guarantee

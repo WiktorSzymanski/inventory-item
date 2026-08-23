@@ -114,6 +114,8 @@ class IncompleteEventRepublisher(
     private val minAge: Duration,
     @Value("\${app.outbox-cursor.enabled:true}")
     private val cursorEnabled: Boolean,
+    @Value("\${app.outbox-cursor.watermark:false}")
+    private val watermarkEnabled: Boolean,
     @Value("\${app.outbox-sweep.batch-size:1000}")
     private val batchSize: Int,
     @Value("\${app.outbox-sweep.max-batches:10}")
@@ -127,9 +129,20 @@ class IncompleteEventRepublisher(
      */
     private val rescued: Counter = meterRegistry.counter("outbox.sweep.rescued")
 
+    /**
+     * Which sweep the drain arm needs.
+     *
+     * The seq cursor strands rows BELOW itself by design, so [sweepBehindCursor] looks exactly
+     * there and nowhere else. The watermark cursor strands nothing below itself — everything under
+     * `pg_snapshot_xmin` was seen — but it can leave rows stranded ABOVE it, because one
+     * long-running transaction pins `xmin` and no below-cursor query can reach past it. So that arm
+     * takes the position-free [republishByScan], which finds anything older than the min-age
+     * wherever it sits. It is the expensive absence-proof query, run once a minute, which is the
+     * cadence V8 already establishes as affordable.
+     */
     @Scheduled(fixedDelayString = "\${spring.modulith.events.republication-interval:PT1M}")
     fun republishIncomplete() {
-        if (cursorEnabled) sweepBehindCursor() else republishByScan()
+        if (cursorEnabled && !watermarkEnabled) sweepBehindCursor() else republishByScan()
     }
 
     private fun sweepBehindCursor() {

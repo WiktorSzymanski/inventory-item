@@ -37,8 +37,15 @@ class EventPublicationDirectProcessor(
 
     private data class ListenerInvoker(val target: Any, val method: Method)
 
-    /** A publication's id and its position, so the drain can advance its cursor from a page. */
-    data class PublicationRef(val id: UUID, val seq: Long)
+    /**
+     * A publication's id and its position, so the drain can advance its cursor from a page.
+     *
+     * [xactId] is the id of the transaction that INSERTed the row, carried as text because it is
+     * an unsigned 64-bit `xid8` and Java has no type for that — it is only ever compared and
+     * persisted, never arithmetic, so the database does every operation on it. Empty on the seq
+     * arm, whose query does not select it.
+     */
+    data class PublicationRef(val id: UUID, val seq: Long, val xactId: String = "")
 
     private val invokers = ConcurrentHashMap<String, ListenerInvoker>()
 
@@ -123,6 +130,62 @@ class EventPublicationDirectProcessor(
                LIMIT ?""",
             RowMapper { rs, _ -> PublicationRef(rs.getObject("id", UUID::class.java), rs.getLong("seq")) },
             cursor,
+            limit,
+        )
+
+    /**
+     * The lowest transaction id still in progress — the watermark arm's boundary.
+     *
+     * Every transaction below this has already committed or aborted, so every publication row with
+     * `xact_id` below it is decided and visible. That is the whole guarantee the arm rests on, and
+     * it is the one thing `seq` cannot give: seq is assigned at INSERT, this is read from the live
+     * snapshot.
+     *
+     * Read ONCE per pass, never per page. Re-reading mid-pass would widen the window under the
+     * pass's own feet and let in rows that sort BELOW ones already delivered, which is the exact
+     * shape of the bug this arm exists to remove.
+     */
+    fun currentWatermark(): String =
+        jdbcTemplate.queryForObject(
+            "SELECT pg_snapshot_xmin(pg_current_snapshot())::text",
+            String::class.java,
+        ) ?: "0"
+
+    /**
+     * One page of the half-open window `[from, to)`, ordered by `(xact_id, seq)` — the watermark
+     * arm's only read.
+     *
+     * `to` is [currentWatermark]'s value and the bound is exclusive: that transaction is the oldest
+     * one still in progress, so it is precisely the row set that is NOT yet decided. `from` is the
+     * previous pass's `to`, and is INCLUSIVE — those rows sat above the last closed window.
+     *
+     * Paged by a row-value comparison rather than by seq alone because a transaction's six
+     * publications share one xact_id; `(xact_id, seq)` is the only unique total order over the
+     * window, and it is the order idx_event_publication_xact_incomplete is built in, so the page is
+     * an index-only forward walk from a known position.
+     *
+     * `completion_date IS NULL` carries the partial index and skips rows the sweep already took. It
+     * is not a correctness guard: [process] claims each row atomically.
+     */
+    fun findInWindow(from: String, to: String, lastXact: String, lastSeq: Long, limit: Int): List<PublicationRef> =
+        jdbcTemplate.query(
+            """SELECT id, seq, xact_id::text AS xact_id FROM event_publication
+               WHERE completion_date IS NULL
+                 AND xact_id >= ?::xid8 AND xact_id < ?::xid8
+                 AND (xact_id, seq) > (?::xid8, ?)
+               ORDER BY xact_id, seq
+               LIMIT ?""",
+            RowMapper { rs, _ ->
+                PublicationRef(
+                    rs.getObject("id", UUID::class.java),
+                    rs.getLong("seq"),
+                    rs.getString("xact_id"),
+                )
+            },
+            from,
+            to,
+            lastXact,
+            lastSeq,
             limit,
         )
 

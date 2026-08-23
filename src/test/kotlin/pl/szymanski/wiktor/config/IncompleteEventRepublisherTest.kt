@@ -35,10 +35,11 @@ class IncompleteEventRepublisherTest {
 
     private fun republisher(
         cursorEnabled: Boolean = true,
+        watermarkEnabled: Boolean = false,
         batchSize: Int = 2,
         maxBatches: Int = 3,
     ) = IncompleteEventRepublisher(
-        processor, cursorStore, executor, registry, minAge, cursorEnabled, batchSize, maxBatches,
+        processor, cursorStore, executor, registry, minAge, cursorEnabled, watermarkEnabled, batchSize, maxBatches,
     )
 
     private fun rescued() = registry.counter("outbox.sweep.rescued").count()
@@ -55,6 +56,20 @@ class IncompleteEventRepublisherTest {
         verify(exactly = 1) { processor.findIncompleteUpTo(900L, minAge, 2) }
         // The scan query is the OTHER mode's; issuing it here would reintroduce the unbounded read.
         verify(exactly = 0) { processor.findIncompleteIds(any<Duration>()) }
+    }
+
+    @Test
+    fun `the watermark arm sweeps without a position predicate`() {
+        every { processor.findIncompleteIds(any<Duration>()) } returns emptyList()
+
+        republisher(watermarkEnabled = true).republishIncomplete()
+
+        // Below-the-cursor is the wrong place to look here: the watermark leaves nothing behind it,
+        // but a transaction pinning xmin strands rows ABOVE it, which no cursor-bounded query
+        // reaches. Position-free is the only sweep that can find them.
+        verify(exactly = 1) { processor.findIncompleteIds(minAge) }
+        verify(exactly = 0) { processor.findIncompleteUpTo(any(), any(), any()) }
+        verify(exactly = 0) { cursorStore.load() }
     }
 
     @Test

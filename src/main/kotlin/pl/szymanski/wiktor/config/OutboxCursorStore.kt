@@ -38,4 +38,34 @@ class OutboxCursorStore(private val jdbcTemplate: JdbcTemplate) {
             position,
         )
     }
+
+    /**
+     * The watermark arm's position: the transaction id below which every publication has been
+     * delivered or handed to the sweep. Its own column, not [load]'s — see V9 for why the two arms
+     * must not share one.
+     *
+     * `'0'` on a fresh database, which is below every real xid8 and so makes the first window start
+     * at the beginning of the table.
+     */
+    fun loadWatermark(): String =
+        jdbcTemplate.queryForObject(
+            "SELECT xact_position::text FROM outbox_cursor WHERE id = 1",
+            String::class.java,
+        ) ?: "0"
+
+    /**
+     * Written ONCE per pass, after the window is exhausted — never per page.
+     *
+     * The distinction is the arm's whole point. A boundary saved per page would sit above rows the
+     * pass had not delivered yet, and unlike the seq cursor there is no below-the-cursor sweep to
+     * catch them: in this mode the sweep scans without a position predicate precisely because
+     * nothing is supposed to be stranded. Crashing mid-window instead replays the window, which the
+     * claim UPDATE makes a no-op.
+     */
+    fun saveWatermark(position: String) {
+        jdbcTemplate.update(
+            "UPDATE outbox_cursor SET xact_position = GREATEST(xact_position, ?::xid8), updated_at = now() WHERE id = 1",
+            position,
+        )
+    }
 }
