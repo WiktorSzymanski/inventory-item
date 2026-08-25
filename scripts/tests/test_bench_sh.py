@@ -1,19 +1,23 @@
+import gzip
 import os
+import shutil
 import subprocess
+import tempfile
 import unittest
 
 HERE = os.path.dirname(__file__)
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 BENCH_SH = os.path.join(HERE, "..", "..", "k6", "bench", "bench.sh")
+COMMON_SH = os.path.join(HERE, "..", "..", "k6", "bench", "common.sh")
 
 PROVENANCE_VARS = ("VARIANT_GIT_BRANCH", "VARIANT_GIT_COMMIT",
                    "VARIANT_GIT_DIRTY", "VARIANT_HEAD_EPOCH")
 
 
-def block(marker):
-    """Execute one marked block out of the shipped bench.sh, so these tests bind to the
-    real code rather than to a copy of it that can drift."""
-    with open(BENCH_SH) as fh:
+def block(marker, path=BENCH_SH):
+    """Execute one marked block out of the shipped bench.sh (or common.sh), so these tests
+    bind to the real code rather than to a copy of it that can drift."""
+    with open(path) as fh:
         script = fh.read()
     return script.split(f"# >>> {marker}")[1].split(f"# <<< {marker}")[0]
 
@@ -311,6 +315,240 @@ class MetaHeredocRendersCorrectly(unittest.TestCase):
         dict_block = body[start:end]
         self.assertIn('"run_label"', dict_block)
         self.assertIn('"point"', dict_block)
+
+
+# ---------------------------------------------------------------- cadvisor guard
+
+def cadvisor_line(cgroup_id, name, image="", extra_labels=()):
+    """One container_memory_rss line shaped the way cadvisor v0.49 really emits it.
+
+    Two details of that shape are the whole reason the guard needs testing. cadvisor writes
+    `name=""` EXPLICITLY on every cgroup it cannot attribute to a container -- Prometheus
+    drops empty labels, cadvisor's text exposition does not -- so a blind collector still
+    produces well-formed container_memory_rss lines. And every series carries a pile of
+    container_label_* labels whose names end in arbitrary text, so a substring match for
+    name="api" is not the same question as a match on the `name` label.
+    """
+    labels = [f'container_label_com_docker_compose_project="{"iir" if name else ""}"',
+              f'container_label_com_docker_compose_service="{name}"']
+    labels.extend(extra_labels)
+    labels.extend([f'id="{cgroup_id}"', f'image="{image}"', f'name="{name}"'])
+    return "container_memory_rss{" + ",".join(labels) + "} 5.840896e+07 1787584246837"
+
+
+# What cadvisor published for the whole of the 2026-08-22 campaign: host cgroups only, every
+# one of them carrying name="". Trimmed from 112 series to the shape-bearing ones.
+HOST_CGROUPS_ONLY = "\n".join([
+    cadvisor_line("/", ""),
+    cadvisor_line("/init.scope", ""),
+    cadvisor_line("/system.slice", ""),
+    cadvisor_line("/system.slice/ModemManager.service", ""),
+    cadvisor_line("/user.slice/user-1000.slice", ""),
+])
+
+# What --docker_only leaves when cadvisor cannot see containers: the machine root, alone.
+DOCKER_ONLY_BLIND = cadvisor_line("/", "")
+
+WORKING = "\n".join([
+    cadvisor_line("/", ""),
+    cadvisor_line("/system.slice/docker-aaa.scope", "postgres", "postgres:16-alpine"),
+    cadvisor_line("/system.slice/docker-bbb.scope", "api", "inventory-reservation-to-3:latest"),
+    cadvisor_line("/system.slice/docker-ccc.scope", "cadvisor", "gcr.io/cadvisor/cadvisor:v0.49.1"),
+])
+
+
+def cadvisor_probe(body, db_svc="postgres", api_re="api"):
+    """Run bench.sh's real probe over a /metrics body; True when it reports containers seen."""
+    env = dict(os.environ)
+    env["DB_SVC"] = db_svc
+    env["API_CONTAINER_RE"] = api_re
+    result = subprocess.run(
+        ["bash", "-c", block("cadvisor-probe") + "\ncadvisor_sees_containers"],
+        input=body, env=env, capture_output=True, text=True)
+    return result.returncode == 0
+
+
+class CadvisorProbe(unittest.TestCase):
+    """The guard that would have stopped the 2026-08-22 campaign on its first run.
+
+    cadvisor stayed `up` and container_scrape_error stayed 0 for 40 hours while attributing
+    nothing to a container, so neither of those is the signal. The only reliable signal is
+    whether the two containers whose panels the run has to record are actually named in the
+    exposition.
+    """
+
+    def test_a_working_cadvisor_passes(self):
+        self.assertTrue(cadvisor_probe(WORKING))
+
+    def test_host_cgroups_only_fails(self):
+        """The exact 2026-08-22 failure: 112 well-formed series, not one container."""
+        self.assertFalse(cadvisor_probe(HOST_CGROUPS_ONLY))
+
+    def test_docker_only_blind_output_fails(self):
+        """What --docker_only leaves behind when the same fault recurs."""
+        self.assertFalse(cadvisor_probe(DOCKER_ONLY_BLIND))
+
+    def test_missing_api_container_fails(self):
+        body = "\n".join([cadvisor_line("/", ""),
+                          cadvisor_line("/system.slice/docker-aaa.scope", "postgres")])
+        self.assertFalse(cadvisor_probe(body))
+
+    def test_missing_db_container_fails(self):
+        body = "\n".join([cadvisor_line("/", ""),
+                          cadvisor_line("/system.slice/docker-bbb.scope", "api")])
+        self.assertFalse(cadvisor_probe(body))
+
+    def test_empty_body_fails(self):
+        """curl -sf against a cadvisor that is not listening yet yields nothing at all."""
+        self.assertFalse(cadvisor_probe(""))
+
+    def test_a_container_label_ending_in_name_does_not_satisfy_the_probe(self):
+        """Images commonly ship a `name` label, which cadvisor exposes as
+        container_label_name. An unanchored search for name="api" is satisfied by that on a
+        host cgroup whose real name label is empty -- i.e. by exactly the blind collector this
+        guard exists to catch."""
+        body = cadvisor_line("/system.slice", "",
+                             extra_labels=['container_label_name="api"',
+                                           'container_label_name="postgres"'])
+        self.assertFalse(cadvisor_probe(body))
+
+    def test_the_api_regex_is_applied_as_a_regex(self):
+        """API_CONTAINER_RE is a regex in every other consumer (Prometheus name=~), so the
+        guard must not degrade to a literal comparison for a multi-container variant."""
+        body = "\n".join([cadvisor_line("/system.slice/docker-aaa.scope", "postgres"),
+                          cadvisor_line("/system.slice/docker-bbb.scope", "iir-api-1")])
+        self.assertTrue(cadvisor_probe(body, api_re="api|.*-api-[0-9]+"))
+
+    def test_a_partial_name_match_does_not_pass(self):
+        """postgres-exporter must not stand in for postgres: Prometheus anchors name=~ fully,
+        so a guard that accepted a prefix would pass runs whose panels then render nothing."""
+        body = "\n".join([cadvisor_line("/system.slice/docker-aaa.scope", "postgres-exporter"),
+                          cadvisor_line("/system.slice/docker-bbb.scope", "api")])
+        self.assertFalse(cadvisor_probe(body))
+
+
+SERVICE_LOG_HARNESS = """
+API_SVC=api
+DB_SVC=postgres
+log() {{ printf '%s\n' "$*" >&2; }}
+# Stub compose. Records its argv one line per service, then emits a body so the archive is
+# not merely present but correct.
+dc() {{
+    printf '%s\n' "$*" >>"$ARGV_LOG"
+    printf 'stdout of $*\n'
+    return {rc}
+}}
+{body}
+capture_service_logs "$DEST" "$SINCE"
+echo "rc=$?"
+"""
+
+
+def capture_service_logs(dest, since="", rc=0):
+    """Run the real capture helper out of common.sh against a stub `dc`.
+
+    Returns (stdout, recorded compose argv per service, {service: decompressed archive}).
+    """
+    script = SERVICE_LOG_HARNESS.format(body=block("service-logs", COMMON_SH), rc=rc)
+    argv_log = os.path.join(dest, "argv")
+    os.makedirs(dest, exist_ok=True)
+    env = dict(os.environ)
+    env.update({"DEST": os.path.join(dest, "logs"), "SINCE": since,
+                "ARGV_LOG": argv_log})
+    env.pop("SERVICE_LOG_SVCS", None)
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", script],
+                            env=env, capture_output=True, text=True)
+    argv = []
+    if os.path.exists(argv_log):
+        with open(argv_log) as fh:
+            argv = fh.read().splitlines()
+    archives = {}
+    logdir = os.path.join(dest, "logs")
+    for name in sorted(os.listdir(logdir)) if os.path.isdir(logdir) else []:
+        with gzip.open(os.path.join(logdir, name), "rt") as fh:
+            archives[name] = fh.read()
+    return result, argv, archives
+
+
+class ServiceLogCapture(unittest.TestCase):
+    """A run must keep what the service itself said.
+
+    Before this, a run archived k6's view and Prometheus' view and nothing else — so a run
+    that died at reset.sh's health timeout left no record of why the API never came up, and
+    no artifact recorded which code path was live (TO-2-fix-A logs `[OUTBOX] drain
+    mode=WATERMARK` at startup and nothing else does).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_one_gzipped_archive_per_service(self):
+        _, _, archives = capture_service_logs(self.tmp, since="100")
+        self.assertEqual(sorted(archives), ["api.log.gz", "postgres.log.gz"])
+
+    def test_the_archive_holds_what_the_container_emitted(self):
+        _, _, archives = capture_service_logs(self.tmp, since="100")
+        self.assertIn("stdout of", archives["api.log.gz"])
+
+    def test_since_scopes_the_dump_to_this_run(self):
+        """reset.sh restarts the api container rather than recreating it, so json-file still
+        holds the previous run's output. Without --since a repeated direct bench.sh run would
+        silently concatenate it into this run's archive."""
+        _, argv, _ = capture_service_logs(self.tmp, since="1755000000")
+        self.assertTrue(all("--since 1755000000" in line for line in argv), argv)
+
+    def test_since_is_omitted_when_no_anchor_is_given(self):
+        _, argv, _ = capture_service_logs(self.tmp, since="")
+        self.assertTrue(all("--since" not in line for line in argv), argv)
+
+    def test_timestamps_are_requested(self):
+        """docker's own timestamp is the only thing that lines the log up against the run
+        timeline in meta.json; logback's pattern has no timezone."""
+        _, argv, _ = capture_service_logs(self.tmp, since="100")
+        self.assertTrue(all("--timestamps" in line for line in argv), argv)
+
+    def test_a_failing_compose_call_is_not_fatal(self):
+        """This runs from an EXIT trap, including the one that fires while bench.sh is
+        already dying of something else. It must never replace that exit status."""
+        result, _, _ = capture_service_logs(self.tmp, since="100", rc=1)
+        self.assertIn("rc=0", result.stdout)
+        self.assertIn("non-fatal", result.stderr)
+
+    def test_a_failing_compose_call_still_records_why(self):
+        """2>&1 into the archive on purpose: compose's complaint is what the file should
+        hold rather than nothing at all."""
+        _, _, archives = capture_service_logs(self.tmp, since="100", rc=1)
+        self.assertEqual(sorted(archives), ["api.log.gz", "postgres.log.gz"])
+
+
+class ServiceLogTrap(unittest.TestCase):
+    """The capture has to be reachable from the failure paths, not only the happy one."""
+
+    def setUp(self):
+        with open(BENCH_SH) as fh:
+            self.script = fh.read()
+
+    def test_the_trap_is_installed(self):
+        self.assertIn("trap 'capture_service_logs", self.script)
+
+    def test_the_trap_is_installed_after_t_reset_and_before_reset_sh(self):
+        """$T_RESET is the window anchor, so the trap cannot precede it; reset.sh's health
+        timeout is one of the failures worth capturing, so it cannot follow it either."""
+        t_reset = self.script.index('T_RESET="$(date +%s)"')
+        trap = self.script.index("trap 'capture_service_logs")
+        reset = self.script.index('"$HERE/reset.sh"')
+        self.assertLess(t_reset, trap)
+        self.assertLess(trap, reset)
+
+    def test_the_capture_is_not_also_called_inline(self):
+        """A second call would double the work and, worse, write a partial archive that the
+        trap then overwrites — making the artifact depend on which path exited.
+
+        Comment lines are stripped first: the block above the trap names the function twice
+        while explaining it, and counting prose would make this a tripwire on wording."""
+        code = [l for l in self.script.splitlines() if not l.lstrip().startswith("#")]
+        self.assertEqual("\n".join(code).count("capture_service_logs"), 1)
 
 
 if __name__ == "__main__":

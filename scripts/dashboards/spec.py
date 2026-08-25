@@ -37,8 +37,11 @@ class Section:
 DUP_EXEMPT = set()
 
 
-def _q(quantile, metric, by, job=True):
-    selector = '{job="$job"}' if job else "{}"
+def _q(quantile, metric, by, job=True, extra=""):
+    labels = ['job="$job"'] if job else []
+    if extra:
+        labels.append(extra)
+    selector = "{" + ",".join(labels) + "}"
     return (f'histogram_quantile({quantile}, sum(rate({metric}{selector}[1m])) by ({by}))')
 
 
@@ -145,12 +148,27 @@ SECTIONS = [
             targets=[Target("{{phase}} p50", _q(0.50, "state_load_time_seconds_bucket", "le, phase")),
                      Target("{{phase}} p95", _q(0.95, "state_load_time_seconds_bucket", "le, phase"))],
         ),
+        # Committed only, so the series means what it meant before the outcome tag existed and a
+        # replayed pre-tag run still resolves (those buckets carry no outcome label, and !="conflict"
+        # selects an absent label where ="committed" would not). ES emits no outcome label and so
+        # lands here unchanged. The conflict arm gets its own panel below rather than being folded
+        # in: mixing them would move this panel's p99 for reasons that are not write cost.
         Panel(
-            title="State persist time by source — p50 / p95 / p99",
+            title="State persist time by source — p50 / p95 / p99 (committed)",
             unit="s", w=12,
-            targets=[Target("{{source}} p50", _q(0.50, "state_persist_time_seconds_bucket", "le, source")),
-                     Target("{{source}} p95", _q(0.95, "state_persist_time_seconds_bucket", "le, source")),
-                     Target("{{source}} p99", _q(0.99, "state_persist_time_seconds_bucket", "le, source"))],
+            targets=[Target("{{source}} p50", _q(0.50, "state_persist_time_seconds_bucket", "le, source", extra='outcome!="conflict"')),
+                     Target("{{source}} p95", _q(0.95, "state_persist_time_seconds_bucket", "le, source", extra='outcome!="conflict"')),
+                     Target("{{source}} p99", _q(0.99, "state_persist_time_seconds_bucket", "le, source", extra='outcome!="conflict"'))],
+        ),
+        # The write time of attempts that blocked on the inventory_state row lock and then lost on
+        # @Version. Recording only successes dropped exactly these, which is why the committed
+        # series improves as contention worsens — read the two panels together, never one alone.
+        Panel(
+            title="State persist time — losing attempts (TO family)",
+            unit="s", w=24,
+            targets=[Target("conflict p50", _q(0.50, "state_persist_time_seconds_bucket", "le", extra='outcome="conflict"')),
+                     Target("conflict p95", _q(0.95, "state_persist_time_seconds_bucket", "le", extra='outcome="conflict"')),
+                     Target("conflict p99", _q(0.99, "state_persist_time_seconds_bucket", "le", extra='outcome="conflict"'))],
         ),
         Panel(
             title="Projection lag — p50 / p95 / p99",
@@ -332,14 +350,22 @@ SECTIONS = [
               targets=[Target("timed", "rate(pg_stat_bgwriter_checkpoints_timed_total[1m])"),
                        Target("requested", "rate(pg_stat_bgwriter_checkpoints_req_total[1m])"),
                        Target("write time", "rate(pg_stat_bgwriter_checkpoint_write_time_total[1m])")]),
+        # name!="" on all three: cadvisor writes that label EXPLICITLY on every cgroup it
+        # cannot attribute to a container, so an unresolved $dbc/$apic collapses the matcher
+        # to name=~"|" and selects the host -- the machine root, every systemd unit, the
+        # desktop session -- rather than selecting nothing. That is how the 2026-08-22
+        # campaign's reports came out full of whole-machine CPU and RSS while looking
+        # perfectly reasonable. Both variables are constants now, so this cannot arise from
+        # variable resolution any more; the guard stays because being wrong here is silent
+        # and being empty here is not.
         Panel(title="Container CPU", unit="percentunit", w=6,
-              targets=[Target("{{name}}", 'rate(container_cpu_usage_seconds_total{name=~"$dbc|$apic"}[1m])')]),
+              targets=[Target("{{name}}", 'rate(container_cpu_usage_seconds_total{name=~"$dbc|$apic",name!=""}[1m])')]),
         Panel(title="Container memory", unit="bytes", w=6,
-              targets=[Target("{{name}} rss", 'container_memory_rss{name=~"$dbc|$apic"}'),
-                       Target("{{name}} working set", 'container_memory_working_set_bytes{name=~"$dbc|$apic"}')]),
+              targets=[Target("{{name}} rss", 'container_memory_rss{name=~"$dbc|$apic",name!=""}'),
+                       Target("{{name}} working set", 'container_memory_working_set_bytes{name=~"$dbc|$apic",name!=""}')]),
         # Absorbed from TO-2's jvm-dashboard.json (Task 9 deleted it; Task 10 merges its signals).
         Panel(title="Container network I/O", unit="Bps", w=24,
-              targets=[Target("{{name}} rx", 'sum by (name) (rate(container_network_receive_bytes_total{name=~"$dbc|$apic"}[1m]))'),
-                       Target("{{name}} tx", 'sum by (name) (rate(container_network_transmit_bytes_total{name=~"$dbc|$apic"}[1m]))')]),
+              targets=[Target("{{name}} rx", 'sum by (name) (rate(container_network_receive_bytes_total{name=~"$dbc|$apic",name!=""}[1m]))'),
+                       Target("{{name}} tx", 'sum by (name) (rate(container_network_transmit_bytes_total{name=~"$dbc|$apic",name!=""}[1m]))')]),
     ]),
 ]

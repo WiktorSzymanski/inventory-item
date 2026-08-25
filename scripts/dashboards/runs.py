@@ -280,17 +280,6 @@ def _end_var():
             "hide": 2, "current": {}, "options": []}
 
 
-def _const_var(name, label, value):
-    # A constant, not a query variable: query variables resolve against the dashboard's time
-    # range, and this dashboard's range is the anchor window -- which contains no data at all,
-    # so label_values() would return nothing and $job would expand to "" on every panel.
-    # The unified stack emits exactly one value for each of these on both variant families
-    # (verified against the archived TO and ES runs), so there is nothing to choose anyway.
-    return {"name": name, "label": label, "type": "constant", "query": value,
-            "current": {"selected": False, "text": value, "value": value},
-            "options": [{"selected": True, "text": value, "value": value}], "hide": 2}
-
-
 def _header_panel(panel_id, span_minutes):
     return {
         "id": panel_id, "type": "text", "title": "Selected run",
@@ -324,13 +313,13 @@ def build_runs(found):
         "the time range alone. Requires the marker series from scripts/run_markers.py.",
         ANCHOR_ISO, end_iso,
         [_run_var(found), _end_var(),
-         _const_var("job", "API job", "inventory"),
-         _const_var("db", "Database", "inventory"),
-         _const_var("dbc", "DB container", "postgres"),
+         build._const_var("job", "API job", "inventory"),
+         build._const_var("db", "Database", "inventory"),
+         build._const_var("dbc", "DB container", "postgres"),
          # An alternation, unlike the live dashboard's plain `api`: this dashboard queries
          # ARCHIVED TSDBs, and runs recorded before the api gained a container_name carry
          # the old Compose-generated `<project>-api-N` name instead.
-         _const_var("apic", "API container", "api|.*-api-[0-9]+")])
+         build._const_var("apic", "API container", "api|.*-api-[0-9]+")])
 
     def pick(panel):
         if not panel.targets:

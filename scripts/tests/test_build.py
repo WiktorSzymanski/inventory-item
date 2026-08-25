@@ -20,11 +20,18 @@ STACK_LABEL_VALUES = {
 }
 
 # Which label each query variable draws its options from.
-VAR_LABEL = {"job": "job", "db": "datname", "dbc": "name", "apic": "name"}
+VAR_LABEL = {"job": "job", "db": "datname"}
 
 # The option Grafana must land on for `current: {}` to resolve usefully.
-VAR_EXPECTED = {"job": ["inventory"], "db": ["inventory"], "dbc": ["postgres"],
-                "apic": ["api"]}
+VAR_EXPECTED = {"job": ["inventory"], "db": ["inventory"]}
+
+# $dbc and $apic are NOT here: they are constants now. See ContainerVariablesAreConstants.
+VAR_CONST_EXPECTED = {"dbc": "postgres", "apic": "api"}
+
+
+def prometheus_selects(pattern, values):
+    """Apply a matcher the way Prometheus applies name=~: fully anchored, whole value."""
+    return [v for v in values if re.fullmatch(pattern, v)]
 
 
 def grafana_filter(regex, values):
@@ -77,26 +84,82 @@ class LiveVariableRegexesSelectRealValues(unittest.TestCase):
                 self.assertTrue(selected, f"${name}: regex selects no option, $%s expands "
                                           "empty and every panel using it goes blank" % name)
 
-    def test_db_container_regex_excludes_the_exporter(self):
-        """`postgres-exporter` sorts after `postgres`, so an unanchored /^postgres/ would
-        still default correctly and only misbehave in the dropdown -- catch it here."""
-        self.assertNotIn("postgres-exporter",
-                         grafana_filter(self.vars["dbc"]["regex"], STACK_LABEL_VALUES["name"]))
-
-    def test_api_container_regex_is_an_exact_match(self):
-        """The api pins `container_name: api`, so the variable must select that and only
-        that -- not a leftover container from another Compose project, and not a longer
-        name that merely contains `api`."""
-        selected = grafana_filter(self.vars["apic"]["regex"],
-                                  ["api", "otherproj-api-1", "api-es", "cadvisor"])
-        self.assertEqual(selected, ["api"])
-
     def test_no_regex_uses_a_capturing_group(self):
         """Grafana substitutes the FIRST capturing group's match for the option's value when
         one is present, so `(to|es)` turned the option "postgres-to" into "to"."""
         for name, var in self.vars.items():
             with self.subTest(var=name):
                 self.assertEqual(re.compile(var["regex"].strip("/")).groups, 0)
+
+
+class ContainerVariablesAreConstants(unittest.TestCase):
+    """$dbc and $apic must not be query variables.
+
+    They used to be, over label_values(container_memory_rss, name) -- which asks the very
+    collector the container panels query. When cadvisor stops attributing cgroups to
+    containers, that takes the variables down with it: they resolve to "", the panel matcher
+    becomes name=~"|", and because cadvisor writes name="" EXPLICITLY on every cgroup it
+    cannot attribute, that matches the host rather than matching nothing. For the whole
+    2026-08-22 campaign the container panels therefore rendered machine-wide CPU and RSS --
+    the desktop session included -- and every report.pdf looked entirely reasonable.
+
+    bench-runs.json already declared both as constants and correctly rendered empty over the
+    same data, which is the comparison that identified this.
+    """
+
+    def setUp(self):
+        self.vars = {v["name"]: v for v in build.build_live()["templating"]["list"]}
+
+    def test_both_are_declared_constant(self):
+        for name in VAR_CONST_EXPECTED:
+            with self.subTest(var=name):
+                self.assertEqual(self.vars[name]["type"], "constant")
+
+    def test_each_carries_a_resolved_current_value(self):
+        """A constant with `current: {}` interpolates empty just like an unresolved query
+        variable, so declaring the type is only half of the fix."""
+        for name, value in VAR_CONST_EXPECTED.items():
+            with self.subTest(var=name):
+                self.assertEqual(self.vars[name]["current"].get("value"), value)
+
+    def test_the_db_container_selects_postgres_and_not_the_exporter(self):
+        """`postgres-exporter` also carries a `name` label, and Prometheus anchors name=~
+        fully -- so the value must be the whole container name, not a prefix of it."""
+        selected = prometheus_selects(VAR_CONST_EXPECTED["dbc"], STACK_LABEL_VALUES["name"])
+        self.assertEqual(selected, ["postgres"])
+
+    def test_the_api_container_is_an_exact_match(self):
+        """The api pins `container_name: api`, so this must select that and only that --
+        not a leftover container from another Compose project, and not a longer name that
+        merely contains `api`."""
+        selected = prometheus_selects(VAR_CONST_EXPECTED["apic"],
+                                      ["api", "otherproj-api-1", "api-es", "cadvisor"])
+        self.assertEqual(selected, ["api"])
+
+    def test_neither_matches_an_unnamed_cgroup(self):
+        """The specific failure: cadvisor's host cgroups carry name="". Neither constant may
+        select it, however the collector is behaving."""
+        for name, value in VAR_CONST_EXPECTED.items():
+            with self.subTest(var=name):
+                self.assertEqual(prometheus_selects(value, [""]), [])
+
+
+class ContainerPanelsExcludeUnnamedSeries(unittest.TestCase):
+    """Belt-and-braces on top of the constants: the cadvisor panels carry name!="" so that
+    no future variable change can point them back at the host."""
+
+    def test_every_cadvisor_panel_target_excludes_the_empty_name(self):
+        live = build.build_live()
+        checked = 0
+        for panel in live["panels"]:
+            for target in panel.get("targets", []):
+                expr = target.get("expr", "")
+                if "container_" not in expr:
+                    continue
+                checked += 1
+                self.assertIn('name!=""', expr,
+                              f"{panel['title']}: cadvisor target without name!=\"\": {expr}")
+        self.assertEqual(checked, 5, "expected the 5 cadvisor targets across the 3 panels")
 
 
 class CommittedJsonMatchesTheGenerator(unittest.TestCase):

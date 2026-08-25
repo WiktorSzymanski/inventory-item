@@ -17,7 +17,13 @@ services:
     # Axon 300); TO needs ~50. max_connections sizes Postgres' shared memory, so a value
     # that differed between the families being compared was itself a confound — which the
     # old ES compose file warned about while the TO one used 300 anyway.
-    command: postgres -c max_connections=${PG_MAX_CONNECTIONS:-600}
+    #
+    # track_io_timing is the only source of real DB I/O wait in this stack. With it off,
+    # pg_stat_database_blk_read_time and blk_write_time increase by exactly 0 in every run —
+    # which reads as "the database never waited on I/O", not as "not measured". It costs two
+    # clock reads per block access; on a benchmark whose subject is storage-path cost, not
+    # measuring the wait is the more expensive choice.
+    command: postgres -c max_connections=${PG_MAX_CONNECTIONS:-600} -c track_io_timing=on
     volumes:
       - postgres-data:/var/lib/postgresql/data
 
@@ -126,6 +132,21 @@ services:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     container_name: cadvisor
     privileged: true
+    # Report the machine root and real containers, nothing else.
+    #
+    # Without this, cadvisor also publishes every host cgroup it can walk — ~110 series for
+    # systemd services and the desktop session, each carrying name="". That is not noise, it
+    # is a hazard: for the whole 2026-08-22 campaign cadvisor never attributed a single cgroup
+    # to a container (it stayed up, container_scrape_error stayed 0), and those host series
+    # were what the container panels rendered instead. `name=~"$dbc|$apic"` with an unresolved
+    # variable becomes name=~"|", which matches name="" exactly — so the panels filled with
+    # whole-machine CPU and RSS and looked entirely plausible.
+    #
+    # With --docker_only a blind cadvisor emits `/` alone, which no panel can mistake for a
+    # container, and k6/bench/bench.sh's cadvisor guard fails the run outright. The ~110
+    # dropped series also come straight off every archived snapshot.
+    command:
+      - --docker_only=true
     ports:
       - "8082:8080"
     volumes:

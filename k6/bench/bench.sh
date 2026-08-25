@@ -149,7 +149,93 @@ dc up -d "$DB_SVC" prometheus grafana grafana-renderer grafana-reporter \
     postgres-exporter cadvisor >/dev/null
 
 T_RESET="$(date +%s)"
+
+# >>> service-logs-trap
+# Installed BEFORE reset.sh rather than called after the run, because the failure modes
+# that most need the service's own log all exit through `die`: reset.sh's health timeout,
+# the cadvisor refusal below, a failed seed or warmup, a drain that never clears. An EXIT
+# trap covers those and the successful path in one line.
+#
+# $T_RESET is the window anchor and is set immediately above — see capture_service_logs for
+# why an unscoped dump would fold the previous run's output into this archive.
+#
+# The trap must not change the exit status: capture_service_logs always returns 0 and never
+# calls exit, so bash carries bench.sh's own status through to the caller. run-suite.sh
+# reads that status to classify the run PASS/FAIL/INVALID, and it tears the stack down
+# afterwards — so this has to happen here, while the containers still exist.
+trap 'capture_service_logs "$RUN_DIR/logs" "$T_RESET"' EXIT
+# <<< service-logs-trap
+
 "$HERE/reset.sh"
+
+# ---------------------------------------------------------------- cadvisor guard
+#
+# Unlike the preflight block at the top of this file, this one cannot run before "$RUN_DIR"
+# is created: cadvisor can only be asked about the api container once reset.sh has started
+# it and waited for health. A failure here therefore does leave an empty run directory
+# behind — which is the cheaper of the two costs, the other being an hour of machine time
+# spent recording a run whose container panels are unusable.
+#
+# The 2026-08-22 campaign is why this exists. For the entire lifetime of one Docker daemon,
+# cadvisor attributed no cgroup to any container: it published ~110 host cgroup series with
+# name="" and nothing else. It stayed `up`, container_scrape_error stayed 0, and it was
+# recreated at the start of all 14 runs without ever recovering — only a daemon restart
+# cleared it. So neither `up` nor the scrape-error counter is the signal, and restarting
+# cadvisor is not a reliable remedy; the only thing worth asserting is that the two
+# containers whose panels this run has to record are actually named in the exposition.
+CADVISOR_URL="${CADVISOR_URL:-http://localhost:8082}"
+
+# >>> cadvisor-probe
+# Reads a cadvisor /metrics body on stdin; succeeds only when both containers are named.
+#
+# The name label is extracted and then matched with `grep -x`, rather than grepped for
+# inside the raw line, for two reasons. Prometheus anchors `name=~` fully, so `postgres`
+# must not be satisfied by `postgres-exporter` — a guard looser than the queries it protects
+# would pass runs whose panels still render nothing. And cadvisor decorates every series
+# with container_label_* labels carrying arbitrary values, including the `name` label that
+# many images ship (exposed as container_label_name), so a substring search for name="api"
+# can be satisfied by a collector that sees no containers at all.
+#
+# API_CONTAINER_RE is a regex everywhere else it is consumed (`name=~"$apic"`), so it is
+# applied as one here too.
+cadvisor_sees_containers() {
+    local names
+    names="$(sed -n 's/^container_memory_rss{.*[,{]name="\([^"]*\)".*/\1/p')"
+    printf '%s\n' "$names" | grep -qxE "$DB_SVC" || return 1
+    printf '%s\n' "$names" | grep -qxE "$API_CONTAINER_RE" || return 1
+    return 0
+}
+# <<< cadvisor-probe
+
+cadvisor_ready() {
+    local deadline=$(( SECONDS + $1 ))
+    while :; do
+        if curl -sf --max-time 5 "$CADVISOR_URL/metrics" 2>/dev/null | cadvisor_sees_containers
+        then
+            return 0
+        fi
+        [ "$SECONDS" -ge "$deadline" ] && return 1
+        sleep 3
+    done
+}
+
+if ! cadvisor_ready "${CADVISOR_WAIT:-60}"; then
+    log "cadvisor: no per-container series yet — restarting it once"
+    dc restart cadvisor >/dev/null 2>&1 || true
+    cadvisor_ready "${CADVISOR_WAIT_RETRY:-90}" || die \
+"cadvisor is reachable but reports no per-container series for '$DB_SVC' and '$API_CONTAINER_RE'.
+Every container CPU/memory/network panel would record nothing for this run, so it is being
+refused rather than archived half-blind.
+
+What this looked like on 2026-08-22: cadvisor up, container_scrape_error 0, and ~110 host
+cgroup series with name=\"\" standing in for the containers. It survived being recreated at
+every run and was cleared only by restarting the Docker daemon.
+
+  docker logs cadvisor | tail -50          # what it says about the container runtime
+  curl -s $CADVISOR_URL/metrics | grep -c 'name=\"[^\"]'   # 0 means still blind
+  sudo systemctl restart docker            # what actually cleared it last time"
+fi
+log "cadvisor: per-container series present for '$DB_SVC' and '$API_CONTAINER_RE'"
 
 # No pipe to head: under `set -o pipefail` an early-exiting reader SIGPIPEs the producer
 # and fails the whole pipeline. Trim in the shell instead.

@@ -132,6 +132,33 @@ def _var(name, label, query, datasource, multi=False, regex=""):
             "current": {}, "options": []}
 
 
+def _const_var(name, label, value):
+    # A constant, not a query variable, wherever the stack emits exactly one value and there
+    # is therefore nothing to choose. Both dashboards need it, for different reasons.
+    #
+    # bench-runs: query variables resolve against the dashboard's time range, and that range
+    # is the anchor window -- which contains no data at all, so label_values() would return
+    # nothing and $job would expand to "" on every panel.
+    #
+    # the-dashboard: $dbc/$apic used to be query variables over
+    # label_values(container_memory_rss, name). That reads the answer out of the very
+    # collector the panels are asking about, so a cadvisor which sees no containers takes the
+    # variables down with it -- they resolve to "", the matcher becomes name=~"|", and since
+    # cadvisor writes name="" explicitly on every unattributable cgroup, that regex matches
+    # the host instead of matching nothing. Through the whole 2026-08-22 campaign the
+    # container panels rendered whole-machine CPU and RSS and looked entirely plausible,
+    # while bench-runs -- whose $dbc/$apic were already constants -- correctly showed nothing.
+    # A constant cannot fail that way: with no data the panels are simply empty.
+    #
+    # The values are structural rather than conventional. Every service in docker-compose.yml
+    # pins a container_name, the api included, so cadvisor reports plain `postgres` and `api`
+    # with no project prefix and no replica suffix; k6/bench/common.sh's API_CONTAINER_RE is
+    # the same string, and test_common_sh.py holds it there.
+    return {"name": name, "label": label, "type": "constant", "query": value,
+            "current": {"selected": False, "text": value, "value": value},
+            "options": [{"selected": True, "text": value, "value": value}], "hide": 2}
+
+
 def build_live():
     dash = _base(
         "the-dashboard", "Inventory — Full Stack",
@@ -153,8 +180,8 @@ def build_live():
         #          `api` -- no project prefix and no replica suffix to match around.
         [_var("job", "API job", "label_values(up, job)", DS, regex="/^inventory$/"),
          _var("db", "Database", "label_values(pg_database_size_bytes, datname)", DS, regex="/^inventory$/"),
-         _var("dbc", "DB container", "label_values(container_memory_rss, name)", DS, regex="/^postgres$/"),
-         _var("apic", "API container", "label_values(container_memory_rss, name)", DS, regex="/^api$/")])
+         _const_var("dbc", "DB container", "postgres"),
+         _const_var("apic", "API container", "api")])
     dash["refresh"] = "5s"
     panels, _, _, _ = _layout(spec.SECTIONS, lambda p: p.targets, DS)
     dash["panels"] = panels

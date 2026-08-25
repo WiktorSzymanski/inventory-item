@@ -129,3 +129,59 @@ drain_wait() {
         sleep 2
     done
 }
+
+# ---------------------------------------------------------------- service logs
+# >>> service-logs
+# Archive the containers' own stdout/stderr into the run directory.
+#
+# Until this existed a run kept k6's view and Prometheus' view and nothing the service
+# itself said. Two things that costs: a run that dies at the health timeout leaves no
+# record of WHY the API never came up, and a run whose interpretation turns on which code
+# path was live has nothing to confirm it — TO-2-fix-A logs `[OUTBOX] drain mode=WATERMARK`
+# at startup and no other artifact records the arm.
+#
+# WHICH containers: the service under test and its database. The monitoring sidecars
+# (prometheus, grafana, cadvisor, postgres-exporter) are harness, not subject; their output
+# says nothing about the variant and would be bulk in every run directory.
+#
+# WHY --since, and why it is not optional. reset.sh does `stop` + `up -d`, which RESTARTS
+# the api container rather than recreating it, so json-file keeps the previous run's output
+# too and an unscoped dump would silently concatenate it into this run's archive. (Between
+# variants run-suite.sh's `down -v` removes the container, so this only bites a repeated
+# direct bench.sh — which k6/README.md documents.) $T_RESET is taken just before reset.sh
+# stops the service, so the restart and its startup banner fall inside the window.
+#
+# WHY gzip. The volume is structural, not incidental: every branch ships logback
+# root=INFO, and ~12 of those INFO sites sit on the per-order path on TO (~17 on ES) —
+# controller admit/accept, the command handlers, and one line per delivered publication.
+# At ~180 B/line after docker's --timestamps prefix, the 71k-order capacity runs already in
+# bench-results/ would write 150-215 MB next to a 3.8 MB run directory. Compressed that is
+# ~10 MB. Read with `zless`/`zgrep`.
+#
+# Non-fatal throughout, and deliberately so: this runs from an EXIT trap, including the one
+# that fires while bench.sh is already dying of something else. A failure here must never
+# replace that exit status nor hide the original cause.
+SERVICE_LOG_SVCS="${SERVICE_LOG_SVCS:-$API_SVC $DB_SVC}"
+
+# $1 = destination directory, $2 = epoch second to start from ("" for everything).
+capture_service_logs() {
+    local dest="$1" since="${2:-}" svc
+    if ! mkdir -p "$dest" 2>/dev/null; then
+        log "logs: cannot create $dest — service logs not captured"
+        return 0
+    fi
+    for svc in $SERVICE_LOG_SVCS; do
+        local args=(logs --no-color --no-log-prefix --timestamps)
+        if [ -n "$since" ]; then args+=(--since "$since"); fi
+        # 2>&1 into the archive on purpose: if compose itself fails, its complaint is what
+        # the file should contain rather than nothing at all. pipefail makes the pipeline
+        # report the compose exit status and not gzip's.
+        if dc "${args[@]}" "$svc" 2>&1 | gzip -c >"$dest/$svc.log.gz"; then
+            log "logs: $svc -> $(basename "$dest")/$svc.log.gz"
+        else
+            log "logs: capture of '$svc' failed (non-fatal; see $dest/$svc.log.gz)"
+        fi
+    done
+    return 0
+}
+# <<< service-logs
