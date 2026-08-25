@@ -62,7 +62,15 @@ http_order	hist	histogram_quantile($Q, (sum by (le) (http_server_requests_second
 projection_lag	hist	histogram_quantile($Q, (sum by (le) (projection_lag_seconds_bucket{job="$JOB"} @ $E) - sum by (le) (projection_lag_seconds_bucket{job="$JOB"} @ $S)) or sum by (le) (projection_lag_seconds_bucket{job="$JOB"} @ $E))
 order_proj_lag	hist	histogram_quantile($Q, (sum by (le) (order_projection_lag_seconds_bucket{job="$JOB"} @ $E) - sum by (le) (order_projection_lag_seconds_bucket{job="$JOB"} @ $S)) or sum by (le) (order_projection_lag_seconds_bucket{job="$JOB"} @ $E))
 state_load	hist	histogram_quantile($Q, (sum by (le,phase) (state_load_time_seconds_bucket{job="$JOB"} @ $E) - sum by (le,phase) (state_load_time_seconds_bucket{job="$JOB"} @ $S)) or sum by (le,phase) (state_load_time_seconds_bucket{job="$JOB"} @ $E))
-state_persist	hist	histogram_quantile($Q, (sum by (le,source) (state_persist_time_seconds_bucket{job="$JOB"} @ $E) - sum by (le,source) (state_persist_time_seconds_bucket{job="$JOB"} @ $S)) or sum by (le,source) (state_persist_time_seconds_bucket{job="$JOB"} @ $E))
+# state_persist splits by outcome. `outcome!="conflict"` (rather than outcome="committed")
+# is what keeps a replayed pre-2026-08-25 run readable: those series carry no outcome label
+# at all, and a negative matcher selects an absent label where an equality matcher would not.
+# The conflict arm is the write time of attempts that blocked on the inventory_state row lock
+# and then lost on @Version — mass the old success-only series dropped entirely, which is why
+# state_persist USED to improve as contention got worse. ES records no outcome label, so it
+# lands in the committed arm unchanged.
+state_persist	hist	histogram_quantile($Q, (sum by (le,source) (state_persist_time_seconds_bucket{job="$JOB",outcome!="conflict"} @ $E) - sum by (le,source) (state_persist_time_seconds_bucket{job="$JOB",outcome!="conflict"} @ $S)) or sum by (le,source) (state_persist_time_seconds_bucket{job="$JOB",outcome!="conflict"} @ $E))
+state_persist_conflict	hist	histogram_quantile($Q, (sum by (le,source) (state_persist_time_seconds_bucket{job="$JOB",outcome="conflict"} @ $E) - sum by (le,source) (state_persist_time_seconds_bucket{job="$JOB",outcome="conflict"} @ $S)) or sum by (le,source) (state_persist_time_seconds_bucket{job="$JOB",outcome="conflict"} @ $E))
 publish_lag	hist	histogram_quantile($Q, (sum by (le,eventType) (publish_lag_seconds_bucket{job="$JOB"} @ $E) - sum by (le,eventType) (publish_lag_seconds_bucket{job="$JOB"} @ $S)) or sum by (le,eventType) (publish_lag_seconds_bucket{job="$JOB"} @ $E))
 # Saga lifetime ends EARLIER than order_e2e_time: the saga ends when it submits the final
 # command, before the aggregate appends and the projection catches up. The gap between the
