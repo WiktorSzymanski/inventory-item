@@ -153,8 +153,9 @@ T_RESET="$(date +%s)"
 # >>> service-logs-trap
 # Installed BEFORE reset.sh rather than called after the run, because the failure modes
 # that most need the service's own log all exit through `die`: reset.sh's health timeout,
-# the cadvisor refusal below, a failed seed or warmup, a drain that never clears. An EXIT
-# trap covers those and the successful path in one line.
+# a failed seed or warmup, a drain that never clears. An EXIT trap covers those and the
+# successful path in one line. (The cadvisor check below is advisory and no longer among
+# them, but it used to be — see bench-results-10 for what that cost.)
 #
 # $T_RESET is the window anchor and is set immediately above — see capture_service_logs for
 # why an unscoped dump would fold the previous run's output into this archive.
@@ -168,21 +169,35 @@ trap 'capture_service_logs "$RUN_DIR/logs" "$T_RESET"' EXIT
 
 "$HERE/reset.sh"
 
-# ---------------------------------------------------------------- cadvisor guard
+# ---------------------------------------------------------------- cadvisor check (advisory)
 #
-# Unlike the preflight block at the top of this file, this one cannot run before "$RUN_DIR"
-# is created: cadvisor can only be asked about the api container once reset.sh has started
-# it and waited for health. A failure here therefore does leave an empty run directory
-# behind — which is the cheaper of the two costs, the other being an hour of machine time
-# spent recording a run whose container panels are unusable.
+# Cannot run before "$RUN_DIR" is created: cadvisor can only be asked about the api
+# container once reset.sh has started it and waited for health.
 #
 # The 2026-08-22 campaign is why this exists. For the entire lifetime of one Docker daemon,
 # cadvisor attributed no cgroup to any container: it published ~110 host cgroup series with
 # name="" and nothing else. It stayed `up`, container_scrape_error stayed 0, and it was
 # recreated at the start of all 14 runs without ever recovering — only a daemon restart
 # cleared it. So neither `up` nor the scrape-error counter is the signal, and restarting
-# cadvisor is not a reliable remedy; the only thing worth asserting is that the two
+# cadvisor is not a reliable remedy; the only thing worth checking is that the two
 # containers whose panels this run has to record are actually named in the exposition.
+#
+# ADVISORY, NOT FATAL, as of 2026-08-25. This block used to `die`, on the reasoning that an
+# hour of machine time is worth less than a run whose container panels are unusable. What
+# that actually bought was bench-results-10: three capacity runs killed 161 s in — 60 s
+# wait, one cadvisor restart, 90 s wait, die — against a daemon that had been blind since
+# the previous day. The API, Postgres, JVM and k6 numbers would all have been sound; only
+# the container CPU/memory/network panels were ever at risk. The rest of the run is worth
+# having, so it proceeds and the operator is told loudly instead.
+#
+# What that costs is the reason the guard existed in the first place: a blind cadvisor is
+# SILENT downstream. --docker_only at least keeps the host cgroups out of the exposition,
+# so the container panels render nothing rather than plausible whole-machine numbers — but
+# nothing inside the run directory records that the collector was blind. The warning below
+# lives in this run's stdout and nowhere else, so a run archived from a scrolled-past
+# terminal is indistinguishable from a healthy one. Read the warning, or check the snapshot:
+#
+#   strings <run>/prom-snapshot/*/index | grep -c '^/docker/'   # 0 means blind
 CADVISOR_URL="${CADVISOR_URL:-http://localhost:8082}"
 
 # >>> cadvisor-probe
@@ -219,23 +234,32 @@ cadvisor_ready() {
     done
 }
 
-if ! cadvisor_ready "${CADVISOR_WAIT:-60}"; then
+cadvisor_ok() { log "cadvisor: per-container series present for '$DB_SVC' and '$API_CONTAINER_RE'$1"; }
+
+if cadvisor_ready "${CADVISOR_WAIT:-60}"; then
+    cadvisor_ok ""
+else
     log "cadvisor: no per-container series yet — restarting it once"
     dc restart cadvisor >/dev/null 2>&1 || true
-    cadvisor_ready "${CADVISOR_WAIT_RETRY:-90}" || die \
-"cadvisor is reachable but reports no per-container series for '$DB_SVC' and '$API_CONTAINER_RE'.
-Every container CPU/memory/network panel would record nothing for this run, so it is being
-refused rather than archived half-blind.
+    if cadvisor_ready "${CADVISOR_WAIT_RETRY:-90}"; then
+        cadvisor_ok " (after restart)"
+    else
+        log \
+"WARNING: cadvisor is reachable but reports no per-container series for '$DB_SVC' and
+'$API_CONTAINER_RE'. THE RUN CONTINUES — every artifact except the container
+CPU/memory/network panels is unaffected and valid. Those panels will be empty for this run,
+and nothing in the run directory itself will say why.
 
 What this looked like on 2026-08-22: cadvisor up, container_scrape_error 0, and ~110 host
 cgroup series with name=\"\" standing in for the containers. It survived being recreated at
-every run and was cleared only by restarting the Docker daemon.
+every run and was cleared only by restarting the Docker daemon — so the rest of THIS
+campaign will very likely be blind too.
 
   docker logs cadvisor | tail -50          # what it says about the container runtime
   curl -s $CADVISOR_URL/metrics | grep -c 'name=\"[^\"]'   # 0 means still blind
   sudo systemctl restart docker            # what actually cleared it last time"
+    fi
 fi
-log "cadvisor: per-container series present for '$DB_SVC' and '$API_CONTAINER_RE'"
 
 # No pipe to head: under `set -o pipefail` an early-exiting reader SIGPIPEs the producer
 # and fails the whole pipeline. Trim in the shell instead.
