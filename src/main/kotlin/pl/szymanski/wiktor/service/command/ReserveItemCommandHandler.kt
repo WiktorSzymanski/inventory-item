@@ -3,6 +3,7 @@ package pl.szymanski.wiktor.service.command
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Timer
 import org.springframework.context.ApplicationEventPublisher
+import org.springframework.dao.ConcurrencyFailureException
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
@@ -45,9 +46,16 @@ class ReserveItemCommandHandler(
     private val dbFetchTimer: Timer = Timer.builder("state_load_time")
         .tag("source", "db_fetch")
         .register(meterRegistry)
-    private val dbWriteTimer: Timer = Timer.builder("state_persist_time")
-        .tag("source", "db_write")
-        .register(meterRegistry)
+    // Split by outcome for the same reason the split-path branches split it: recording only on the
+    // way out drops every attempt that threw, and those are the slow ones. The bias is structurally
+    // smaller HERE than there — this branch takes its row lock at read time, so the wait is already
+    // priced into state_load_time{source=db_fetch} rather than hiding in the write — but the tag has
+    // to exist on every TO branch or a cross-branch query means different things on different ones.
+    //
+    // Note this span is NOT the split path's: it covers the two saves only, and the outbox write is
+    // timed separately below and excluded. The two differ by exactly the outbox write.
+    private val committedWriteTimer: Timer = dbWriteTimer(meterRegistry, "committed")
+    private val conflictWriteTimer: Timer = dbWriteTimer(meterRegistry, "conflict")
     private val outboxWriteTimer: Timer = meterRegistry.timer("outbox.write.time")
 
     @Transactional(propagation = Propagation.REQUIRED, rollbackFor = [Exception::class])
@@ -60,12 +68,28 @@ class ReserveItemCommandHandler(
         val result = item.reserve(command.orderId, command.quantity, command.correlationId, clock)
 
         val dbWriteStartNs = System.nanoTime()
-        inventoryRepo.save(result.updatedItem)
-        reservationRepo.save(result.reservation)
-        dbWriteTimer.record(System.nanoTime() - dbWriteStartNs, TimeUnit.NANOSECONDS)
+        try {
+            inventoryRepo.save(result.updatedItem)
+            reservationRepo.save(result.reservation)
+        } catch (e: ConcurrencyFailureException) {
+            // The union of the optimistic and pessimistic lock failures, i.e. exactly what
+            // InventoryService.runOrderTask classifies as a conflict and retries. Timed and
+            // rethrown, so a losing attempt costs a sample rather than disappearing.
+            conflictWriteTimer.record(System.nanoTime() - dbWriteStartNs, TimeUnit.NANOSECONDS)
+            throw e
+        }
+        committedWriteTimer.record(System.nanoTime() - dbWriteStartNs, TimeUnit.NANOSECONDS)
 
         val outboxStartNs = System.nanoTime()
         applicationEventPublisher.publishEvent(result.event)
         outboxWriteTimer.record(System.nanoTime() - outboxStartNs, TimeUnit.NANOSECONDS)
+    }
+
+    private companion object {
+        fun dbWriteTimer(meterRegistry: MeterRegistry, outcome: String): Timer =
+            Timer.builder("state_persist_time")
+                .tag("source", "db_write")
+                .tag("outcome", outcome)
+                .register(meterRegistry)
     }
 }
