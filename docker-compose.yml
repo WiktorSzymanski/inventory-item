@@ -50,7 +50,17 @@ services:
       CACHE_TTL:           "${CACHE_TTL:-10m}"
       CACHE_MAXIMUM_SIZE:  "${CACHE_MAXIMUM_SIZE:-10000}"
       DB_MAX_CONNECTIONS:  "${DB_MAX_CONNECTIONS:-350}"
-      ORDER_WORKER_THREADS: "${ORDER_WORKER_THREADS:-200}"
+      # 50 for every TO branch (TO-1, TO-2, TO-2-fix-A, TO-2-push, TO-3, TO-4), down from 200.
+      #
+      # It has to be set HERE and cannot be expressed per branch: a compose default always SETS
+      # the variable, so this line overrides whatever each branch's application.yaml says. Every
+      # TO branch still ships `${ORDER_WORKER_THREADS:200}` and every one of those defaults is
+      # dead text under the harness — the DANGER comments there naming 150 are stale on both the
+      # number and the mechanism.
+      #
+      # Inert on ES: no ES branch references order-worker or ORDER_WORKER at all, so this does
+      # not resource the two families differently and is not a TO-vs-ES confound.
+      ORDER_WORKER_THREADS: "${ORDER_WORKER_THREADS:-50}"
       HTTP_THREADS: "${HTTP_THREADS:-99}"
       # TO-1 and TO-2, and inert everywhere else (Spring ignores unknown properties). Selects how
       # the outbox drain finds its next page: CURSOR reads `seq > cursor`, SCAN proves absence over
@@ -78,9 +88,16 @@ services:
       # run that wants to tune the sweep can still do it without a rebuild.
       OUTBOX_SWEEP_INTERVAL:
       OUTBOX_SWEEP_MIN_AGE:
-      # Delivery pool width and the queue in front of it. Bare for the same reason as the two above:
-      # every TO branch ships its own default in application.yaml and a compose default would
-      # silently overwrite all of them.
+      # Delivery pool width: 100 on TO-2, TO-2-fix-A and TO-2-push, up from the 20 each of them
+      # ships. NOT bare any more — a compose default overwrites the branch's own application.yaml,
+      # and here that is the point: the three arms are meant to differ in HOW the drain finds its
+      # next page, not in how wide it delivers, so the width belongs to the comparison rather than
+      # to any one branch.
+      #
+      # Inert on TO-3 and TO-4, which have no drain pool at all (their @ApplicationModuleListener
+      # deliveries run on SimpleAsyncTaskExecutor, one unbounded thread per task), and on ES.
+      #
+      # TO-1's equivalent pool is a DIFFERENT knob — see OUTBOX_POLLER_THREADS below.
       #
       # EVENT_DELIVERY_QUEUE_CAPACITY exists only on TO-2-push and is inert elsewhere. There the
       # NOTIFY carries the event, so the listener submits one delivery per notification and cannot
@@ -89,8 +106,16 @@ services:
       # slows writers at pg_notify — so this knob sets where backpressure starts, and lowering it
       # moves the limit onto the producers sooner. Watch outbox_notify_queue_depth against it, and
       # outbox_notify_queue_usage for the server side.
-      EVENT_DELIVERY_THREADS:
+      EVENT_DELIVERY_THREADS: "${EVENT_DELIVERY_THREADS:-100}"
       EVENT_DELIVERY_QUEUE_CAPACITY:
+      # TO-1's delivery pool, and the counterpart to EVENT_DELIVERY_THREADS above: TO-1 polls
+      # rather than listens, so its workers live under app.outbox-poller instead of
+      # app.event-delivery and answer to this name. 100 for parity with the TO-2 arms — the
+      # branch ships 10, which was never reachable from the harness because this variable was
+      # not listed here at all, and compose forwards only the variables it names.
+      #
+      # Inert on every other branch.
+      OUTBOX_POLLER_THREADS: "${OUTBOX_POLLER_THREADS:-100}"
     ports:
       - "8080:8080"
     depends_on:

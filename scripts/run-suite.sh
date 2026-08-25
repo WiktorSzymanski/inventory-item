@@ -185,8 +185,9 @@ run_one() {
 
         # There is no per-variant environment hook here any more. `variants.d/<variant>.env` was
         # sourced at this point until 2026-08-18; every file it ever held exported
-        # ORDER_WORKER_THREADS=200, and docker-compose now defaults that variable to 200 for every
-        # variant, so the whole mechanism was a no-op. See the ORDER_WORKER_THREADS note in
+        # ORDER_WORKER_THREADS=200, and docker-compose defaults that variable for every
+        # variant, so the whole mechanism was a no-op. (That default is 50 as of 2026-08-25, not
+        # the 200 the deleted files exported.) See the ORDER_WORKER_THREADS note in
         # variants.env for why 200 is the family-wide value.
         #
         # If a knob ever genuinely has to differ BETWEEN variants in one suite, this is where it
