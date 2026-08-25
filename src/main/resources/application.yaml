@@ -122,12 +122,19 @@ app:
     # first attempts and retried attempts alike, so the branch has the same executing width and the
     # same connection demand as before while having half as many pools.
     #
-    # DANGER: docker-compose pins ORDER_WORKER_THREADS=${ORDER_WORKER_THREADS:-150} for EVERY TO
-    # branch, so this default does not survive a harness run — a run must export
-    # ORDER_WORKER_THREADS=200 (variants.d/TO-2.env does it, if run-suite.sh sources it).
-    # Left at 150 the branch is not broken, just 50 execution threads narrower than every run taken
-    # before the merge, which is a resourcing difference dressed up as a topology result.
-    # OrderWorkerConfig says so at startup.
+    # This default is NOT what a harness run uses. docker-compose.yml sets
+    # ORDER_WORKER_THREADS=${ORDER_WORKER_THREADS:-50} for EVERY TO branch, and a compose default
+    # always SETS the variable, so it overrides the value below: a benchmarked run gets 50 and this
+    # 200 applies only to a bare `./gradlew bootRun`. Change the width in docker-compose.yml, not
+    # here — a branch cannot express a width the harness will honour. OrderWorkerConfig logs the
+    # width it actually got at startup, which is the number to trust.
+    #
+    # An earlier version of this comment said compose pinned 150 and told you to export 200 from
+    # variants.d/<variant>.env. Both halves were wrong. No committed state of this repo ever held a
+    # 150: `git log --all -S ORDER_WORKER_THREADS -- docker-compose.yml` returns exactly two commits,
+    # fd5dff8 which ADDED the variable at 200 and 667d4e5 which changed it to 50. And variants.d/ was
+    # deleted on 2026-08-18 together with run-suite.sh's sourcing hook, after a committed life in
+    # which every file it held was a no-op.
     threads: ${ORDER_WORKER_THREADS:200}                   # the one pool: first attempts AND retries
     # INERT. The merged pool is a ScheduledThreadPoolExecutor and its DelayedWorkQueue is unbounded
     # by construction — which is what this default asked for anyway, so nothing a run relied on
