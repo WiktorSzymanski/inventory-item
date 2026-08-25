@@ -270,6 +270,55 @@ itself gives no clue which run is on screen.
 `scripts/replay_url.sh` prints the URL for a given run (newest by default, `--open` to launch a
 browser), and warns if that run is not among the dropdown's baked-in options.
 
+### The run-wide summary — one number, not a curve
+
+The top panel is the only one that is not a time series. **"Publish lag, all event types —
+whole-run p50 / p95 / p99"** reports three numbers covering the selected run's whole window, all
+event types pooled, computed exactly the way `k6/bench/dump.py` computes `publish_lag_p50/95/99`
+into `dump.json` — and checked equal to it, per event type, on all 14 archived runs of the
+2026-08-22 campaign. `dump.json` only ever splits that number by `eventType`; the pooled figure
+exists nowhere else.
+
+It is not something you can read off the per-minute curve below it. `histogram_quantile` of a
+`rate(...[1m])` is a quantile *of that minute*; averaging those over a run, or taking the peak, is
+not a percentile of anything. The real run-wide percentile is `histogram_quantile` over the bucket
+vector **difference** between the run's two endpoints, which is what this panel evaluates:
+
+```promql
+histogram_quantile(0.95,
+    (sum by (le) (publish_lag_seconds_bucket{job="$job"} offset $run @ $end)
+   - sum by (le) (last_over_time(publish_lag_seconds_bucket{job="$job"}[30s] offset $run @ 1788220800)))
+  or sum by (le) (publish_lag_seconds_bucket{job="$job"} offset $run @ $end))
+```
+
+Both endpoints are reached through the same displacement every other panel uses: the panels
+evaluate in anchor time and the selectors carry `offset $run`, so an `@` written in **anchor**
+time lands on the matching instant of the run's **real** time — `@ ANCHOR_EPOCH` on its t0, and
+`@ $end` (the marker's `end_at`, already in anchor space) on its end. Two consequences:
+
+- **It is not clipped.** `CLIP` gates on `time()`, which is the anchor instant and always past
+  `$end`; on an `@`-pinned query it would blank the panel. Pinning already scopes the window, and
+  the value is identical at every instant — which is why a `stat` panel with *Last (not null)*
+  shows it correctly.
+- **It is replay-only.** It is spelled with `$run` and `$end`, and a run in progress has no end.
+
+**The `last_over_time(...[30s])` on the start vector is not decoration.** The archive is many runs
+merged into one series per metric with nothing between them: each run's Prometheus knew only its
+own run, so no staleness marker was ever written at the seam, and Prometheus's 5-minute lookback
+reaches straight across it. The seam is close — the previous run's last sample sits ~70 s before
+t0, because t0 is the start of *measured* load, one warm-up behind the API's restart. So any series
+this run has not emitted yet at t0 (`OrderFailedEvent`, most often) resolves at t0 to the
+**previous run's final total**, and subtracting that from this run's end gives a negative bucket
+vector that `histogram_quantile` quietly "fixes for monotonicity" into a plausible, wrong number —
+29 s where `dump.json` says 0.13 s. Bounding the lookback to 30 s excludes the seam while still
+catching every series this run really emits (scrape interval is 5 s); when nothing is in the
+window the vector is empty and the `or` tail falls back to the cumulative histogram, which is
+exactly what `dump.py` does against a single-run Prometheus. With the bound, all 14 runs match
+`dump.json` exactly; without it, 18 of 42 run/quantile pairs do not.
+
+The end vector needs no bound: it sits deep inside the run where every series is fresh, and
+lookback only ever reaches backwards, never into the run that follows.
+
 ### Clipping: why `run_markers.py` is not optional
 
 The axis is sized for the *longest* archived run, and the campaign ran back-to-back — the smallest

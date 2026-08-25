@@ -22,6 +22,10 @@ The anchor sits AFTER the whole campaign, because reaching forward in time needs
 with --enable-feature=promql-negative-offset. scan_runs() refuses to build a dashboard for a
 run recorded after the anchor rather than emit a query that 400s.
 
+One panel does not sit on that axis: the run-wide summary at the top reports a single
+percentile for the whole run (see RUNWIDE below), which is a number the per-minute curves
+cannot be read off -- the average of a per-minute quantile is not a quantile of anything.
+
 This is the full-fidelity view -- real scraped TSDB, every live panel, including the
 pg_stat_*/WAL/HikariCP/outbox ones. What it deliberately cannot do is overlay two runs as
 separate lines in one panel: a single query carries a single offset. Comparing two runs means
@@ -174,6 +178,87 @@ def clip_expr(expr):
     return f"({expr}){CLIP}"
 
 
+# ---------------------------------------------------------------- run-wide summary
+# One number per quantile for the WHOLE run, rather than a curve of per-minute quantiles.
+#
+# Averaging or eyeballing histogram_quantile(rate(...[1m])) over a run is not a percentile of
+# anything (k6/bench/queries.promql says the same at greater length). The true run-wide
+# percentile is histogram_quantile over the bucket vector DIFFERENCE between the run's two
+# endpoints -- exactly what k6/bench/dump.py records into dump.json, over the same
+# `windows.full` window.
+#
+# Reaching those two endpoints from this dashboard works because the run is displaced, not the
+# data: the panels sit in the anchor window and each selector carries `offset $run`, so an `@`
+# in ANCHOR time lands on the corresponding instant of the run's REAL time.
+#
+#     @ ANCHOR_EPOCH offset $run   ->  ANCHOR_EPOCH - offset          = the run's t0
+#     @ $end         offset $run   ->  (ANCHOR_EPOCH + seconds) - offset = the run's end
+#
+# ($end is the marker series' `end_at`, which run_markers.py already stamps in anchor space.)
+# ANCHOR_EPOCH is written in as a literal rather than as `start()` so the number stays correct
+# even if someone drags the time picker, which start() would silently follow.
+#
+# Two consequences, both deliberate:
+#   * NO CLIP. The `@` pins evaluation to the run's own endpoints, so the result is already
+#     window-scoped and identical at every instant -- while `time()` is still the anchor
+#     instant, which is past $end, so CLIP would blank the panel outright.
+#   * Replay only. It is spelled with $run and $end, which the live dashboard does not have,
+#     and a live run has no "end" to compute against in the first place.
+#
+# The `or <end vector>` tail mirrors queries.promql: if the run's t0 has no sample the
+# subtraction yields nothing at all, and falling back to the cumulative histogram is what
+# dump.py does rather than showing an empty panel.
+#
+# WHY THE t0 VECTOR IS READ THROUGH last_over_time. The archive is many runs merged into ONE
+# series per metric, and nothing separates them: each run's Prometheus knew only its own run,
+# so no staleness marker was ever written between the last sample of run N-1 and the first of
+# run N. Prometheus's 5-minute lookback therefore reaches straight across that seam — and the
+# seam is close, ~70 s before t0 in the archived campaign (t0 is the start of MEASURED load,
+# roughly one warm-up behind the API's restart). Any series this run has not emitted yet at t0
+# — OrderFailedEvent, most often — resolves to the PREVIOUS run's final total instead of to
+# nothing, and subtracting that from this run's end gives a negative bucket vector, which
+# histogram_quantile silently "fixes for monotonicity" into a plausible, wrong number (29 s
+# where dump.json says 0.13 s).
+#
+# Bounding the lookback to 30 s is what makes the two agree: a series this run really emits is
+# scraped every 5 s, so it is always inside the window, while the previous run's tail is 70+ s
+# back and cannot be. When nothing is in the window the vector is empty and the `or` tail takes
+# over — which is precisely what dump.py does against a single-run Prometheus. Checked against
+# all 14 archived runs: with this bound every eventType matches dump.json's
+# publish_lag_p50/95/99 exactly; without it 18 of 42 run/quantile pairs do not.
+#
+# The end vector needs no such bound: it sits deep inside the run, where every series has fresh
+# samples, and lookback only ever reaches BACKWARDS — never into the run that follows.
+T0_LOOKBACK = "30s"
+
+RUNWIDE_QUANTILES = ((0.50, "p50"), (0.95, "p95"), (0.99, "p99"))
+
+
+def runwide_expr(quantile, metric, extra=""):
+    labels = ['job="$job"'] + ([extra] if extra else [])
+    selector = "{" + ",".join(labels) + "}"
+    at_end = f"sum by (le) ({metric}{selector} @ $end)"
+    at_t0 = (f"sum by (le) (last_over_time({metric}{selector}[{T0_LOOKBACK}] "
+             f"@ {ANCHOR_EPOCH}))")
+    return f"histogram_quantile({quantile}, ({at_end} - {at_t0}) or {at_end})"
+
+
+RUNWIDE = spec.Section("Run-wide summary", [
+    spec.Panel(
+        title="Publish lag, all event types — whole-run p50 / p95 / p99",
+        unit="s", w=24, h=5, type="stat",
+        description="The percentile over every publish_lag sample the run recorded, all event "
+                    "types pooled — the bucket-vector difference between the run's own start "
+                    "and end, which is the same window and the same arithmetic dump.json's "
+                    "publish_lag_p50/95/99 use (those stay split by eventType) — checked "
+                    "equal to it, per event type, on all 14 archived runs. Not comparable with "
+                    "a peak read off the per-minute curve further down: a percentile of the "
+                    "whole run is not the peak of a percentile.",
+        targets=[spec.Target(name, runwide_expr(q, "publish_lag_seconds_bucket"))
+                 for q, name in RUNWIDE_QUANTILES]),
+])
+
+
 @dataclass
 class Run:
     run_id: str
@@ -287,7 +372,10 @@ def _header_panel(panel_id, span_minutes):
         "datasource": build.DS_REPLAY,
         "options": {"mode": "markdown", "content":
                     "## ${run:text}\n\n"
-                    f"The axis below is **minutes since this run's own t0** "
+                    "The **Run-wide summary** directly below has no axis: each number covers "
+                    "this run's whole window at once, computed the way `dump.json` computes "
+                    "it. Everything under it is a curve.\n\n"
+                    f"The axis on those panels is **minutes since this run's own t0** "
                     f"(`meta.json` `windows.full[0]`, i.e. the start of measured load). The axis is "
                     f"{span_minutes} minutes wide — sized for the longest archived run — but every "
                     "panel stops at **this** run's end, so a shorter run simply leaves the right "
@@ -324,9 +412,14 @@ def build_runs(found):
     def pick(panel):
         if not panel.targets:
             return None
+        # The run-wide panels carry their own window in the expression (see RUNWIDE above) and
+        # must NOT be clipped: CLIP gates on time(), which is the anchor instant, always past
+        # $end for an @-pinned query.
+        if panel in RUNWIDE.panels:
+            return [spec.Target(t.legend, offset_expr(t.expr)) for t in panel.targets]
         return [spec.Target(t.legend, clip_expr(offset_expr(t.expr))) for t in panel.targets]
 
-    panels, next_id, _, _ = build._layout(spec.SECTIONS, pick, build.DS_REPLAY)
+    panels, next_id, _, _ = build._layout([RUNWIDE] + spec.SECTIONS, pick, build.DS_REPLAY)
     header = _header_panel(next_id, span_minutes)
     for panel in panels:
         panel["gridPos"]["y"] += header["gridPos"]["h"]

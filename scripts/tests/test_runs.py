@@ -237,7 +237,7 @@ class BuildRunsDashboard(unittest.TestCase):
 
     def test_carries_every_live_panel(self):
         live = [p for s in spec.SECTIONS for p in s.panels if p.targets]
-        self.assertEqual(len(self.panels), len(live))
+        self.assertEqual(len(self.panels), len(live) + len(runs.RUNWIDE.panels))
 
 
 class ClipsToTheSelectedRun(unittest.TestCase):
@@ -257,14 +257,20 @@ class ClipsToTheSelectedRun(unittest.TestCase):
         cls.panels = [p for p in cls.dash["panels"] if p["type"] not in ("row", "text")]
         cls.vars = {v["name"]: v for v in cls.dash["templating"]["list"]}
 
+    @classmethod
+    def clipped(cls):
+        """Every panel except the run-wide summary, which is @-pinned instead (see RUNWIDE)."""
+        titles = {p.title for p in runs.RUNWIDE.panels}
+        return [p for p in cls.panels if p["title"] not in titles]
+
     def test_every_target_is_clipped(self):
-        for panel in self.panels:
+        for panel in self.clipped():
             for target in panel["targets"]:
                 with self.subTest(panel=panel["title"]):
                     self.assertTrue(target["expr"].endswith(runs.CLIP), target["expr"])
 
     def test_clip_is_applied_once_per_target_not_per_selector(self):
-        for panel in self.panels:
+        for panel in self.clipped():
             for target in panel["targets"]:
                 with self.subTest(panel=panel["title"]):
                     self.assertEqual(target["expr"].count("$end"), 1)
@@ -280,7 +286,7 @@ class ClipsToTheSelectedRun(unittest.TestCase):
         self.assertEqual(end["hide"], 2)
 
     def test_clipped_expression_still_round_trips(self):
-        for panel in self.panels:
+        for panel in self.clipped():
             for target in panel["targets"]:
                 with self.subTest(panel=panel["title"]):
                     bare = target["expr"][:-len(runs.CLIP)].removeprefix("(").removesuffix(")")
@@ -297,6 +303,108 @@ class ClipsToTheSelectedRun(unittest.TestCase):
                     if target.legend == legend:
                         return target.expr
         raise AssertionError(f"no spec target for {title} / {legend}")
+
+
+
+class RunWideSummary(unittest.TestCase):
+    """One number per quantile for the whole run, rather than a curve of per-minute quantiles.
+
+    The mechanism is the `@` modifier read in ANCHOR time: the panels sit in the anchor window
+    and every selector carries `offset $run`, so `@ ANCHOR_EPOCH` lands on the run's real t0 and
+    `@ $end` on its real end. The difference of those two bucket vectors is the run's whole
+    histogram over the same `windows.full` window k6/bench/dump.py records into dump.json --
+    which is the only reason a number read here can be quoted next to a number from there.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        # NOT `cls.run`: TestCase.run is the method unittest calls to execute the case.
+        cls.sample = runs.Run("TO-1_capacity_W-base_20260812T140542Z", "TO-1", "TO", "W-base",
+                              1786543581, 1786547987)
+        cls.dash = runs.build_runs([cls.sample])
+        titles = {p.title for p in runs.RUNWIDE.panels}
+        cls.panels = [p for p in cls.dash["panels"] if p.get("title") in titles]
+
+    def test_the_pinned_instants_resolve_to_the_runs_real_window(self):
+        """The arithmetic the whole panel rests on. `offset` is anchor-minus-start and the
+        marker's `end_at` is anchor-plus-length, so both `@`s land inside the run itself."""
+        end_at = runs.ANCHOR_EPOCH + self.sample.seconds
+        self.assertEqual(runs.ANCHOR_EPOCH - self.sample.offset, self.sample.start)
+        self.assertEqual(end_at - self.sample.offset, self.sample.end)
+
+    def test_panel_is_present_and_is_a_stat(self):
+        self.assertEqual(len(self.panels), len(runs.RUNWIDE.panels))
+        for panel in self.panels:
+            with self.subTest(panel=panel["title"]):
+                self.assertEqual(panel["type"], "stat")
+                self.assertEqual(panel["fieldConfig"]["defaults"]["unit"], "s")
+                self.assertEqual(panel["options"]["reduceOptions"]["calcs"], ["lastNotNull"])
+
+    def test_the_three_quantiles_are_p50_p95_p99(self):
+        for panel in self.panels:
+            with self.subTest(panel=panel["title"]):
+                self.assertEqual([t["legendFormat"] for t in panel["targets"]],
+                                 ["p50", "p95", "p99"])
+
+    def test_targets_are_not_clipped(self):
+        """CLIP gates on time(), which is the anchor instant -- always past $end. Applied here
+        it would blank the panel outright, and the @-pinned query needs no clipping anyway."""
+        for panel in self.panels:
+            for target in panel["targets"]:
+                with self.subTest(panel=panel["title"]):
+                    self.assertNotIn("and on()", target["expr"])
+                    self.assertFalse(target["expr"].endswith(runs.CLIP))
+
+    def test_the_t0_vector_reads_only_this_runs_own_samples(self):
+        """The archive is many runs in one series with no staleness marker at the seam, so a
+        plain read at t0 falls back up to 5 minutes -- into the PREVIOUS run -- for any series
+        this run has not emitted yet. Subtracting that gives a negative bucket vector and a
+        plausible wrong number. See the RUNWIDE comment in runs.py."""
+        for panel in self.panels:
+            for target in panel["targets"]:
+                with self.subTest(panel=panel["title"]):
+                    self.assertIn(f"last_over_time(", target["expr"])
+                    self.assertIn(f"[{runs.T0_LOOKBACK}]", target["expr"])
+                    # ...on the t0 vector only: the end vector sits deep inside the run.
+                    self.assertEqual(target["expr"].count("last_over_time("), 1)
+
+    def test_every_selector_is_offset(self):
+        # Three selectors per target: the end vector, the t0 vector, and the `or` fallback.
+        for panel in self.panels:
+            for target in panel["targets"]:
+                with self.subTest(panel=panel["title"]):
+                    self.assertEqual(target["expr"].count(OFF), 3)
+
+    def test_both_endpoints_are_pinned(self):
+        for panel in self.panels:
+            for target in panel["targets"]:
+                with self.subTest(panel=panel["title"]):
+                    self.assertEqual(target["expr"].count("@ $end"), 2)
+                    self.assertEqual(target["expr"].count(f"@ {runs.ANCHOR_EPOCH}"), 1)
+
+    def test_t0_is_a_literal_anchor_not_start(self):
+        """`start()` would follow the time picker: drag the range and the panel silently starts
+        measuring from somewhere else. The anchor is a constant, so the window cannot move."""
+        for panel in self.panels:
+            for target in panel["targets"]:
+                with self.subTest(panel=panel["title"]):
+                    self.assertNotIn("start()", target["expr"])
+
+    def test_expressions_round_trip_minus_the_offsets(self):
+        spec_exprs = {t.legend: t.expr for p in runs.RUNWIDE.panels for t in p.targets}
+        for panel in self.panels:
+            for target in panel["targets"]:
+                with self.subTest(panel=panel["title"]):
+                    self.assertEqual(target["expr"].replace(OFF, ""),
+                                     spec_exprs[target["legendFormat"]])
+
+    def test_it_is_replay_only(self):
+        """It is spelled with $run and $end, which the live dashboard does not declare -- and a
+        run in progress has no end to measure to."""
+        live_titles = {p.title for s in spec.SECTIONS for p in s.panels}
+        for panel in runs.RUNWIDE.panels:
+            with self.subTest(panel=panel.title):
+                self.assertNotIn(panel.title, live_titles)
 
 
 class MarkerCoverage(unittest.TestCase):
