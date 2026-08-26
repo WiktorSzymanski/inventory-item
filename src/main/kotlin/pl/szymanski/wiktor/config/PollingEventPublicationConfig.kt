@@ -1,6 +1,7 @@
 package pl.szymanski.wiktor.config
 
 import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.MeterRegistry
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Qualifier
@@ -130,6 +131,23 @@ class IncompleteEventRepublisher(
     private val rescued: Counter = meterRegistry.counter("outbox.sweep.rescued")
 
     /**
+     * How far below the drain's cursor a stranded publication sat, in seq.
+     *
+     * This is the over-run distribution, and its p99.9 is the number the drain's safety margin has
+     * to be set to. V9 exists because that number was guessed once already, so it is measured here
+     * rather than assumed: the sweep holds the cursor and reads the rows, so `cursor - seq` is free
+     * to observe at exactly the point where the over-run becomes visible.
+     *
+     * Recorded on every row the sweep FINDS, not only the ones it delivers — a delivery failure
+     * says nothing about how far the cursor over-ran.
+     */
+    private val strandDepth: DistributionSummary = DistributionSummary
+        .builder("outbox.strand.depth")
+        .description("Drain cursor minus the seq of a publication the sweep found below it")
+        .publishPercentiles(0.5, 0.99, 0.999)
+        .register(meterRegistry)
+
+    /**
      * Which sweep the drain arm needs. Three arms, same shape as [EventDrainLoop.drainAll].
      *
      * The seq cursor strands rows BELOW itself by design, so [sweepBehindCursor] looks exactly
@@ -203,12 +221,16 @@ class IncompleteEventRepublisher(
         var batches = 0
 
         while (batches < maxBatches) {
-            val ids = processor.findIncompleteUpTo(cursor, minAge, batchSize)
+            val page = processor.findIncompleteUpTo(cursor, minAge, batchSize)
             batches++
-            if (ids.isEmpty()) break
+            if (page.isEmpty()) break
 
-            val delivered = ids
-                .map { id -> executor.submit<Boolean> { deliver(id) } }
+            // Before delivery, and unconditionally: this measures the cursor's over-run, which a
+            // failed delivery does not change.
+            page.forEach { ref -> strandDepth.record((cursor - ref.seq).toDouble()) }
+
+            val delivered = page
+                .map { ref -> executor.submit<Boolean> { deliver(ref.id) } }
                 .map { future -> runCatching { future.get() }.getOrDefault(false) }
                 .count { it }
 
@@ -218,10 +240,10 @@ class IncompleteEventRepublisher(
             // Same no-progress guard as the scan drain, and for the same reason: the sweep's query
             // is not a cursor, so a page that delivers nothing is refetched verbatim.
             if (delivered == 0) {
-                log.error("Sweep page of {} publication(s) delivered nothing; ending pass", ids.size)
+                log.error("Sweep page of {} publication(s) delivered nothing; ending pass", page.size)
                 break
             }
-            if (ids.size < batchSize) break
+            if (page.size < batchSize) break
         }
 
         if (total == 0) return
