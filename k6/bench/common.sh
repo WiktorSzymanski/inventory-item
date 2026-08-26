@@ -13,7 +13,28 @@ export REPO_ROOT
 # run point at a differently-named stack without editing the harness.
 API_SVC="${API_SVC:-api}"
 DB_SVC="${DB_SVC:-postgres}"
-PROM_JOB="${PROM_JOB:-inventory}"
+# Which scrape job carries this variant's app metrics, and which port its /actuator lives on.
+#
+# Variants listed here give actuator its own connector via `management.server.port`, so that a
+# saturated request pool cannot starve the scrape: on fix-A's capacity run the target was lost
+# for 23.2 minutes starting three minutes after in-flight HTTP pinned at the 99-thread cap.
+# Prometheus scrapes them under `inventory-mgmt` (monitoring/prometheus/prometheus.yml), and the
+# health check has to follow because /actuator moves to that port wholesale.
+#
+# A list, not a rule: it is a property of the branch's application.yaml, which this harness
+# cannot see. Add a variant here in the same change that adds the port to its branch, and delete
+# the whole block once every variant has one -- it exists only to let the two kinds coexist.
+case "${VARIANT:-}" in
+    TO-2-fix-B)
+        PROM_JOB="${PROM_JOB:-inventory-mgmt}"
+        MGMT_PORT="${MGMT_PORT:-8090}"
+        ;;
+    *)
+        PROM_JOB="${PROM_JOB:-inventory}"
+        MGMT_PORT="${MGMT_PORT:-8080}"
+        ;;
+esac
+export MGMT_PORT
 # An exact name, not a pattern. docker-compose.yml pins `container_name: api`, so cadvisor
 # reports exactly that -- no `<project>-api-N` shape to tolerate and no dependence on
 # COMPOSE_PROJECT_NAME. queries.promql applies it as an anchored name=~"$CRE" and Prometheus
@@ -44,7 +65,9 @@ dc() { "${DC_ARGS[@]}" "$@"; }
 
 PROM_URL="${PROM_URL:-http://localhost:9090}"
 REPORTER_URL="${REPORTER_URL:-http://localhost:8686}"
-HEALTH_URL="${HEALTH_URL:-http://localhost:8080/actuator/health}"
+# MGMT_PORT, not a literal 8080: /actuator moves wholesale to management.server.port on the
+# variants that set one, health included. 8080 for every variant that does not.
+HEALTH_URL="${HEALTH_URL:-http://localhost:${MGMT_PORT}/actuator/health}"
 # URL k6 uses from inside the compose network. It addresses the API service directly: there
 # is one container and no proxy in front of it, so no hop is measured that is not the
 # application. HEALTH_URL above reaches the same container via its published host port.

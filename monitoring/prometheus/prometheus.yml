@@ -11,6 +11,19 @@ scrape_configs:
     static_configs:
       - targets: ['api:8080']
 
+  # Variants that give actuator its own connector (management.server.port) are scraped here
+  # instead, and k6/bench/common.sh points their PROM_JOB at this job. A separate JOB rather
+  # than a second target under `inventory`, because the validity gate is
+  # `min(up{job="$JOB"})` -- a second target that is down on every other variant would fail
+  # every one of their runs.
+  #
+  # Down, and expected to be down, on variants that serve actuator from the request pool.
+  # Nothing queries this job for those runs.
+  - job_name: inventory-mgmt
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['api:8090']
+
   - job_name: postgres
     static_configs:
       - targets: ['postgres-exporter:9187']

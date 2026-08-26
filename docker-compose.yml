@@ -118,6 +118,13 @@ services:
       OUTBOX_POLLER_THREADS: "${OUTBOX_POLLER_THREADS:-100}"
     ports:
       - "8080:8080"
+      # The management connector, on variants that give actuator its own port
+      # (management.server.port). Published because k6/bench/common.sh health-checks from the
+      # HOST; Prometheus reaches it over the compose network and needs no publish.
+      #
+      # Harmless on variants that do not set it: nothing listens, and nothing on the host
+      # connects. 8090 rather than the conventional 8081, which is commonly taken.
+      - "8090:8090"
     depends_on:
       postgres:
         condition: service_healthy
