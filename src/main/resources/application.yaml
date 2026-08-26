@@ -175,6 +175,25 @@ app:
   # DelayedWorkQueue orders by due time and treats a first attempt as a zero-delay task.
 
 management:
+  # Actuator gets its OWN connector, with its own thread pool.
+  #
+  # Unset, actuator is served by the same Tomcat connector as /inventory/orders and therefore by
+  # the same `server.tomcat.threads.max` pool. That is not a theoretical coupling: on
+  # TO-2-fix-A_capacity_W-base_20260825T235228Z, in-flight HTTP pinned at the 99-thread cap at
+  # 00:30:59, Prometheus lost the target at 00:33:29, and `up{job="inventory"}` stayed 0 for
+  # 23.2 minutes -- through the entire window the run needed explaining. The scrape did not fail
+  # because the JVM was unwell; it failed because every request thread was busy and the accept
+  # queue overflowed, so new connections were never accepted. Prometheus opens a fresh connection
+  # every 5 s and was the first thing to notice, five minutes before k6's first dial timeout.
+  #
+  # A separate port means a separate connector and a separate pool, so a saturated application
+  # cannot starve its own telemetry. This is the only reason the port exists -- it is not a
+  # security boundary, and the endpoint set below is unchanged.
+  #
+  # Not published to the host by the branch: docker-compose.yml on main publishes it and points
+  # Prometheus at it. See monitoring/prometheus/prometheus.yml, job `inventory-mgmt`.
+  server:
+    port: ${MANAGEMENT_PORT:8090}
   endpoints:
     web:
       exposure:

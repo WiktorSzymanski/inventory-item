@@ -194,4 +194,26 @@ class OutboxCursorDrainTest {
             "app.outbox-cursor.enabled must stay true: fix-B is a cursor arm",
         )
     }
+
+    /**
+     * Actuator must not share the request pool it is supposed to report on.
+     *
+     * With `management.server.port` unset, a saturated `/inventory/orders` starves the scrape:
+     * fix-A's capacity run lost `up{job="inventory"}` for 23.2 minutes starting three minutes
+     * after in-flight HTTP pinned at the 99-thread cap. The port is what gives the scrape its
+     * own connector, and `monitoring/prometheus/prometheus.yml` on main must agree with it.
+     */
+    @Test
+    fun `actuator is served from its own connector`() {
+        val yaml = ClassPathResource("application.yaml").inputStream.bufferedReader().readText()
+
+        assertTrue(
+            yaml.contains("port: \${MANAGEMENT_PORT:8090}"),
+            "management.server.port must be set, or a saturated request pool takes the metrics with it",
+        )
+        assertTrue(
+            yaml.contains("max: \${HTTP_THREADS:99}"),
+            "the application connector's own cap is what this separates actuator from",
+        )
+    }
 }
