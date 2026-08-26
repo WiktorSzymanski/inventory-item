@@ -3,6 +3,8 @@ package pl.szymanski.wiktor.service.command
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
+import io.mockk.verifyOrder
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -98,6 +100,37 @@ class OrderWritePersistTimingTest {
             "the attempt that blocked on the row lock and then lost must not vanish from the histogram",
         )
         assertEquals(0L, persistCount("committed"))
+    }
+
+    /**
+     * The change TO-2-fix-B is: `seq` is a BIGSERIAL handed out by the `event_publication` INSERT,
+     * and the drain's cursor orders by it. Taken at statement 1 — where it was — the seq-to-commit
+     * window was the whole of the versioned UPDATE's lock wait, which reached 4 s under contention
+     * on TO-2-fix-A_capacity_W-base_20260825T235228Z. Taken last it is the duration of these
+     * INSERTs, which is what makes seq order commit order closely enough for a plain `seq >` cursor.
+     */
+    @Test
+    fun `the outbox is written after the versioned inventory update`() {
+        handler.write(outcome())
+
+        verifyOrder {
+            batchWriter.updateAll(any())
+            publisher.publishEvent(any<InventoryReservedEvent>())
+            publisher.publishEvent(any<OrderCompletedEvent>())
+        }
+    }
+
+    @Test
+    fun `a conflict at the inventory update publishes nothing`() {
+        every { batchWriter.updateAll(any()) } throws InventoryVersionConflictException("ITEM-A", 3L)
+
+        assertThrows<InventoryVersionConflictException> { handler.write(outcome()) }
+
+        // The losing attempt burns no seq at all now, where before it burned N and rolled them
+        // back -- which is half of why the cursor could run ahead of commit order.
+        verify(exactly = 0) { publisher.publishEvent(any<InventoryReservedEvent>()) }
+        verify(exactly = 0) { publisher.publishEvent(any<OrderCompletedEvent>()) }
+        assertEquals(1L, persistCount("conflict"))
     }
 
     /**

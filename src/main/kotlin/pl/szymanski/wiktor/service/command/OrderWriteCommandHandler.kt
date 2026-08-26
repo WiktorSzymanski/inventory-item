@@ -34,11 +34,17 @@ data class OrderReserveOutcome(
  * nothing — every value it writes was computed outside it — so its duration is the duration of four
  * statements rather than of the whole order.
  *
- * **Statement order is load-bearing.** The exclusive row locks on `inventory_state` are taken by
- * the last statement and held only until COMMIT; on the per-line path this replaces they were taken
- * by line 1 and held across every later line's SELECT, its `reserveDelayMs` sleep and its outbox
- * INSERT. The reservations INSERT ahead of it takes only `FOR KEY SHARE` through the foreign key,
- * which does not conflict with another order's `FOR NO KEY UPDATE` of the same rows.
+ * **Statement order is load-bearing, and it changed in TO-2-fix-B.** The exclusive row locks on
+ * `inventory_state` are taken by the versioned UPDATE, now statement 3, and held until COMMIT. The
+ * reservations INSERT ahead of it takes only `FOR KEY SHARE` through the foreign key, which does
+ * not conflict with another order's `FOR NO KEY UPDATE` of the same rows.
+ *
+ * The outbox INSERTs moved from statement 1 to statement 4, INSIDE that lock window, in exchange
+ * for `seq` being handed out after the lock is held rather than before the wait for it — see the
+ * comment on statement 4 and
+ * `docs/superpowers/specs/2026-08-26-outbox-commit-order-cursor-design.md`. On the per-line path
+ * both replaced, the locks were taken by line 1 and held across every later line's SELECT, its
+ * `reserveDelayMs` sleep and its outbox INSERT.
  *
  * The outbox guarantee is unchanged: `publishEvent` goes through the branch's event multicaster,
  * which writes the `event_publication` row synchronously inside the current transaction, so state
@@ -85,24 +91,42 @@ class OrderWriteCommandHandler(
         val startNs = System.nanoTime()
 
         try {
-            // 1. Outbox first: no inventory lock is held yet, so N event_publication INSERTs no
-            //    longer sit inside the lock window the way they did on the per-line path.
+            // 1. Reservations: FK share locks only.
+            inventoryBatchWriter.insertAll(outcome.reservations)
+
+            // 2. The order aggregate, already transitioned to CONFIRMED outside this transaction.
+            //    Its own @Version still guards the write.
+            orderRepo.save(outcome.confirmedOrder)
+
+            // 3. The versioned batch UPDATE, which takes the exclusive inventory_state row locks
+            //    and holds them until COMMIT. Everything before this point is lock-free with
+            //    respect to inventory_state; a conflict here throws OptimisticLockingFailureException
+            //    and rolls the whole outcome back, which is what InventoryService retries.
+            inventoryBatchWriter.updateAll(outcome.updatedItems)
+
+            // 4. LAST: the outbox.
+            //
+            //    `seq` is a BIGSERIAL handed out by this INSERT, and the drain's cursor orders by
+            //    it. Taken at statement 1 -- where this used to be -- the seq-to-commit window was
+            //    the whole of statement 3's lock wait, because statement 3 blocks on the row lock
+            //    until the holder commits and only then checks @Version. Measured on
+            //    TO-2-fix-A_capacity_W-base_20260825T235228Z that wait reached 4 s, so the cursor
+            //    routinely read past rows whose transaction had not committed. Taken here, after
+            //    the lock is held and the version predicate has passed, the window is the duration
+            //    of these INSERTs. That is what lets TO-2-fix-B order by seq without needing
+            //    pg_snapshot_xmin, and therefore without fix-A's head-of-line blocking.
+            //
+            //    The cost is real and is what the gate measures: N event_publication INSERTs now
+            //    sit INSIDE the inventory_state lock window, where before they sat ahead of it.
+            //    outbox.write.time averaged 0.58 ms on that same run.
+            //
+            //    The outbox guarantee is unchanged: publishEvent goes through the branch's event
+            //    multicaster, which writes the event_publication row synchronously inside this
+            //    transaction, so state and events still commit or roll back as one unit.
             val outboxStartNs = System.nanoTime()
             outcome.reservedEvents.forEach { applicationEventPublisher.publishEvent(it) }
             applicationEventPublisher.publishEvent(outcome.completedEvent)
             outboxWriteTimer.record(System.nanoTime() - outboxStartNs, TimeUnit.NANOSECONDS)
-
-            // 2. Reservations: FK share locks only.
-            inventoryBatchWriter.insertAll(outcome.reservations)
-
-            // 3. The order aggregate, already transitioned to CONFIRMED outside this transaction.
-            //    Its own @Version still guards the write.
-            orderRepo.save(outcome.confirmedOrder)
-
-            // 4. LAST: the versioned batch UPDATE. Everything before this point is lock-free with
-            //    respect to inventory_state; a conflict here throws OptimisticLockingFailureException
-            //    and rolls the whole outcome back, which is what InventoryService retries.
-            inventoryBatchWriter.updateAll(outcome.updatedItems)
         } catch (e: ConcurrencyFailureException) {
             // The union of OptimisticLockingFailureException and PessimisticLockingFailureException,
             // i.e. exactly what InventoryService.runOrderTask classifies as a conflict and retries.
