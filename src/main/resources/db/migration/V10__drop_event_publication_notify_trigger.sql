@@ -1,0 +1,31 @@
+-- One notification per TRANSACTION, raised from application code, replacing V9's per-ROW trigger.
+--
+-- V9 fired `AFTER INSERT ... FOR EACH ROW`, so the channel carried one message per
+-- `event_publication` row. That is not one message per unit of work: `OrderWriteCommandHandler.write`
+-- publishes one InventoryReservedEvent per order line plus an OrderCompletedEvent, so a
+-- DISTINCT_ITEMS-line order raised N+1 notifications, all of them saying the same thing -- *this
+-- transaction has outbox work* -- and all of them emitted at the same COMMIT. Notification traffic
+-- therefore scaled with DISTINCT_ITEMS rather than with transactions, which is a knob's worth of
+-- cost sitting inside the number this branch exists to measure.
+--
+-- OutboxNotifier now issues `SELECT pg_notify('event_publication_notify', '')` once per
+-- transaction, on the first outbox row that transaction writes. Two consequences worth stating
+-- because they are the reasons the move is safe:
+--
+--   * Atomicity is unchanged. pg_notify called inside a transaction queues the message in that
+--     transaction; PostgreSQL emits it at COMMIT and discards it on ROLLBACK, exactly as it did
+--     from inside the trigger. A subscriber still cannot be woken for rows that never landed.
+--   * The write path loses a per-row plpgsql call. The trigger ran in the writer's transaction on
+--     every INSERT; there is now one statement per transaction instead.
+--
+-- The payload is gone rather than changed. Under V9 it was the publication id, which a
+-- per-transaction message cannot be -- the transaction has many. Nothing on this branch reads it
+-- (see PostgresNotificationListener), and a drain that did would read `event_publication.seq`,
+-- which is where the position actually lives.
+--
+-- NOTE for cross-branch comparison: TO-2's V2 trigger is still per-row. This branch and TO-2 no
+-- longer put the same traffic on the channel, so a TO-1-2-vs-TO-2 reading is no longer the clean
+-- single-variable one V9's comment claimed. TO-1-2 vs plain TO-1 is unaffected and remains the
+-- comparison this branch is for.
+DROP TRIGGER IF EXISTS trg_event_publication_notify ON event_publication;
+DROP FUNCTION IF EXISTS notify_event_publication_inserted();

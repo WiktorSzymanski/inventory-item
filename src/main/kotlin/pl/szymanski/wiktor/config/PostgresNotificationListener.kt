@@ -11,21 +11,32 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * LISTENs on the channel fed by the V9 trigger and **discards every notification**.
+ * LISTENs on the channel [OutboxNotifier] writes to and **discards every notification**.
  *
  * That is the whole point of this branch, not an unfinished port. Delivery stays entirely with
  * [pl.szymanski.wiktor.publisher.OutboxPollingPublisher]'s tick; the notification is received and
- * dropped, so a run measures what the channel COSTS — the trigger call on the writer's commit
- * path, the queue in PostgreSQL, the wake-up here — with none of what it buys. Against a plain
- * TO-1 run that is a clean single-variable difference. TO-2 is where the notification actually
- * drives a drain.
+ * dropped, so a run measures what the channel COSTS — the `pg_notify` on the writer's commit path,
+ * the queue in PostgreSQL, the wake-up here — with none of what it buys. Against a plain TO-1 run
+ * that is a clean single-variable difference. TO-2 is where the notification actually drives a
+ * drain.
  *
- * Because nothing acts on it, the payload is read as far as counting the messages and no further,
- * and there is no reconnect catch-up to perform: notifications missed while the connection was
- * down are simply more notifications this branch would have thrown away. Reconnection with backoff
- * exists only so the channel keeps being consumed for the length of a run — an un-listened NOTIFY
- * is discarded by PostgreSQL itself and would silently turn the cost being measured into a
- * cheaper one.
+ * **What is on the channel changed with V10 and the comparison to TO-2 changed with it.** The V9
+ * trigger raised one message per `event_publication` row, carrying the publication id — byte for
+ * byte what TO-2's V2 trigger still raises. [OutboxNotifier] raises one empty message per
+ * transaction instead, so a DISTINCT_ITEMS-line order puts 1 message on the channel here against
+ * TO-2's N+1. TO-1-2 and TO-2 therefore no longer carry the same traffic, and a reading across the
+ * two is no longer the single-variable one V9's comment claimed it was. TO-1-2 against plain TO-1
+ * is untouched: that pair still differs only by the channel, which is the comparison this branch
+ * exists for. `outbox.notify.sent` counts what the writers raised; [received] counts what arrived
+ * here and is logged on shutdown, so the two ends of the channel can be checked against each
+ * other after a run.
+ *
+ * Because nothing acts on it, a notification is read as far as counting it and no further (there
+ * is no payload left to read), and there is no reconnect catch-up to perform: notifications missed
+ * while the connection was down are simply more notifications this branch would have thrown away.
+ * Reconnection with backoff exists only so the channel keeps being consumed for the length of a
+ * run — an un-listened NOTIFY is discarded by PostgreSQL itself and would silently turn the cost
+ * being measured into a cheaper one.
  *
  * Uses its own standalone JDBC connection rather than borrowing one from HikariCP, so the pool
  * keeps its full size and its maxLifetime/leak detection never touch the long-lived LISTEN
@@ -37,7 +48,7 @@ class PostgresNotificationListener(
     @Value("\${spring.datasource.username}") private val dbUser: String,
     @Value("\${spring.datasource.password}") private val dbPassword: String,
 ) {
-    private val channel = "event_publication_notify"
+    private val channel = OutboxNotifier.CHANNEL
     private val received = AtomicLong()
 
     @Volatile

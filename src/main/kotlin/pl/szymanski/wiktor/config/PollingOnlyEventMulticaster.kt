@@ -28,11 +28,17 @@ import java.util.function.Supplier
  *
  * The parent's storePublications() and getEventToPersist() are private so their one-liner logic
  * is replicated here inline.
+ *
+ * Being the ONLY writer of event_publication rows also makes this the only place that can raise the
+ * outbox notification from application code, which is what [OutboxNotifier] is called for below.
+ * The supplier is lazy for the same reason the other three are: this bean is built inside a
+ * BeanDefinitionRegistryPostProcessor, before OutboxNotifier and its JdbcTemplate exist.
  */
 class PollingOnlyEventMulticaster(
     registrySupplier: Supplier<EventPublicationRegistry>,
     private val repositorySupplier: Supplier<EventPublicationRepository>,
     environmentSupplier: Supplier<Environment>,
+    private val notifierSupplier: Supplier<OutboxNotifier>,
 ) : PersistentApplicationEventMulticaster(registrySupplier, environmentSupplier) {
 
     @Suppress("UNCHECKED_CAST")
@@ -57,6 +63,14 @@ class PollingOnlyEventMulticaster(
                     TargetEventPublication.of(eventToPersist, PublicationTargetIdentifier.of(listener.listenerId), now)
                 )
             }
+
+            // ONE notification for the rows just written, and at most one for the whole
+            // transaction however many times it lands here. Deliberately inside this branch: an
+            // event with no AFTER_COMMIT listener wrote nothing, and every framework event during
+            // context startup is such an event — resolving the supplier for one of those would
+            // force OutboxNotifier into existence mid-refresh for a notification with no rows
+            // behind it.
+            notifierSupplier.get().notifyOnCommit()
         }
 
         // Invoke only non-AFTER_COMMIT listeners immediately (framework events, BEFORE_COMMIT, etc.)

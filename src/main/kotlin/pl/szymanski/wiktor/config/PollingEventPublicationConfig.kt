@@ -50,6 +50,7 @@ class PollingEventPublicationConfig {
                     { beanFactory.getBean(EventPublicationRegistry::class.java) },
                     { beanFactory.getBean(EventPublicationRepository::class.java) },
                     { beanFactory.getBean(Environment::class.java) },
+                    { beanFactory.getBean(OutboxNotifier::class.java) },
                 )
                 multicaster.setBeanFactory(beanFactory)
 
