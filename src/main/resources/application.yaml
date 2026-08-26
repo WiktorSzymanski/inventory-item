@@ -70,11 +70,16 @@ app:
     # snapshot that pinned the very xmin it was waiting on. 47% of orders never completed. See
     # docs/superpowers/specs/2026-08-26-outbox-commit-order-cursor-design.md.
     #
-    # The knob and V9 are RETAINED rather than deleted so archived fix-A runs replay from this
-    # image: `OUTBOX_CURSOR_WATERMARK=true` restores that arm — with one deliberate difference,
-    # that its sweep is bounded now (IncompleteEventRepublisher.boundedScanSweep). An unbounded
-    # sweep that provably takes the app down is not worth preserving faithfully on an arm you
-    # might fall back to. The pre-V8 SCAN arm, `enabled: false`, IS still bit-exact.
+    # The arm is the BRANCH, exactly as it was on fix-A, so this needs no docker-compose
+    # passthrough and must not get one. An archived fix-A run is replayed by running TO-2-fix-A,
+    # whose branch and image both still exist — never by flipping this on the fix-B image, which
+    # would not reproduce fix-A anyway: fix-B publishes last and its watermark sweep is bounded.
+    # A run made that way would be a fourth arm wearing fix-A's name, which is the confound
+    # "two branches, two images" exists to prevent.
+    #
+    # The ${...} form is kept for the same reason fix-A kept it — a local run can flip the arm
+    # without a rebuild:
+    # `OUTBOX_CURSOR_WATERMARK=true ./gradlew bootRun` exercises the watermark path from this image.
     watermark: ${OUTBOX_CURSOR_WATERMARK:false}
   outbox-sweep:
     # Bounds on ONE sweep pass, in cursor mode. Strands are routine there, not rare, so the sweep
