@@ -8,6 +8,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.springframework.core.io.ClassPathResource
 import pl.szymanski.wiktor.config.EventPublicationDirectProcessor.PublicationRef
 import java.time.Duration
 import java.util.UUID
@@ -170,5 +171,27 @@ class OutboxCursorDrainTest {
         assertTrue(secondCallDone.await(5, TimeUnit.SECONDS), "coalesced drain never ran")
         Thread.sleep(200) // let any surplus pass show up
         assertEquals(2, calls.get(), "1000 signals should cost one extra drain, not 1000")
+    }
+
+    /**
+     * Which arm this branch IS. TO-2-fix-A shipped `watermark: true` and that was what fix-A was;
+     * fix-B removes the reason it was needed by handing out `seq` from the LAST statement of
+     * `OrderWriteCommandHandler.write`, so the seq cursor no longer reads past uncommitted rows.
+     *
+     * Asserted against the shipped resource rather than a bean, because the thing that can silently
+     * regress is the default in the file — and a run that records the wrong arm proves nothing.
+     */
+    @Test
+    fun `the shipped default is the seq cursor, not the watermark`() {
+        val yaml = ClassPathResource("application.yaml").inputStream.bufferedReader().readText()
+
+        assertTrue(
+            yaml.contains("watermark: \${OUTBOX_CURSOR_WATERMARK:false}"),
+            "app.outbox-cursor.watermark must default to false on TO-2-fix-B",
+        )
+        assertTrue(
+            yaml.contains("enabled: \${OUTBOX_CURSOR_ENABLED:true}"),
+            "app.outbox-cursor.enabled must stay true: fix-B is a cursor arm",
+        )
     }
 }

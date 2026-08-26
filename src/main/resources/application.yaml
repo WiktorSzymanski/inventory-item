@@ -57,16 +57,25 @@ app:
     # therefore never reads at the tip, stranded 0. Each 60 s rescue lands as one batch, and every
     # OrderCreatedEvent in it enqueues onto a 200-thread pool with an unbounded queue.
     #
-    # Requires V9. **Defaults to TRUE on this branch, which is what this branch IS.** The A/B is
-    # therefore TO-2 (seq cursor) against TO-2-fix-A (watermark): two branches, two images — not
-    # one image with a knob, because V9's column and index mean the two arms could never have
-    # shared a build anyway. That keeps every archived TO-2 run meaning exactly what it meant, and
-    # it needs no docker-compose passthrough — compose forwards only the variables it names, and
-    # this one no longer has to be named.
+    # Requires V9. **Defaults to FALSE on this branch.** TO-2-fix-A defaulted it to TRUE and that
+    # is what fix-A WAS; TO-2-fix-B removes the reason it was needed. `seq` is now handed out by
+    # the LAST statement of OrderWriteCommandHandler.write rather than the first, so the
+    # seq-to-commit window is the duration of an INSERT rather than the versioned UPDATE's lock
+    # wait, and the seq cursor no longer reads past rows that have not committed.
     #
-    # The ${...} form is kept so a local run can still flip the arm without a rebuild:
-    # `OUTBOX_CURSOR_WATERMARK=false ./gradlew bootRun` exercises the seq path from this image.
-    watermark: ${OUTBOX_CURSOR_WATERMARK:true}
+    # What the watermark bought was a boundary that cannot strand. What it COST was delivery held
+    # hostage to the oldest in-flight transaction in the cluster, measured on
+    # TO-2-fix-A_capacity_W-base_20260825T235228Z: outbox_cursor_lag pinned at 0 from t+30 min,
+    # the drain ending 3.7M seq behind the head, and the arm's own position-free sweep holding a
+    # snapshot that pinned the very xmin it was waiting on. 47% of orders never completed. See
+    # docs/superpowers/specs/2026-08-26-outbox-commit-order-cursor-design.md.
+    #
+    # The knob and V9 are RETAINED rather than deleted so archived fix-A runs replay from this
+    # image: `OUTBOX_CURSOR_WATERMARK=true` restores that arm — with one deliberate difference,
+    # that its sweep is bounded now (IncompleteEventRepublisher.boundedScanSweep). An unbounded
+    # sweep that provably takes the app down is not worth preserving faithfully on an arm you
+    # might fall back to. The pre-V8 SCAN arm, `enabled: false`, IS still bit-exact.
+    watermark: ${OUTBOX_CURSOR_WATERMARK:false}
   outbox-sweep:
     # Bounds on ONE sweep pass, in cursor mode. Strands are routine there, not rare, so the sweep
     # is a real delivery path and needs the same "one pass cannot run unboundedly long" guarantee
