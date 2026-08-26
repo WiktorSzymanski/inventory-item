@@ -1,7 +1,6 @@
 package pl.szymanski.wiktor.config
 
 import io.micrometer.core.instrument.Counter
-import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.MeterRegistry
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Qualifier
@@ -127,25 +126,26 @@ class IncompleteEventRepublisher(
     /**
      * Rows this path delivered that the drain did not — the strand rate, and the single number that
      * says whether the cursor's eager advance is cheap or expensive on this workload.
+     *
+     * The companion question — how far the cursor over-RAN, which is what a safety margin would
+     * have to cover — is NOT measurable from here, and an earlier version of this class was wrong
+     * to try. `cursor - seq` sampled at sweep time reads the distance a row sits below the cursor
+     * when the sweep reaches it, and the sweep only looks at rows older than
+     * `republication-min-age` (PT1M). At ~80 orders/s that floor alone is tens of thousands of
+     * seq, so the measurement is dominated by the min-age wait rather than by the over-run:
+     * TO-2-fix-B_capacity_W-fast_20260826T121411Z read p99 = 112,640 against a true over-run two
+     * orders of magnitude smaller.
+     *
+     * The over-run is already exported, by [pl.szymanski.wiktor.publisher.OutboxMetrics], as
+     *
+     *     outbox_cursor_position - outbox_oldest_incomplete_seq
+     *
+     * sampled every 5 s and free of that floor: `oldest.incomplete.seq` is `min(seq)` on the
+     * partial index, one descent, and it counts a row from the moment it is visible rather than
+     * from the moment it is a minute old. Positive means rows are stranded below the cursor and
+     * the value is the worst outstanding over-run; at or below zero means nothing is stranded.
      */
     private val rescued: Counter = meterRegistry.counter("outbox.sweep.rescued")
-
-    /**
-     * How far below the drain's cursor a stranded publication sat, in seq.
-     *
-     * This is the over-run distribution, and its p99.9 is the number the drain's safety margin has
-     * to be set to. V9 exists because that number was guessed once already, so it is measured here
-     * rather than assumed: the sweep holds the cursor and reads the rows, so `cursor - seq` is free
-     * to observe at exactly the point where the over-run becomes visible.
-     *
-     * Recorded on every row the sweep FINDS, not only the ones it delivers — a delivery failure
-     * says nothing about how far the cursor over-ran.
-     */
-    private val strandDepth: DistributionSummary = DistributionSummary
-        .builder("outbox.strand.depth")
-        .description("Drain cursor minus the seq of a publication the sweep found below it")
-        .publishPercentiles(0.5, 0.99, 0.999)
-        .register(meterRegistry)
 
     /**
      * Which sweep the drain arm needs. Three arms, same shape as [EventDrainLoop.drainAll].
@@ -221,16 +221,12 @@ class IncompleteEventRepublisher(
         var batches = 0
 
         while (batches < maxBatches) {
-            val page = processor.findIncompleteUpTo(cursor, minAge, batchSize)
+            val ids = processor.findIncompleteUpTo(cursor, minAge, batchSize)
             batches++
-            if (page.isEmpty()) break
+            if (ids.isEmpty()) break
 
-            // Before delivery, and unconditionally: this measures the cursor's over-run, which a
-            // failed delivery does not change.
-            page.forEach { ref -> strandDepth.record((cursor - ref.seq).toDouble()) }
-
-            val delivered = page
-                .map { ref -> executor.submit<Boolean> { deliver(ref.id) } }
+            val delivered = ids
+                .map { id -> executor.submit<Boolean> { deliver(id) } }
                 .map { future -> runCatching { future.get() }.getOrDefault(false) }
                 .count { it }
 
@@ -240,10 +236,10 @@ class IncompleteEventRepublisher(
             // Same no-progress guard as the scan drain, and for the same reason: the sweep's query
             // is not a cursor, so a page that delivers nothing is refetched verbatim.
             if (delivered == 0) {
-                log.error("Sweep page of {} publication(s) delivered nothing; ending pass", page.size)
+                log.error("Sweep page of {} publication(s) delivered nothing; ending pass", ids.size)
                 break
             }
-            if (page.size < batchSize) break
+            if (ids.size < batchSize) break
         }
 
         if (total == 0) return

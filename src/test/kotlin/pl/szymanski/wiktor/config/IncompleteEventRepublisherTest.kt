@@ -1,7 +1,6 @@
 package pl.szymanski.wiktor.config
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
-import pl.szymanski.wiktor.config.EventPublicationDirectProcessor.PublicationRef
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -47,11 +46,6 @@ class IncompleteEventRepublisherTest {
 
     private fun ids(n: Int) = List(n) { UUID.randomUUID() }
 
-    /** findIncompleteUpTo carries seq now, so the sweep can measure how far the cursor over-ran. */
-    private fun refs(n: Int, from: Long = 1L) = List(n) { PublicationRef(UUID.randomUUID(), from + it) }
-
-    private fun strandDepth() = registry.find("outbox.strand.depth").summary()
-
     @Test
     fun `sweeps only below the cursor, and only rows old enough`() {
         every { cursorStore.load() } returns 900L
@@ -62,37 +56,6 @@ class IncompleteEventRepublisherTest {
         verify(exactly = 1) { processor.findIncompleteUpTo(900L, minAge, 2) }
         // The scan query is the OTHER mode's; issuing it here would reintroduce the unbounded read.
         verify(exactly = 0) { processor.findIncompleteIds(any<Duration>()) }
-    }
-
-    @Test
-    fun `records how far below the cursor each stranded row sat`() {
-        every { cursorStore.load() } returns 1000L
-        every { processor.findIncompleteUpTo(any(), any(), any()) } returnsMany listOf(
-            listOf(PublicationRef(UUID.randomUUID(), 990L), PublicationRef(UUID.randomUUID(), 940L)),
-            emptyList(),
-        )
-
-        republisher(batchSize = 2, maxBatches = 2).republishIncomplete()
-
-        // The over-run distribution, whose p99.9 is what the drain's safety margin gets set to.
-        val depth = strandDepth()!!
-        assertEquals(2L, depth.count())
-        assertEquals(70.0, depth.totalAmount()) // (1000-990) + (1000-940)
-    }
-
-    @Test
-    fun `strand depth is recorded even for rows the sweep fails to deliver`() {
-        every { cursorStore.load() } returns 500L
-        every { processor.findIncompleteUpTo(any(), any(), any()) } returns
-            listOf(PublicationRef(UUID.randomUUID(), 400L))
-        every { processor.process(any()) } throws RuntimeException("listener blew up")
-
-        republisher(batchSize = 1, maxBatches = 1).republishIncomplete()
-
-        // A delivery failure says nothing about how far the cursor over-ran, which is the only
-        // thing this series measures.
-        assertEquals(1L, strandDepth()!!.count())
-        assertEquals(0.0, rescued())
     }
 
     @Test
@@ -148,13 +111,13 @@ class IncompleteEventRepublisherTest {
     @Test
     fun `pages until a short page, then stops`() {
         every { cursorStore.load() } returns 10L
-        val p1 = refs(2)
-        val p2 = refs(1, from = 10L)
+        val p1 = ids(2)
+        val p2 = ids(1)
         every { processor.findIncompleteUpTo(any(), any(), any()) } returnsMany listOf(p1, p2)
 
         republisher(batchSize = 2, maxBatches = 5).republishIncomplete()
 
-        (p1 + p2).forEach { verify(exactly = 1) { processor.process(it.id) } }
+        (p1 + p2).forEach { verify(exactly = 1) { processor.process(it) } }
         verify(exactly = 2) { processor.findIncompleteUpTo(any(), any(), any()) }
         assertEquals(3.0, rescued())
     }
@@ -163,7 +126,7 @@ class IncompleteEventRepublisherTest {
     fun `one pass cannot run unboundedly long`() {
         every { cursorStore.load() } returns 10L
         // Always a full page: without the bound this never returns.
-        every { processor.findIncompleteUpTo(any(), any(), any()) } answers { refs(2) }
+        every { processor.findIncompleteUpTo(any(), any(), any()) } answers { ids(2) }
 
         republisher(batchSize = 2, maxBatches = 3).republishIncomplete()
 
@@ -173,7 +136,7 @@ class IncompleteEventRepublisherTest {
     @Test
     fun `a page that delivers nothing ends the pass instead of refetching itself`() {
         every { cursorStore.load() } returns 10L
-        every { processor.findIncompleteUpTo(any(), any(), any()) } answers { refs(2) }
+        every { processor.findIncompleteUpTo(any(), any(), any()) } answers { ids(2) }
         every { processor.process(any()) } throws RuntimeException("still broken")
 
         republisher(batchSize = 2, maxBatches = 5).republishIncomplete()
@@ -186,13 +149,13 @@ class IncompleteEventRepublisherTest {
     @Test
     fun `one failing row does not abort the rest of the page`() {
         every { cursorStore.load() } returns 10L
-        val p = refs(3)
+        val p = ids(3)
         every { processor.findIncompleteUpTo(any(), any(), any()) } returnsMany listOf(p, emptyList())
-        every { processor.process(p[1].id) } throws RuntimeException("listener blew up")
+        every { processor.process(p[1]) } throws RuntimeException("listener blew up")
 
         republisher(batchSize = 3, maxBatches = 5).republishIncomplete()
 
-        p.forEach { verify(exactly = 1) { processor.process(it.id) } }
+        p.forEach { verify(exactly = 1) { processor.process(it) } }
         assertEquals(2.0, rescued())
     }
 

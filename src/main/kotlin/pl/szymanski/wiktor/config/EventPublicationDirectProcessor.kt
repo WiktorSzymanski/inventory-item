@@ -203,24 +203,19 @@ class EventPublicationDirectProcessor(
      *
      * Bounded by [limit] because that set is no longer the rare leftover the unbounded
      * [findIncompleteIds] was written for.
-     *
-     * Returns [PublicationRef] rather than a bare id so the sweep can record `cursor - seq` as
-     * `outbox.strand.depth` — the over-run distribution that sizes the drain's safety margin.
-     * Sampling that gap at commit instead would cost every writer a query for the highest seq then
-     * current, on the hot path; here the sweep already holds both numbers.
      */
-    fun findIncompleteUpTo(cursor: Long, minAge: Duration, limit: Int): List<PublicationRef> =
-        jdbcTemplate.query(
-            """SELECT id, seq FROM event_publication
+    fun findIncompleteUpTo(cursor: Long, minAge: Duration, limit: Int): List<UUID> =
+        jdbcTemplate.queryForList(
+            """SELECT id FROM event_publication
                WHERE completion_date IS NULL AND seq <= ?
                  AND publication_date < now() - make_interval(secs => ?)
                ORDER BY seq
                LIMIT ?""",
-            RowMapper { rs, _ -> PublicationRef(rs.getObject("id", UUID::class.java), rs.getLong("seq")) },
+            UUID::class.java,
             cursor,
             minAge.toMillis() / 1000.0,
             limit,
-        )
+        ).filterNotNull()
 
     // listener_id format: "full.ClassName.methodName(full.ParamType)"
     private fun resolveInvoker(listenerId: String, eventType: Class<*>): ListenerInvoker {
