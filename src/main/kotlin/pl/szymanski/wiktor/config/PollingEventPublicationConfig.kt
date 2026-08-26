@@ -130,19 +130,69 @@ class IncompleteEventRepublisher(
     private val rescued: Counter = meterRegistry.counter("outbox.sweep.rescued")
 
     /**
-     * Which sweep the drain arm needs.
+     * Which sweep the drain arm needs. Three arms, same shape as [EventDrainLoop.drainAll].
      *
      * The seq cursor strands rows BELOW itself by design, so [sweepBehindCursor] looks exactly
      * there and nowhere else. The watermark cursor strands nothing below itself — everything under
      * `pg_snapshot_xmin` was seen — but it can leave rows stranded ABOVE it, because one
      * long-running transaction pins `xmin` and no below-cursor query can reach past it. So that arm
-     * takes the position-free [republishByScan], which finds anything older than the min-age
-     * wherever it sits. It is the expensive absence-proof query, run once a minute, which is the
-     * cadence V8 already establishes as affordable.
+     * takes a position-free sweep, which finds anything older than the min-age wherever it sits.
+     *
+     * That position-free sweep is [boundedScanSweep] and NOT [republishByScan], which keeps its
+     * unbounded shape for `cursorEnabled=false` alone — the pre-V8 SCAN arm, whose whole value is
+     * being exactly what earlier TO-2 runs measured.
      */
     @Scheduled(fixedDelayString = "\${spring.modulith.events.republication-interval:PT1M}")
     fun republishIncomplete() {
-        if (cursorEnabled && !watermarkEnabled) sweepBehindCursor() else republishByScan()
+        when {
+            watermarkEnabled -> boundedScanSweep()
+            cursorEnabled -> sweepBehindCursor()
+            else -> republishByScan()
+        }
+    }
+
+    /**
+     * The watermark arm's sweep: position-free, and bounded where [republishByScan] is not.
+     *
+     * Unbounded, this walks the whole `completion_date IS NULL` region. Measured on
+     * TO-2-fix-A_capacity_W-base_20260825T235228Z: 42,352 tuples per pass, ~28 passes a minute,
+     * `outbox.sweep.rescued` 0 for the entire run. Worse than the wasted work, the query holds a
+     * snapshot for its whole duration, and that snapshot pins the very `xmin` this arm's drain is
+     * blocked on — the sweep stalls the drain it exists to back up. The LIMIT is what makes the
+     * snapshot short, so the bound is a correctness fix for the drain and not merely tidiness here.
+     */
+    private fun boundedScanSweep() {
+        var total = 0
+        var batches = 0
+
+        while (batches < maxBatches) {
+            val ids = processor.findIncompleteIds(minAge, batchSize)
+            batches++
+            if (ids.isEmpty()) break
+
+            val delivered = ids
+                .map { id -> executor.submit<Boolean> { deliver(id) } }
+                .map { future -> runCatching { future.get() }.getOrDefault(false) }
+                .count { it }
+
+            rescued.increment(delivered.toDouble())
+            total += delivered
+
+            // Same no-progress guard as sweepBehindCursor, same reason: this query carries no
+            // position either, so a page that delivered nothing is refetched verbatim.
+            if (delivered == 0) {
+                log.error("Scan sweep page of {} publication(s) delivered nothing; ending pass", ids.size)
+                break
+            }
+            if (ids.size < batchSize) break
+        }
+
+        if (total == 0) return
+        if (batches >= maxBatches) {
+            log.info("[OUTBOX] scan sweep hit its batch bound: {} rescued in {} batches, more remain", total, batches)
+        } else {
+            log.debug("[OUTBOX] scan sweep rescued {} publication(s)", total)
+        }
     }
 
     private fun sweepBehindCursor() {

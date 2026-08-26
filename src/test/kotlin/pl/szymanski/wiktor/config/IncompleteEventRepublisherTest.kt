@@ -60,16 +60,52 @@ class IncompleteEventRepublisherTest {
 
     @Test
     fun `the watermark arm sweeps without a position predicate`() {
-        every { processor.findIncompleteIds(any<Duration>()) } returns emptyList()
+        every { processor.findIncompleteIds(any<Duration>(), any()) } returns emptyList()
 
         republisher(watermarkEnabled = true).republishIncomplete()
 
         // Below-the-cursor is the wrong place to look here: the watermark leaves nothing behind it,
         // but a transaction pinning xmin strands rows ABOVE it, which no cursor-bounded query
         // reaches. Position-free is the only sweep that can find them.
-        verify(exactly = 1) { processor.findIncompleteIds(minAge) }
+        verify(exactly = 1) { processor.findIncompleteIds(minAge, 2) }
         verify(exactly = 0) { processor.findIncompleteUpTo(any(), any(), any()) }
         verify(exactly = 0) { cursorStore.load() }
+    }
+
+    @Test
+    fun `the watermark arm's sweep is bounded by batch size and max batches`() {
+        // Always a full page: without the bound this never returns.
+        every { processor.findIncompleteIds(any<Duration>(), any()) } answers { ids(2) }
+
+        republisher(watermarkEnabled = true, batchSize = 2, maxBatches = 3).republishIncomplete()
+
+        verify(exactly = 3) { processor.findIncompleteIds(minAge, 2) }
+        // The unbounded overload belongs to the pre-V8 SCAN arm and must not be reached here: it
+        // is what held a snapshot long enough to pin the xmin this arm's own drain waits on.
+        verify(exactly = 0) { processor.findIncompleteIds(any<Duration>()) }
+    }
+
+    @Test
+    fun `a scan page that delivers nothing ends the pass instead of refetching itself`() {
+        every { processor.findIncompleteIds(any<Duration>(), any()) } answers { ids(2) }
+        every { processor.process(any()) } throws RuntimeException("still broken")
+
+        republisher(watermarkEnabled = true, batchSize = 2, maxBatches = 5).republishIncomplete()
+
+        // Same reason as the below-cursor sweep: this query carries no position either, so a page
+        // that delivered nothing comes back verbatim.
+        verify(exactly = 1) { processor.findIncompleteIds(minAge, 2) }
+        assertEquals(0.0, rescued())
+    }
+
+    @Test
+    fun `a short scan page ends the pass`() {
+        every { processor.findIncompleteIds(any<Duration>(), any()) } returns ids(1)
+
+        republisher(watermarkEnabled = true, batchSize = 2, maxBatches = 5).republishIncomplete()
+
+        verify(exactly = 1) { processor.findIncompleteIds(minAge, 2) }
+        assertEquals(1.0, rescued())
     }
 
     @Test
