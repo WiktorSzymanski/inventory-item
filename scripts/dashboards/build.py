@@ -65,51 +65,6 @@ def _timeseries(panel, targets, datasource, panel_id, x, y):
     }
 
 
-def _stat(panel, targets, datasource, panel_id, x, y):
-    """A single number per target, not a curve.
-
-    Only the run-wide summary uses this (see runs.py): those expressions are pinned to the
-    run's two endpoints with the `@` modifier, so they evaluate to the SAME value at every
-    instant in the window. Drawn as a timeseries they would be three flat lines whose real
-    content is the legend; a stat says the number and nothing else.
-
-    `graphMode: none` for the same reason -- a sparkline of a constant is a straight line
-    that invites reading a trend into it. `colorMode: none` keeps a latency from being
-    coloured against thresholds nobody has set.
-    """
-    return {
-        "id": panel_id,
-        "title": panel.title,
-        "description": panel.description,
-        "type": "stat",
-        "gridPos": {"x": x, "y": y, "w": panel.w, "h": panel.h},
-        "datasource": datasource,
-        "fieldConfig": {
-            "defaults": {
-                "unit": panel.unit,
-                "min": 0,
-                "color": {"mode": "fixed", "fixedColor": "text"},
-                "thresholds": {"mode": "absolute", "steps": [{"color": "text", "value": None}]},
-            },
-            "overrides": [],
-        },
-        "options": {
-            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
-            "orientation": "horizontal", "textMode": "value_and_name",
-            "colorMode": "none", "graphMode": "none", "justifyMode": "auto",
-        },
-        "targets": [
-            {"datasource": datasource, "expr": t.expr, "legendFormat": t.legend,
-             "refId": chr(ord("A") + i)}
-            for i, t in enumerate(targets)
-        ],
-    }
-
-
-# Panel.type -> renderer. Anything not listed is a timeseries, which is all but one panel.
-BUILDERS = {"stat": _stat}
-
-
 def _row(title, panel_id, y):
     return {"id": panel_id, "type": "row", "title": title, "collapsed": False,
             "gridPos": {"x": 0, "y": y, "w": 24, "h": 1}, "panels": []}
@@ -135,8 +90,7 @@ def _layout(sections, pick, datasource):
                 # whenever a wrapped-to panel was shorter than the row it followed.
                 x, y = 0, y + row_h
                 row_h = 0
-            build_panel = BUILDERS.get(panel.type, _timeseries)
-            panels.append(build_panel(panel, targets, datasource, panel_id, x, y))
+            panels.append(_timeseries(panel, targets, datasource, panel_id, x, y))
             panel_id += 1
             x += panel.w
             row_h = max(row_h, panel.h)

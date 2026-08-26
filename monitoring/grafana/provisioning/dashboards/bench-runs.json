@@ -228,13 +228,13 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "## ${run:text}\n\nThe **Run-wide summary** directly below has no axis: each number covers this run's whole window at once, computed the way `dump.json` computes it. Everything under it is a curve.\n\nThe axis on those panels is **minutes since this run's own t0** (`meta.json` `windows.full[0]`, i.e. the start of measured load). The axis is 80 minutes wide \u2014 sized for the longest archived run \u2014 but every panel stops at **this** run's end, so a shorter run simply leaves the right side empty rather than continuing into whichever run came next.\n\nThe time picker is pinned to a fixed anchor and must stay there: the run is reached by the offset carried in the **Run** variable, not by the time range."
+        "content": "## ${run:text}\n\nThe axis on every panel is **minutes since this run's own t0** (`meta.json` `windows.full[0]`, i.e. the start of measured load). The axis is 80 minutes wide \u2014 sized for the longest archived run \u2014 but every panel stops at **this** run's end, so a shorter run simply leaves the right side empty rather than continuing into whichever run came next.\n\nThe time picker is pinned to a fixed anchor and must stay there: the run is reached by the offset carried in the **Run** variable, not by the time range."
       }
     },
     {
       "id": 1,
       "type": "row",
-      "title": "Run-wide summary",
+      "title": "Publish lag, all event types",
       "collapsed": false,
       "gridPos": {
         "x": 0,
@@ -246,14 +246,14 @@
     },
     {
       "id": 2,
-      "title": "Publish lag, all event types \u2014 whole-run p50 / p95 / p99",
-      "description": "The percentile over every publish_lag sample the run recorded, all event types pooled \u2014 the bucket-vector difference between the run's own start and end, which is the same window and the same arithmetic dump.json's publish_lag_p50/95/99 use (those stay split by eventType) \u2014 checked equal to it, per event type, on all 14 archived runs. Not comparable with a peak read off the per-minute curve further down: a percentile of the whole run is not the peak of a percentile.",
-      "type": "stat",
+      "title": "Publish lag, all event types \u2014 p50 / p95 / p99",
+      "description": "Every publish_lag sample of the selected run, all event types pooled into one histogram before the quantile is taken \u2014 not the per-type curves further down, and not their maximum: a quantile of a union is not a function of the quantiles of its parts. Per-minute, like every latency panel on this dashboard, so it is a shape rather than a single figure for the run; dump.json carries the run-wide numbers, split by eventType.",
+      "type": "timeseries",
       "gridPos": {
         "x": 0,
         "y": 4,
         "w": 24,
-        "h": 5
+        "h": 8
       },
       "datasource": {
         "type": "prometheus",
@@ -264,34 +264,34 @@
           "unit": "s",
           "min": 0,
           "color": {
-            "mode": "fixed",
-            "fixedColor": "text"
+            "mode": "palette-classic"
           },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
           }
         },
         "overrides": []
       },
       "options": {
-        "reduceOptions": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
           "calcs": [
+            "mean",
+            "max",
             "lastNotNull"
           ],
-          "fields": "",
-          "values": false
+          "showLegend": true
         },
-        "orientation": "horizontal",
-        "textMode": "value_and_name",
-        "colorMode": "none",
-        "graphMode": "none",
-        "justifyMode": "auto"
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
@@ -299,7 +299,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "histogram_quantile(0.5, (sum by (le) (publish_lag_seconds_bucket{job=\"$job\"} offset $run @ $end) - sum by (le) (last_over_time(publish_lag_seconds_bucket{job=\"$job\"}[30s] offset $run @ 1788220800))) or sum by (le) (publish_lag_seconds_bucket{job=\"$job\"} offset $run @ $end))",
+          "expr": "(histogram_quantile(0.5, sum(rate(publish_lag_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "p50",
           "refId": "A"
         },
@@ -308,7 +308,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "histogram_quantile(0.95, (sum by (le) (publish_lag_seconds_bucket{job=\"$job\"} offset $run @ $end) - sum by (le) (last_over_time(publish_lag_seconds_bucket{job=\"$job\"}[30s] offset $run @ 1788220800))) or sum by (le) (publish_lag_seconds_bucket{job=\"$job\"} offset $run @ $end))",
+          "expr": "(histogram_quantile(0.95, sum(rate(publish_lag_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "p95",
           "refId": "B"
         },
@@ -317,7 +317,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "histogram_quantile(0.99, (sum by (le) (publish_lag_seconds_bucket{job=\"$job\"} offset $run @ $end) - sum by (le) (last_over_time(publish_lag_seconds_bucket{job=\"$job\"}[30s] offset $run @ 1788220800))) or sum by (le) (publish_lag_seconds_bucket{job=\"$job\"} offset $run @ $end))",
+          "expr": "(histogram_quantile(0.99, sum(rate(publish_lag_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -330,7 +330,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 9,
+        "y": 12,
         "w": 24,
         "h": 1
       },
@@ -343,7 +343,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 10,
+        "y": 13,
         "w": 12,
         "h": 8
       },
@@ -404,7 +404,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 10,
+        "y": 13,
         "w": 12,
         "h": 8
       },
@@ -465,7 +465,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 18,
+        "y": 21,
         "w": 12,
         "h": 8
       },
@@ -544,7 +544,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 18,
+        "y": 21,
         "w": 12,
         "h": 8
       },
@@ -605,7 +605,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 26,
+        "y": 29,
         "w": 24,
         "h": 1
       },
@@ -618,7 +618,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 27,
+        "y": 30,
         "w": 24,
         "h": 9
       },
@@ -688,7 +688,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 36,
+        "y": 39,
         "w": 12,
         "h": 8
       },
@@ -749,7 +749,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 36,
+        "y": 39,
         "w": 12,
         "h": 8
       },
@@ -828,7 +828,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 44,
+        "y": 47,
         "w": 12,
         "h": 8
       },
@@ -898,7 +898,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 44,
+        "y": 47,
         "w": 12,
         "h": 8
       },
@@ -968,7 +968,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 52,
+        "y": 55,
         "w": 12,
         "h": 8
       },
@@ -1029,7 +1029,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 52,
+        "y": 55,
         "w": 12,
         "h": 8
       },
@@ -1090,7 +1090,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 60,
+        "y": 63,
         "w": 12,
         "h": 8
       },
@@ -1169,7 +1169,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 60,
+        "y": 63,
         "w": 12,
         "h": 8
       },
@@ -1230,7 +1230,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 68,
+        "y": 71,
         "w": 12,
         "h": 8
       },
@@ -1309,7 +1309,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 68,
+        "y": 71,
         "w": 12,
         "h": 8
       },
@@ -1379,7 +1379,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 76,
+        "y": 79,
         "w": 12,
         "h": 8
       },
@@ -1458,7 +1458,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 84,
+        "y": 87,
         "w": 24,
         "h": 8
       },
@@ -1537,7 +1537,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 92,
+        "y": 95,
         "w": 12,
         "h": 8
       },
@@ -1616,7 +1616,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 92,
+        "y": 95,
         "w": 12,
         "h": 8
       },
@@ -1695,7 +1695,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 100,
+        "y": 103,
         "w": 12,
         "h": 8
       },
@@ -1756,7 +1756,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 100,
+        "y": 103,
         "w": 12,
         "h": 8
       },
@@ -1826,7 +1826,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 108,
+        "y": 111,
         "w": 12,
         "h": 8
       },
@@ -1905,7 +1905,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 116,
+        "y": 119,
         "w": 24,
         "h": 8
       },
@@ -1975,7 +1975,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 124,
+        "y": 127,
         "w": 24,
         "h": 1
       },
@@ -1988,7 +1988,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 125,
+        "y": 128,
         "w": 12,
         "h": 8
       },
@@ -2067,7 +2067,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 125,
+        "y": 128,
         "w": 12,
         "h": 8
       },
@@ -2128,7 +2128,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 133,
+        "y": 136,
         "w": 12,
         "h": 8
       },
@@ -2199,7 +2199,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 133,
+        "y": 136,
         "w": 12,
         "h": 8
       },
@@ -2269,7 +2269,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 141,
+        "y": 144,
         "w": 8,
         "h": 8
       },
@@ -2348,7 +2348,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 141,
+        "y": 144,
         "w": 8,
         "h": 8
       },
@@ -2409,7 +2409,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 141,
+        "y": 144,
         "w": 8,
         "h": 8
       },
@@ -2470,7 +2470,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 149,
+        "y": 152,
         "w": 8,
         "h": 8
       },
@@ -2540,7 +2540,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 149,
+        "y": 152,
         "w": 8,
         "h": 8
       },
@@ -2601,7 +2601,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 149,
+        "y": 152,
         "w": 8,
         "h": 8
       },
@@ -2662,7 +2662,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 157,
+        "y": 160,
         "w": 8,
         "h": 8
       },
@@ -2732,7 +2732,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 157,
+        "y": 160,
         "w": 8,
         "h": 8
       },
@@ -2794,7 +2794,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 157,
+        "y": 160,
         "w": 8,
         "h": 8
       },
@@ -2864,7 +2864,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 165,
+        "y": 168,
         "w": 12,
         "h": 8
       },
@@ -2925,7 +2925,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 165,
+        "y": 168,
         "w": 12,
         "h": 8
       },
@@ -2986,7 +2986,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 173,
+        "y": 176,
         "w": 24,
         "h": 1
       },
@@ -2999,7 +2999,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 174,
+        "y": 177,
         "w": 8,
         "h": 8
       },
@@ -3078,7 +3078,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 174,
+        "y": 177,
         "w": 8,
         "h": 8
       },
@@ -3166,7 +3166,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 174,
+        "y": 177,
         "w": 8,
         "h": 8
       },
@@ -3227,7 +3227,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 182,
+        "y": 185,
         "w": 12,
         "h": 8
       },
@@ -3306,7 +3306,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 182,
+        "y": 185,
         "w": 12,
         "h": 8
       },
@@ -3385,7 +3385,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 190,
+        "y": 193,
         "w": 24,
         "h": 1
       },
@@ -3398,7 +3398,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 191,
+        "y": 194,
         "w": 8,
         "h": 8
       },
@@ -3459,7 +3459,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 191,
+        "y": 194,
         "w": 8,
         "h": 8
       },
@@ -3520,7 +3520,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 191,
+        "y": 194,
         "w": 8,
         "h": 8
       },
@@ -3581,7 +3581,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 199,
+        "y": 202,
         "w": 8,
         "h": 8
       },
@@ -3651,7 +3651,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 199,
+        "y": 202,
         "w": 8,
         "h": 8
       },
@@ -3739,7 +3739,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 199,
+        "y": 202,
         "w": 8,
         "h": 8
       },
@@ -3801,7 +3801,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 207,
+        "y": 210,
         "w": 8,
         "h": 8
       },
@@ -3862,7 +3862,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 207,
+        "y": 210,
         "w": 8,
         "h": 8
       },
@@ -3941,7 +3941,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 207,
+        "y": 210,
         "w": 8,
         "h": 8
       },
@@ -4002,7 +4002,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 215,
+        "y": 218,
         "w": 12,
         "h": 8
       },
@@ -4081,7 +4081,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 215,
+        "y": 218,
         "w": 6,
         "h": 8
       },
@@ -4142,7 +4142,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 18,
-        "y": 215,
+        "y": 218,
         "w": 6,
         "h": 8
       },
@@ -4212,7 +4212,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 223,
+        "y": 226,
         "w": 24,
         "h": 8
       },

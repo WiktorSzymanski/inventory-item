@@ -237,7 +237,7 @@ class BuildRunsDashboard(unittest.TestCase):
 
     def test_carries_every_live_panel(self):
         live = [p for s in spec.SECTIONS for p in s.panels if p.targets]
-        self.assertEqual(len(self.panels), len(live) + len(runs.RUNWIDE.panels))
+        self.assertEqual(len(self.panels), len(live) + len(runs.POOLED.panels))
 
 
 class ClipsToTheSelectedRun(unittest.TestCase):
@@ -259,9 +259,8 @@ class ClipsToTheSelectedRun(unittest.TestCase):
 
     @classmethod
     def clipped(cls):
-        """Every panel except the run-wide summary, which is @-pinned instead (see RUNWIDE)."""
-        titles = {p.title for p in runs.RUNWIDE.panels}
-        return [p for p in cls.panels if p["title"] not in titles]
+        """Every panel, with no exception: the dashboard has no @-pinned query left in it."""
+        return cls.panels
 
     def test_every_target_is_clipped(self):
         for panel in self.clipped():
@@ -295,7 +294,9 @@ class ClipsToTheSelectedRun(unittest.TestCase):
 
     @staticmethod
     def original(title, legend):
-        for section in spec.SECTIONS:
+        # POOLED first: the pooled publish-lag panel is declared in runs.py, not spec.py, but
+        # is rewritten by the same pick() and must round-trip the same way.
+        for section in [runs.POOLED] + spec.SECTIONS:
             for panel in section.panels:
                 if panel.title != title:
                     continue
@@ -306,14 +307,14 @@ class ClipsToTheSelectedRun(unittest.TestCase):
 
 
 
-class RunWideSummary(unittest.TestCase):
-    """One number per quantile for the whole run, rather than a curve of per-minute quantiles.
+class PooledPublishLag(unittest.TestCase):
+    """Publish lag with every event type in ONE histogram, which the per-type panel is not.
 
-    The mechanism is the `@` modifier read in ANCHOR time: the panels sit in the anchor window
-    and every selector carries `offset $run`, so `@ ANCHOR_EPOCH` lands on the run's real t0 and
-    `@ $end` on its real end. The difference of those two bucket vectors is the run's whole
-    histogram over the same `windows.full` window k6/bench/dump.py records into dump.json --
-    which is the only reason a number read here can be quoted next to a number from there.
+    Quantiles do not aggregate: the p95 of each event type separately says nothing about the
+    p95 over all of them, and the largest of the per-type curves is not it either. The pooling
+    has to happen before histogram_quantile is applied -- which is what leaving `eventType` out
+    of the `by` clause does. dump.json only ever splits publish lag by eventType, so nothing
+    else in the project draws the pooled figure.
     """
 
     @classmethod
@@ -322,23 +323,26 @@ class RunWideSummary(unittest.TestCase):
         cls.sample = runs.Run("TO-1_capacity_W-base_20260812T140542Z", "TO-1", "TO", "W-base",
                               1786543581, 1786547987)
         cls.dash = runs.build_runs([cls.sample])
-        titles = {p.title for p in runs.RUNWIDE.panels}
+        titles = {p.title for p in runs.POOLED.panels}
         cls.panels = [p for p in cls.dash["panels"] if p.get("title") in titles]
 
-    def test_the_pinned_instants_resolve_to_the_runs_real_window(self):
-        """The arithmetic the whole panel rests on. `offset` is anchor-minus-start and the
-        marker's `end_at` is anchor-plus-length, so both `@`s land inside the run itself."""
-        end_at = runs.ANCHOR_EPOCH + self.sample.seconds
-        self.assertEqual(runs.ANCHOR_EPOCH - self.sample.offset, self.sample.start)
-        self.assertEqual(end_at - self.sample.offset, self.sample.end)
+    def targets(self):
+        for panel in self.panels:
+            for target in panel["targets"]:
+                yield panel["title"], target
 
-    def test_panel_is_present_and_is_a_stat(self):
-        self.assertEqual(len(self.panels), len(runs.RUNWIDE.panels))
+    def test_panel_is_present_and_is_a_curve(self):
+        self.assertEqual(len(self.panels), len(runs.POOLED.panels))
         for panel in self.panels:
             with self.subTest(panel=panel["title"]):
-                self.assertEqual(panel["type"], "stat")
+                self.assertEqual(panel["type"], "timeseries")
                 self.assertEqual(panel["fieldConfig"]["defaults"]["unit"], "s")
-                self.assertEqual(panel["options"]["reduceOptions"]["calcs"], ["lastNotNull"])
+
+    def test_it_is_the_first_panel_under_the_header(self):
+        """It is the reason to open this dashboard on a finished run; burying it under the
+        HTTP section would leave the per-type curves as the first publish lag anyone sees."""
+        ordered = [p for p in self.dash["panels"] if p["type"] not in ("row", "text")]
+        self.assertEqual(ordered[0]["title"], runs.POOLED.panels[0].title)
 
     def test_the_three_quantiles_are_p50_p95_p99(self):
         for panel in self.panels:
@@ -346,63 +350,35 @@ class RunWideSummary(unittest.TestCase):
                 self.assertEqual([t["legendFormat"] for t in panel["targets"]],
                                  ["p50", "p95", "p99"])
 
-    def test_targets_are_not_clipped(self):
-        """CLIP gates on time(), which is the anchor instant -- always past $end. Applied here
-        it would blank the panel outright, and the @-pinned query needs no clipping anyway."""
-        for panel in self.panels:
-            for target in panel["targets"]:
-                with self.subTest(panel=panel["title"]):
-                    self.assertNotIn("and on()", target["expr"])
-                    self.assertFalse(target["expr"].endswith(runs.CLIP))
+    def test_buckets_are_pooled_before_the_quantile(self):
+        """The whole point: `by (le)` and nothing else. `by (le, eventType)` would silently
+        turn this into a second copy of the per-type panel."""
+        for title, target in self.targets():
+            with self.subTest(panel=title):
+                self.assertIn("by (le)", target["expr"])
+                self.assertNotIn("eventType", target["expr"])
 
-    def test_the_t0_vector_reads_only_this_runs_own_samples(self):
-        """The archive is many runs in one series with no staleness marker at the seam, so a
-        plain read at t0 falls back up to 5 minutes -- into the PREVIOUS run -- for any series
-        this run has not emitted yet. Subtracting that gives a negative bucket vector and a
-        plausible wrong number. See the RUNWIDE comment in runs.py."""
-        for panel in self.panels:
-            for target in panel["targets"]:
-                with self.subTest(panel=panel["title"]):
-                    self.assertIn(f"last_over_time(", target["expr"])
-                    self.assertIn(f"[{runs.T0_LOOKBACK}]", target["expr"])
-                    # ...on the t0 vector only: the end vector sits deep inside the run.
-                    self.assertEqual(target["expr"].count("last_over_time("), 1)
+    def test_it_reads_the_same_metric_as_the_per_type_panel(self):
+        """Same samples, different grouping -- so the two panels are readable against each
+        other, and a p50 above the per-type p50s means the mix moved, not the metric."""
+        for title, target in self.targets():
+            with self.subTest(panel=title):
+                self.assertIn("publish_lag_seconds_bucket", target["expr"])
 
-    def test_every_selector_is_offset(self):
-        # Three selectors per target: the end vector, the t0 vector, and the `or` fallback.
-        for panel in self.panels:
-            for target in panel["targets"]:
-                with self.subTest(panel=panel["title"]):
-                    self.assertEqual(target["expr"].count(OFF), 3)
-
-    def test_both_endpoints_are_pinned(self):
-        for panel in self.panels:
-            for target in panel["targets"]:
-                with self.subTest(panel=panel["title"]):
-                    self.assertEqual(target["expr"].count("@ $end"), 2)
-                    self.assertEqual(target["expr"].count(f"@ {runs.ANCHOR_EPOCH}"), 1)
-
-    def test_t0_is_a_literal_anchor_not_start(self):
-        """`start()` would follow the time picker: drag the range and the panel silently starts
-        measuring from somewhere else. The anchor is a constant, so the window cannot move."""
-        for panel in self.panels:
-            for target in panel["targets"]:
-                with self.subTest(panel=panel["title"]):
-                    self.assertNotIn("start()", target["expr"])
-
-    def test_expressions_round_trip_minus_the_offsets(self):
-        spec_exprs = {t.legend: t.expr for p in runs.RUNWIDE.panels for t in p.targets}
-        for panel in self.panels:
-            for target in panel["targets"]:
-                with self.subTest(panel=panel["title"]):
-                    self.assertEqual(target["expr"].replace(OFF, ""),
-                                     spec_exprs[target["legendFormat"]])
+    def test_it_is_offset_and_clipped_like_every_other_curve(self):
+        """Nothing in the expression is replay-specific, so it takes the ordinary rewrite: one
+        offset on its single selector, and CLIP so it stops at the selected run's end rather
+        than drawing the warm-up of whichever run the campaign recorded next."""
+        for title, target in self.targets():
+            with self.subTest(panel=title):
+                self.assertEqual(target["expr"].count(OFF), 1)
+                self.assertTrue(target["expr"].endswith(runs.CLIP), target["expr"])
 
     def test_it_is_replay_only(self):
-        """It is spelled with $run and $end, which the live dashboard does not declare -- and a
-        run in progress has no end to measure to."""
+        """Declared in runs.py, so the live dashboard does not carry it. Nothing in the query
+        prevents it from being moved into spec.py -- this is placement, not a constraint."""
         live_titles = {p.title for s in spec.SECTIONS for p in s.panels}
-        for panel in runs.RUNWIDE.panels:
+        for panel in runs.POOLED.panels:
             with self.subTest(panel=panel.title):
                 self.assertNotIn(panel.title, live_titles)
 
