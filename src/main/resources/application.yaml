@@ -218,6 +218,16 @@ management:
       # bucketing artefact. Matches the ES branches exactly: 1ms to 10m.
       minimum-expected-value:
         order.e2e.time: 1ms
+        # state_load_time had no floor of its own, so it inherited Micrometer's 1ms default
+        # Timer minimum and le=0.001 became its FIRST bucket — every sample landed inside it,
+        # and histogram_quantile interpolates the first bucket linearly from 0, so the panel
+        # reported a constant q x 1ms (p50 500us, p95 950us) regardless of real latency.
+        # 1us rather than 10us because the `replay` phase is in-memory handler dispatch and
+        # can sit below 10us, which would reproduce the same artefact one decade down.
+        # Measured cost: 68 -> 113 buckets per series.
+        # Floor ONLY. The 30s default ceiling stays: capping it would clamp a slow cold
+        # replay into +Inf and recreate the order.e2e.time artefact described above.
+        state_load_time: 1us
       maximum-expected-value:
         publish.lag: 10m
         order.e2e.time: 10m
