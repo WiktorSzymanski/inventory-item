@@ -13,6 +13,8 @@ import org.springframework.modulith.events.support.PersistentApplicationEventMul
 import java.time.Instant
 import org.springframework.transaction.event.TransactionPhase
 import org.springframework.transaction.event.TransactionalApplicationListener
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.util.function.Supplier
 
 /**
@@ -28,11 +30,18 @@ import java.util.function.Supplier
  *
  * The parent's storePublications() and getEventToPersist() are private so their one-liner logic
  * is replicated here inline.
+ *
+ * This is also the only place in the codebase that writes `event_publication` rows, which makes it
+ * the only place that can signal [OutboxNotifyCoalescer] — see [signalAfterCommit]. `notifierSupplier`
+ * is lazy for the same reason the other three are: resolving it for a framework event with no
+ * AFTER_COMMIT listener attached would force the coalescer, and the standalone JDBC connection its
+ * flush loop opens, into existence part-way through context startup.
  */
 class PollingOnlyEventMulticaster(
     registrySupplier: Supplier<EventPublicationRegistry>,
     private val repositorySupplier: Supplier<EventPublicationRepository>,
     environmentSupplier: Supplier<Environment>,
+    private val notifierSupplier: Supplier<OutboxNotifyCoalescer>,
 ) : PersistentApplicationEventMulticaster(registrySupplier, environmentSupplier) {
 
     @Suppress("UNCHECKED_CAST")
@@ -57,6 +66,7 @@ class PollingOnlyEventMulticaster(
                     TargetEventPublication.of(eventToPersist, PublicationTargetIdentifier.of(listener.listenerId), now)
                 )
             }
+            signalAfterCommit()
         }
 
         // Invoke only non-AFTER_COMMIT listeners immediately (framework events, BEFORE_COMMIT, etc.)
@@ -69,5 +79,31 @@ class PollingOnlyEventMulticaster(
                 listener.onApplicationEvent(event)
             }
         }
+    }
+
+    /**
+     * Signals [OutboxNotifyCoalescer] only once this transaction has actually committed — never
+     * from `beforeCommit`, and never unconditionally. A transaction that rolls back (an optimistic
+     * lock conflict on `inventory_state`, which this branch's own runs show is not rare) must never
+     * raise a wake-up for a row that does not exist; registering on `afterCommit` makes that
+     * impossible by construction rather than relying on `pg_notify`'s own queued-in-the-transaction
+     * behaviour, which this class no longer calls at all.
+     *
+     * No per-transaction dedupe marker, unlike the eager-call design this replaces: [OutboxNotifyCoalescer.signal]
+     * is an idempotent, lock-free flag write, so registering it once per event (up to six times for
+     * one order) costs nothing worth guarding against — the marker existed there to avoid repeat
+     * JDBC round trips, and there are none here to avoid.
+     */
+    private fun signalAfterCommit() {
+        val notifier = notifierSupplier.get()
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            notifier.signal()
+            return
+        }
+        TransactionSynchronizationManager.registerSynchronization(
+            object : TransactionSynchronization {
+                override fun afterCommit() = notifier.signal()
+            },
+        )
     }
 }

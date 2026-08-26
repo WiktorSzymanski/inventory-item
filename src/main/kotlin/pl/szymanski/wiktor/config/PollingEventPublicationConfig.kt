@@ -45,12 +45,13 @@ class PollingEventPublicationConfig {
             }
 
             override fun postProcessBeanFactory(beanFactory: ConfigurableListableBeanFactory) {
-                // All three suppliers are lazy: the beans they wrap are not yet instantiated at
+                // All four suppliers are lazy: the beans they wrap are not yet instantiated at
                 // this point in the context lifecycle.
                 val multicaster = PollingOnlyEventMulticaster(
                     { beanFactory.getBean(EventPublicationRegistry::class.java) },
                     { beanFactory.getBean(EventPublicationRepository::class.java) },
                     { beanFactory.getBean(Environment::class.java) },
+                    { beanFactory.getBean(OutboxNotifyCoalescer::class.java) },
                 )
                 multicaster.setBeanFactory(beanFactory)
 

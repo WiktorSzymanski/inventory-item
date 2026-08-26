@@ -1,0 +1,30 @@
+-- One coalesced NOTIFY per flush tick, raised from application code, replacing V2's per-ROW
+-- trigger.
+--
+-- V2 fired `AFTER INSERT ... FOR EACH ROW`, inside the writer's own transaction. Postgres has to
+-- deliver notifications in commit order, and it does not know a transaction's commit order until
+-- that transaction has finished committing, so it holds one process-wide exclusive lock across the
+-- commit-and-fsync of every transaction that has a pending NOTIFY -- serializing those commits
+-- against each other and defeating group commit. That lock is taken once per COMMIT, not once per
+-- pg_notify() call inside it, which is why merely reducing calls-per-transaction would not have
+-- been enough: TO-1-2's V9->V10 cut notifications per order 5x (one per outbox row down to one per
+-- transaction) and its capacity runs barely moved -- dropped-iteration ratio 8.28% -> 8.11%,
+-- backlog 40,523 -> 40,030 -- because it was still one notify-bearing transaction per order either
+-- way.
+--
+-- OutboxNotifyCoalescer now raises `SELECT pg_notify('event_publication_notify', '')` from a
+-- single background thread on a fixed tick (app.outbox-notify.coalesce-interval-ms, default 20ms),
+-- not from the order's own transaction. Signalling is a plain in-memory flag write with no query
+-- and no lock, so it costs the write path nothing; the flush collapses however many orders
+-- committed in one tick into ONE notify-bearing transaction, capping the async-notify lock's
+-- acquisition rate at 1000/coalesce-interval-ms, flat, independent of order rate. See
+-- OutboxNotifyCoalescer's KDoc for the full argument, including why the coarser wake-up is safe:
+-- PostgresNotificationListener already collapses any number of notifications into one drain pass,
+-- EventDrainLoop pages by seq/xact_id rather than by notify payload, and IncompleteEventRepublisher
+-- sweeps anything a flush drops.
+--
+-- The payload is gone, as it was under TO-1-2's V10: a per-tick message cannot be a publication id
+-- (the tick covers many), nothing here reads it, and the drain already reads event_publication's
+-- seq/xact_id columns instead.
+DROP TRIGGER IF EXISTS trg_event_publication_notify ON event_publication;
+DROP FUNCTION IF EXISTS notify_event_publication_inserted();

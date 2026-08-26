@@ -7,7 +7,8 @@ spring:
     password: ${DB_PASSWORD:inventory}
     driver-class-name: org.postgresql.Driver
     hikari:
-      # The pg-notify LISTEN session uses its own dedicated connection, not one from this pool.
+      # The pg-notify LISTEN session AND OutboxNotifyCoalescer's flush session each use their own
+      # dedicated connection, not one from this pool.
       maximum-pool-size: ${DB_MAX_CONNECTIONS:50}  # max open DB connections in the pool
   flyway:
     url: ${DB_JDBC_URL:jdbc:postgresql://localhost:5432/inventory}
@@ -77,6 +78,19 @@ app:
   event-delivery:
     threads: ${EVENT_DELIVERY_THREADS:20}                 # workers delivering a page; caps deliveries in flight
     batch-size: ${EVENT_DELIVERY_BATCH_SIZE:1000}         # publications per drain page; bounds a large backlog's fetch
+  outbox-notify:
+    # How often OutboxNotifyCoalescer's background thread checks for pending outbox work and, if
+    # there is any, raises ONE `pg_notify`. Replaces V2's per-INSERT trigger, which ran inside the
+    # writer's own transaction and forced every order's commit through Postgres's process-wide
+    # async-notify lock — see OutboxNotifyCoalescer's KDoc and V10's migration comment for the full
+    # argument (dbos.dev/blog/postgres-listen-notify-scalability describes the same mechanism).
+    #
+    # This is the knob that trades notify latency for lock-contention relief: a signal can wait up
+    # to this many ms before becoming a NOTIFY, and however many orders commit inside one window
+    # collapse into ONE notify-bearing transaction. 20ms keeps that added latency well under
+    # EVENT_DELIVERY's own page-fetch cost while capping notify-bearing commits at 50/s flat,
+    # regardless of order rate — down from one per order under the trigger.
+    coalesce-interval-ms: ${OUTBOX_NOTIFY_COALESCE_INTERVAL_MS:20}
   outbox-purge:
     # Deletes delivered publications so event_publication stops growing without bound. See
     # OutboxPurger — a delivered row has served the outbox guarantee and keeping it forever cost

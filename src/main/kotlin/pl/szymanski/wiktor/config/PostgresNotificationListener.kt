@@ -12,16 +12,17 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
 
 /**
- * Primary delivery path: LISTENs on the channel fed by the V2 trigger and uses each
- * notification purely as a wake-up for [EventDrainLoop], which reads and delivers the
+ * Primary delivery path: LISTENs on the channel fed by [OutboxNotifyCoalescer]'s flush loop and
+ * uses each notification purely as a wake-up for [EventDrainLoop], which reads and delivers the
  * outbox in bounded pages.
  *
- * The notification's payload — the publication id — is deliberately ignored. This branch used
- * to deliver that one row immediately, one executor task per NOTIFY, which is an open loop: a
- * commit burst became a delivery burst with nothing throttling it. Here a burst collapses
- * into a single drain pass and deliveries in flight never exceed the pool width. The V2
- * trigger and the schema are unchanged, so the id is still sent; only this side stops reading
- * it.
+ * As of V10, notifications on this channel are coalesced — one per flush tick, not one per
+ * `event_publication` row (V2's trigger) or one per order (an intermediate design this branch
+ * never ran). There is no payload for the same reason there never really needed to be one for
+ * this side: this branch used to deliver a notified row immediately, one executor task per
+ * NOTIFY, which is an open loop — a commit burst became a delivery burst with nothing throttling
+ * it. Here a burst, coalesced or not, collapses into a single drain pass and deliveries in flight
+ * never exceed the pool width.
  *
  * Uses its own standalone JDBC connection rather than borrowing one from HikariCP, so the
  * pool keeps its full size and its maxLifetime/leak detection never touch the long-lived
