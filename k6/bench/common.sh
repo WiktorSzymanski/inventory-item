@@ -16,8 +16,9 @@ DB_SVC="${DB_SVC:-postgres}"
 # Which scrape job carries this variant's app metrics, and which port its /actuator lives on.
 #
 # Variants listed here give actuator its own connector via `management.server.port`, so that a
-# saturated request pool cannot starve the scrape: on fix-A's capacity run the target was lost
-# for 23.2 minutes starting three minutes after in-flight HTTP pinned at the 99-thread cap.
+# saturated request pool cannot starve the scrape: on fix-A's capacity run of 2026-08-25 -- taken
+# BEFORE it had the port, and INVALID on `scrape_up` because of it -- the target was lost for 23.2
+# minutes starting three minutes after in-flight HTTP pinned at the 99-thread cap.
 # Prometheus scrapes them under `inventory-mgmt` (monitoring/prometheus/prometheus.yml), and the
 # health check has to follow because /actuator moves to that port wholesale.
 #
@@ -25,7 +26,7 @@ DB_SVC="${DB_SVC:-postgres}"
 # cannot see. Add a variant here in the same change that adds the port to its branch, and delete
 # the whole block once every variant has one -- it exists only to let the two kinds coexist.
 case "${VARIANT:-}" in
-    TO-2-fix-B)
+    TO-2-fix-A|TO-2-fix-B)
         PROM_JOB="${PROM_JOB:-inventory-mgmt}"
         MGMT_PORT="${MGMT_PORT:-8090}"
         ;;
