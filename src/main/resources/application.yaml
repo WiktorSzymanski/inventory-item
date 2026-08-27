@@ -91,6 +91,7 @@ management:
         state_load_time: true
         state_persist_time: true
         inventory.optimistic.retry.duration: true
+        inventory.opt.catchup.duration: true
         order.e2e.time: true
         saga.lifetime: true
       # order.e2e.time bounds are pinned explicitly — and must stay identical on every
@@ -111,6 +112,11 @@ management:
         # Floor ONLY. The 30s default ceiling stays: capping it would clamp a slow cold
         # replay into +Inf and recreate the order.e2e.time artefact described above.
         state_load_time: 1us
+        # Same trap as state_load_time above, and the repair is faster still: an empty probe is a
+        # single Caffeine lookup plus one JDBC round trip that returns no rows, well under 1ms, so
+        # without a floor every "noop" sample would land in le=0.001 and the panel would report a
+        # flat q x 1ms no matter what the applied repairs actually cost.
+        inventory.opt.catchup.duration: 1us
       maximum-expected-value:
         projection.lag: 10m
         order.e2e.time: 10m

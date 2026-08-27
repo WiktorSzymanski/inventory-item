@@ -6,6 +6,7 @@ import com.github.benmanes.caffeine.cache.Caffeine
 import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.Timer
 import org.axonframework.eventsourcing.EventSourcedAggregate
 import org.axonframework.eventsourcing.EventSourcingRepository
 import org.axonframework.eventsourcing.NoSnapshotTriggerDefinition
@@ -76,7 +77,7 @@ class PessimisticCachingRepository<T : Any>(
     private val aggregateType: Class<T>,
     private val snapshotTriggerDefinition: SnapshotTriggerDefinition,
     private val objectMapper: ObjectMapper,
-    meterRegistry: MeterRegistry,
+    private val meterRegistry: MeterRegistry,
     cacheProperties: CacheProperties,
 ) : EventSourcingRepository<T>(builder), ConfirmedStateSource {
 
@@ -111,6 +112,42 @@ class PessimisticCachingRepository<T : Any>(
     // the multi-replica story rests on. Counted so the two are separable.
     private val catchupFailed = meterRegistry.counter("inventory.opt.catchup.failed")
     private val catchupEvents = DistributionSummary.builder("inventory.opt.catchup.events").register(meterRegistry)
+
+    /**
+     * How long the cache repair takes — the work sitting between the conflict and the retry, timed as
+     * one operation: the delta read, the deep copy, the replay onto it, and the merge back.
+     *
+     * Tagged by outcome because [catchUp] fires on EVERY rollback and usually finds nothing: the
+     * empty probe and a real replay are the same call site and differ by orders of magnitude, so a
+     * pooled histogram would report the probe as its median and hide the replay entirely.
+     *
+     * This does not duplicate the `state_load_time{phase=events|replay}` samples the storage-engine
+     * wrapper already emits for the delta read. Those are the store round trip; this is the whole
+     * repair, and the gap between them is what the repair costs beyond reading.
+     */
+    private fun catchupTimer(outcome: String) =
+        Timer.builder("inventory.opt.catchup.duration").tag("outcome", outcome).register(meterRegistry)
+
+    private val catchupApplied = catchupTimer("applied")
+    private val catchupNoop = catchupTimer("noop")
+    private val catchupFailedTimer = catchupTimer("failed")
+
+    /**
+     * What a cache hit pays in place of a store round trip: the Jackson deep copy plus the
+     * reconstruct, which together replace snapshot-read + tail-fetch + replay.
+     *
+     * Deliberately a PHASE of `state_load_time` rather than a metric of its own. The question it
+     * exists to answer is how the copy compares to the replay it removed, and as a phase it lands on
+     * the same panel, the same axis and the same 1us histogram floor as `replay` and `total`. On a
+     * branch with no confirmed-state cache the series simply never appears.
+     *
+     * Lazy because the tag comes from `aggregateModel()`, which is not resolvable while the
+     * repository is still under construction.
+     */
+    private val copyTimer: Timer by lazy {
+        Timer.builder("state_load_time").tag("phase", "copy").tag("aggregate", aggregateModel().type())
+            .register(meterRegistry)
+    }
     // Deliberately NOT CaffeineCacheMetrics: its `cache.*` meter names have collided with the
     // hand-rolled hit/miss counters above in the past, and queries.promql is byte-shared with ES-2.
     private val evictedCounter = meterRegistry.counter("inventory.opt.cache.evicted")
@@ -151,9 +188,14 @@ class PessimisticCachingRepository<T : Any>(
         // never produce a wrong snapshot — whereas prepareTrigger would hand out a ZEROED counter per
         // command and stop the threshold from ever being reached, silently disabling snapshotting.
         val trigger = snapshotTriggerDefinition.reconfigure(aggregateType, cached.trigger)
+        // Everything the hit path does instead of touching the store — see [copyTimer]. The
+        // reconfigure above is excluded deliberately: it is bookkeeping on the snapshot counter, not
+        // part of materialising state, and folding it in would flatter the comparison.
+        val copySample = Timer.start(meterRegistry)
         val aggregate = EventSourcedAggregate.reconstruct(
             deepCopy(cached.root), aggregateModel(), cached.sequence, cached.deleted, eventStore, trigger,
         )
+        copySample.stop(copyTimer)
         validateOnLoad(aggregate, expectedVersion)
         registerCacheHooks(cached.sequence, aggregate)
         return aggregate
@@ -200,6 +242,11 @@ class PessimisticCachingRepository<T : Any>(
      * cold-replays from the store, which is authoritative.
      */
     private fun catchUp(id: String, baseSequence: Long) {
+        val sample = Timer.start(meterRegistry)
+        // Starts as the common case and is promoted only where the work actually happened, so the
+        // early returns below (no entry, empty delta, no version) fall through the finally as "noop"
+        // without each needing to say so.
+        var outcome = catchupNoop
         try {
             val current = confirmed.getIfPresent(id) ?: return
             val delta = eventStore.readEvents(id, current.sequence + 1)
@@ -218,14 +265,18 @@ class PessimisticCachingRepository<T : Any>(
                 confirmed.asMap().merge(id, entry) { old, candidate -> if (candidate.sequence > old.sequence) candidate else old }
                 catchupCounter.increment()
                 catchupEvents.record((newSequence - current.sequence).toDouble())
+                outcome = catchupApplied
             }
         } catch (e: Exception) {
+            outcome = catchupFailedTimer
             // Non-destructive: leave the cache as-is; the committing command's afterCommit keeps it fresh.
             // WARN, not DEBUG: the root logger is at INFO, so a DEBUG line here was never emitted and
             // this failure was completely silent. See the counter's declaration for why it matters.
             catchupFailed.increment()
             log.warn("[PES] delta catch-up FAILED for {} (base={}) — cache may now be stale, " +
                 "commands on this aggregate will conflict until a later rollback repairs it", id, baseSequence, e)
+        } finally {
+            sample.stop(outcome)
         }
     }
 

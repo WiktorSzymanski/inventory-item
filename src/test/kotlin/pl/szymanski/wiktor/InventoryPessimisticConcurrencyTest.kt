@@ -120,6 +120,21 @@ class InventoryPessimisticConcurrencyTest {
         // threshold of 30 no snapshot would ever be written — the cache must carry the live trigger.
         assertThat(awaitSnapshot(itemId)).`as`("snapshots still triggered while serving from cache").isTrue()
 
+        // What a cache hit costs in place of a store round trip. Recorded as a phase of
+        // state_load_time so it reads on the same axis as the `replay` and `total` phases the store
+        // path emits — the whole point being to compare the copy against the replay it replaces.
+        val copies = meterRegistry.find("state_load_time").tag("phase", "copy")
+            .tag("aggregate", "InventoryItem").timer()
+        assertThat(copies).`as`("cache hits record a copy phase").isNotNull
+        assertThat(copies!!.count())
+            .`as`("one copy sample per cache hit, and this run is served from cache")
+            .isGreaterThan(0L)
+        assertThat(copies.totalTime(TimeUnit.NANOSECONDS)).`as`("copies take non-zero time").isGreaterThan(0.0)
+        // Contention here produces far more empty probes than repairs; both must be timed, apart.
+        assertThat(catchupDurationCount("noop") + catchupDurationCount("applied"))
+            .`as`("every rollback's repair attempt was timed")
+            .isGreaterThan(0L)
+
         println(
             "[OPT-IT] stock=$initialStock attempts=$concurrentReserves reserved=$reserved failed=$failed " +
                 "rejected=${rejected.get()} head=$head retries=$retries cacheSeq=${inventoryItemRepository.cachedSequence(itemId)}",
@@ -144,6 +159,7 @@ class InventoryPessimisticConcurrencyTest {
 
         val catchupsBefore = meterRegistry.get("inventory.opt.catchup").counter().count()
         val failedBefore = meterRegistry.get("inventory.opt.catchup.failed").counter().count()
+        val appliedBefore = catchupDurationCount("applied")
 
         // Stand in for the command that wins the race (another thread here, another node in a
         // multi-replica run): append straight to the store at the sequence our cached aggregate will
@@ -165,7 +181,24 @@ class InventoryPessimisticConcurrencyTest {
         assertThat(inventoryItemRepository.cachedSequence(itemId))
             .`as`("cache advanced past the foreign append and the retry")
             .isEqualTo(seqBefore + 2)
+
+        // The repair is the work sitting between the conflict and the retry, so it is timed as one
+        // operation. Tagged by outcome because an empty probe and a real replay are the same call
+        // and differ by orders of magnitude: pooled, the median would describe the probe.
+        assertThat(catchupDurationCount("applied") - appliedBefore)
+            .`as`("the repair that advanced the cache was timed under outcome=applied")
+            .isGreaterThanOrEqualTo(1L)
+        assertThat(catchupDurationTotalNanos("applied"))
+            .`as`("a timed repair records a non-zero duration")
+            .isGreaterThan(0.0)
     }
+
+    private fun catchupDurationCount(outcome: String): Long =
+        meterRegistry.find("inventory.opt.catchup.duration").tag("outcome", outcome).timer()?.count() ?: 0L
+
+    private fun catchupDurationTotalNanos(outcome: String): Double =
+        meterRegistry.find("inventory.opt.catchup.duration").tag("outcome", outcome)
+            .timer()?.totalTime(TimeUnit.NANOSECONDS) ?: 0.0
 
     /**
      * The one test that can catch a broken [pl.szymanski.wiktor.config.CacheFedSnapshotter].
