@@ -26,7 +26,7 @@
         "name": "run",
         "label": "Run",
         "type": "custom",
-        "query": "ES-1 \u00b7 W-base \u00b7 0822-1510 : 809351s, ES-1 \u00b7 W-base \u00b7 0822-2319 : 780031s, ES-2 \u00b7 W-base \u00b7 0822-1630 : 804585s, ES-2 \u00b7 W-base \u00b7 0823-0037 : 775331s, ES-4 \u00b7 W-base \u00b7 0822-1749 : 799802s, ES-4 \u00b7 W-base \u00b7 0823-0140 : 771556s, TO-1 \u00b7 W-base \u00b7 0822-0955 : 828259s, TO-1 \u00b7 W-base \u00b7 0822-1908 : 795107s, TO-2 \u00b7 W-base \u00b7 0822-1111 : 823689s, TO-2 \u00b7 W-base \u00b7 0822-2011 : 791338s, TO-3 \u00b7 W-base \u00b7 0822-1232 : 818875s, TO-3 \u00b7 W-base \u00b7 0822-2113 : 787571s, TO-4 \u00b7 W-base \u00b7 0822-1351 : 814119s, TO-4 \u00b7 W-base \u00b7 0822-2216 : 783804s",
+        "query": "ES-1 \u00b7 W-base \u00b7 0822-1510 : 809351s, ES-1 \u00b7 W-base \u00b7 0822-2319 : 780031s, ES-2 \u00b7 W-base \u00b7 0827-0330 : 419349s, ES-4 \u00b7 W-base \u00b7 0827-0437 : 415342s, TO-2-fix-A \u00b7 W-base \u00b7 0825-2356 : 518618s, TO-2-fix-A \u00b7 W-base \u00b7 0826-0330 : 505761s, TO-2-fix-A-2 \u00b7 W-base \u00b7 0826-2307 : 435170s, TO-2-fix-A-2 \u00b7 W-base \u00b7 0827-0119 : 427226s",
         "options": [
           {
             "selected": true,
@@ -40,63 +40,33 @@
           },
           {
             "selected": false,
-            "text": "ES-2 \u00b7 W-base \u00b7 0822-1630",
-            "value": "804585s"
+            "text": "ES-2 \u00b7 W-base \u00b7 0827-0330",
+            "value": "419349s"
           },
           {
             "selected": false,
-            "text": "ES-2 \u00b7 W-base \u00b7 0823-0037",
-            "value": "775331s"
+            "text": "ES-4 \u00b7 W-base \u00b7 0827-0437",
+            "value": "415342s"
           },
           {
             "selected": false,
-            "text": "ES-4 \u00b7 W-base \u00b7 0822-1749",
-            "value": "799802s"
+            "text": "TO-2-fix-A \u00b7 W-base \u00b7 0825-2356",
+            "value": "518618s"
           },
           {
             "selected": false,
-            "text": "ES-4 \u00b7 W-base \u00b7 0823-0140",
-            "value": "771556s"
+            "text": "TO-2-fix-A \u00b7 W-base \u00b7 0826-0330",
+            "value": "505761s"
           },
           {
             "selected": false,
-            "text": "TO-1 \u00b7 W-base \u00b7 0822-0955",
-            "value": "828259s"
+            "text": "TO-2-fix-A-2 \u00b7 W-base \u00b7 0826-2307",
+            "value": "435170s"
           },
           {
             "selected": false,
-            "text": "TO-1 \u00b7 W-base \u00b7 0822-1908",
-            "value": "795107s"
-          },
-          {
-            "selected": false,
-            "text": "TO-2 \u00b7 W-base \u00b7 0822-1111",
-            "value": "823689s"
-          },
-          {
-            "selected": false,
-            "text": "TO-2 \u00b7 W-base \u00b7 0822-2011",
-            "value": "791338s"
-          },
-          {
-            "selected": false,
-            "text": "TO-3 \u00b7 W-base \u00b7 0822-1232",
-            "value": "818875s"
-          },
-          {
-            "selected": false,
-            "text": "TO-3 \u00b7 W-base \u00b7 0822-2113",
-            "value": "787571s"
-          },
-          {
-            "selected": false,
-            "text": "TO-4 \u00b7 W-base \u00b7 0822-1351",
-            "value": "814119s"
-          },
-          {
-            "selected": false,
-            "text": "TO-4 \u00b7 W-base \u00b7 0822-2216",
-            "value": "783804s"
+            "text": "TO-2-fix-A-2 \u00b7 W-base \u00b7 0827-0119",
+            "value": "427226s"
           }
         ],
         "current": {
@@ -213,7 +183,7 @@
   },
   "panels": [
     {
-      "id": 64,
+      "id": 65,
       "type": "text",
       "title": "Selected run",
       "gridPos": {
@@ -1304,7 +1274,7 @@
     },
     {
       "id": 19,
-      "title": "State load time by phase \u2014 p50 / p95",
+      "title": "State load time by aggregate and phase \u2014 p50 / p95",
       "description": "",
       "type": "timeseries",
       "gridPos": {
@@ -1357,8 +1327,8 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.5, sum(rate(state_load_time_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, phase))) and on() (vector(time()) < vector($end))",
-          "legendFormat": "{{phase}} p50",
+          "expr": "(histogram_quantile(0.5, sum(rate(state_load_time_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, phase, aggregate))) and on() (vector(time()) < vector($end))",
+          "legendFormat": "{{aggregate}} \u00b7 {{phase}} p50",
           "refId": "A"
         },
         {
@@ -1366,8 +1336,8 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, phase))) and on() (vector(time()) < vector($end))",
-          "legendFormat": "{{phase}} p95",
+          "expr": "(histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, phase, aggregate))) and on() (vector(time()) < vector($end))",
+          "legendFormat": "{{aggregate}} \u00b7 {{phase}} p95",
           "refId": "B"
         }
       ]
@@ -1690,12 +1660,82 @@
     },
     {
       "id": 24,
-      "title": "Outbox backlog (TO family)",
+      "title": "Cache catch-up duration by outcome \u2014 p50 / p95",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
         "y": 103,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-replay"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-replay"
+          },
+          "expr": "(histogram_quantile(0.5, sum(rate(inventory_opt_catchup_duration_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, outcome))) and on() (vector(time()) < vector($end))",
+          "legendFormat": "{{outcome}} p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-replay"
+          },
+          "expr": "(histogram_quantile(0.95, sum(rate(inventory_opt_catchup_duration_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, outcome))) and on() (vector(time()) < vector($end))",
+          "legendFormat": "{{outcome}} p95",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "title": "Outbox backlog (TO family)",
+      "description": "",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 111,
         "w": 12,
         "h": 8
       },
@@ -1750,13 +1790,13 @@
       ]
     },
     {
-      "id": 25,
+      "id": 26,
       "title": "Outbox write time \u2014 p50 / p95 (TO family)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 103,
+        "y": 111,
         "w": 12,
         "h": 8
       },
@@ -1820,13 +1860,13 @@
       ]
     },
     {
-      "id": 26,
+      "id": 27,
       "title": "Executor pools \u2014 threads & queue",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 111,
+        "y": 119,
         "w": 12,
         "h": 8
       },
@@ -1899,13 +1939,13 @@
       ]
     },
     {
-      "id": 27,
+      "id": 28,
       "title": "Saga outcome \u2014 completed vs failed (ES family)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 119,
+        "y": 127,
         "w": 24,
         "h": 8
       },
@@ -1969,26 +2009,26 @@
       ]
     },
     {
-      "id": 28,
+      "id": 29,
       "type": "row",
       "title": "JVM",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 127,
+        "y": 135,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 29,
+      "id": 30,
       "title": "Heap memory",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 128,
+        "y": 136,
         "w": 12,
         "h": 8
       },
@@ -2061,13 +2101,13 @@
       ]
     },
     {
-      "id": 30,
+      "id": 31,
       "title": "Non-heap memory by pool",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 128,
+        "y": 136,
         "w": 12,
         "h": 8
       },
@@ -2122,13 +2162,13 @@
       ]
     },
     {
-      "id": 31,
+      "id": 32,
       "title": "CPU",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 136,
+        "y": 144,
         "w": 12,
         "h": 8
       },
@@ -2193,13 +2233,13 @@
       ]
     },
     {
-      "id": 32,
+      "id": 33,
       "title": "GC pause duration \u2014 avg / max",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 136,
+        "y": 144,
         "w": 12,
         "h": 8
       },
@@ -2263,13 +2303,13 @@
       ]
     },
     {
-      "id": 33,
+      "id": 34,
       "title": "JVM threads",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 144,
+        "y": 152,
         "w": 8,
         "h": 8
       },
@@ -2342,13 +2382,13 @@
       ]
     },
     {
-      "id": 34,
+      "id": 35,
       "title": "Loaded classes",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 144,
+        "y": 152,
         "w": 8,
         "h": 8
       },
@@ -2403,13 +2443,13 @@
       ]
     },
     {
-      "id": 35,
+      "id": 36,
       "title": "Process uptime",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 144,
+        "y": 152,
         "w": 8,
         "h": 8
       },
@@ -2464,13 +2504,13 @@
       ]
     },
     {
-      "id": 36,
+      "id": 37,
       "title": "System load vs CPU cores",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 152,
+        "y": 160,
         "w": 8,
         "h": 8
       },
@@ -2534,13 +2574,13 @@
       ]
     },
     {
-      "id": 37,
+      "id": 38,
       "title": "Threads by state",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 152,
+        "y": 160,
         "w": 8,
         "h": 8
       },
@@ -2595,13 +2635,13 @@
       ]
     },
     {
-      "id": 38,
+      "id": 39,
       "title": "In-flight HTTP requests",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 152,
+        "y": 160,
         "w": 8,
         "h": 8
       },
@@ -2656,13 +2696,13 @@
       ]
     },
     {
-      "id": 39,
+      "id": 40,
       "title": "GC allocation & promotion rate",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 160,
+        "y": 168,
         "w": 8,
         "h": 8
       },
@@ -2726,13 +2766,13 @@
       ]
     },
     {
-      "id": 40,
+      "id": 41,
       "title": "GC overhead",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 160,
+        "y": 168,
         "w": 8,
         "h": 8
       },
@@ -2788,13 +2828,13 @@
       ]
     },
     {
-      "id": 41,
+      "id": 42,
       "title": "Live data after GC",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 160,
+        "y": 168,
         "w": 8,
         "h": 8
       },
@@ -2858,13 +2898,13 @@
       ]
     },
     {
-      "id": 42,
+      "id": 43,
       "title": "Log events by level",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 168,
+        "y": 176,
         "w": 12,
         "h": 8
       },
@@ -2919,13 +2959,13 @@
       ]
     },
     {
-      "id": 43,
+      "id": 44,
       "title": "Spring Data repository invocations (top 10)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 168,
+        "y": 176,
         "w": 12,
         "h": 8
       },
@@ -2980,26 +3020,26 @@
       ]
     },
     {
-      "id": 44,
+      "id": 45,
       "type": "row",
       "title": "Spring pools",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 176,
+        "y": 184,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 45,
+      "id": 46,
       "title": "HikariCP connections",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 177,
+        "y": 185,
         "w": 8,
         "h": 8
       },
@@ -3072,13 +3112,13 @@
       ]
     },
     {
-      "id": 46,
+      "id": 47,
       "title": "HikariCP \u2014 acquire & usage time",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 177,
+        "y": 185,
         "w": 8,
         "h": 8
       },
@@ -3160,13 +3200,13 @@
       ]
     },
     {
-      "id": 47,
+      "id": 48,
       "title": "HikariCP \u2014 connection timeouts",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 177,
+        "y": 185,
         "w": 8,
         "h": 8
       },
@@ -3221,13 +3261,13 @@
       ]
     },
     {
-      "id": 48,
+      "id": 49,
       "title": "Busy threads by pool (TO & ES)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 185,
+        "y": 193,
         "w": 12,
         "h": 8
       },
@@ -3300,13 +3340,13 @@
       ]
     },
     {
-      "id": 49,
+      "id": 50,
       "title": "Connections in use by pool (TO & ES)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 185,
+        "y": 193,
         "w": 12,
         "h": 8
       },
@@ -3379,26 +3419,26 @@
       ]
     },
     {
-      "id": 50,
+      "id": 51,
       "type": "row",
       "title": "PostgreSQL",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 193,
+        "y": 201,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 51,
+      "id": 52,
       "title": "Database size",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 194,
+        "y": 202,
         "w": 8,
         "h": 8
       },
@@ -3453,13 +3493,13 @@
       ]
     },
     {
-      "id": 52,
+      "id": 53,
       "title": "WAL size",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 194,
+        "y": 202,
         "w": 8,
         "h": 8
       },
@@ -3514,13 +3554,13 @@
       ]
     },
     {
-      "id": 53,
+      "id": 54,
       "title": "Active connections by state",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 194,
+        "y": 202,
         "w": 8,
         "h": 8
       },
@@ -3575,13 +3615,13 @@
       ]
     },
     {
-      "id": 54,
+      "id": 55,
       "title": "Transaction rate",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 202,
+        "y": 210,
         "w": 8,
         "h": 8
       },
@@ -3645,13 +3685,13 @@
       ]
     },
     {
-      "id": 55,
+      "id": 56,
       "title": "Tuple operations rate",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 202,
+        "y": 210,
         "w": 8,
         "h": 8
       },
@@ -3733,13 +3773,13 @@
       ]
     },
     {
-      "id": 56,
+      "id": 57,
       "title": "Buffer cache hit ratio",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 202,
+        "y": 210,
         "w": 8,
         "h": 8
       },
@@ -3795,13 +3835,13 @@
       ]
     },
     {
-      "id": 57,
+      "id": 58,
       "title": "Live rows by table",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 210,
+        "y": 218,
         "w": 8,
         "h": 8
       },
@@ -3856,13 +3896,13 @@
       ]
     },
     {
-      "id": 58,
+      "id": 59,
       "title": "Per-table write rate",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 210,
+        "y": 218,
         "w": 8,
         "h": 8
       },
@@ -3935,13 +3975,13 @@
       ]
     },
     {
-      "id": 59,
+      "id": 60,
       "title": "Locks by mode",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 210,
+        "y": 218,
         "w": 8,
         "h": 8
       },
@@ -3996,13 +4036,13 @@
       ]
     },
     {
-      "id": 60,
+      "id": 61,
       "title": "Checkpoint activity",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 218,
+        "y": 226,
         "w": 12,
         "h": 8
       },
@@ -4075,13 +4115,13 @@
       ]
     },
     {
-      "id": 61,
+      "id": 62,
       "title": "Container CPU",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 218,
+        "y": 226,
         "w": 6,
         "h": 8
       },
@@ -4136,13 +4176,13 @@
       ]
     },
     {
-      "id": 62,
+      "id": 63,
       "title": "Container memory",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 18,
-        "y": 218,
+        "y": 226,
         "w": 6,
         "h": 8
       },
@@ -4206,13 +4246,13 @@
       ]
     },
     {
-      "id": 63,
+      "id": 64,
       "title": "Container network I/O",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 226,
+        "y": 234,
         "w": 24,
         "h": 8
       },

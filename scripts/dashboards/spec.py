@@ -142,11 +142,23 @@ SECTIONS = [
                      Target("{{eventType}} p95", _q(0.95, "publish_lag_seconds_bucket", "le, eventType")),
                      Target("{{eventType}} p99", _q(0.99, "publish_lag_seconds_bucket", "le, eventType"))],
         ),
+        # Split by aggregate as well as phase, because two unrelated populations land in these
+        # buckets: OrderAggregate is loaded from the store once per order and InventoryItem once per
+        # line, and neither carried a label to tell them apart. A branch that caches InventoryItem
+        # therefore does not move this panel's p50 so much as change which population the p50
+        # describes — ES-4 reads as "1-event Order load", ES-2 as "snapshot + tail InventoryItem
+        # load", and comparing the two numbers compares different work.
+        # A run archived before the tag existed still resolves: those buckets carry no `aggregate`
+        # label, so the grouping yields one series per phase exactly as it did before.
+        # aggregate="unknown" is a delta read that identified no aggregate — the cache-repair probe,
+        # not a load. See TimedEventStorageEngine on the ES branches.
         Panel(
-            title="State load time by phase — p50 / p95",
+            title="State load time by aggregate and phase — p50 / p95",
             unit="s", w=12,
-            targets=[Target("{{phase}} p50", _q(0.50, "state_load_time_seconds_bucket", "le, phase")),
-                     Target("{{phase}} p95", _q(0.95, "state_load_time_seconds_bucket", "le, phase"))],
+            targets=[Target("{{aggregate}} · {{phase}} p50",
+                            _q(0.50, "state_load_time_seconds_bucket", "le, phase, aggregate")),
+                     Target("{{aggregate}} · {{phase}} p95",
+                            _q(0.95, "state_load_time_seconds_bucket", "le, phase, aggregate"))],
         ),
         # Committed only, so the series means what it meant before the outcome tag existed and a
         # replayed pre-tag run still resolves (those buckets carry no outcome label, and !="conflict"
@@ -183,6 +195,19 @@ SECTIONS = [
             targets=[Target("hit", 'sum(rate(inventory_opt_cache_hit_total{job="$job"}[1m]))'),
                      Target("miss", 'sum(rate(inventory_opt_cache_miss_total{job="$job"}[1m]))'),
                      Target("catch-up", 'sum(rate(inventory_opt_catchup_total{job="$job"}[1m]))')],
+        ),
+        # The cache repair, which runs between a conflict and its retry. Split by outcome because the
+        # probe fires on EVERY rollback and usually finds nothing — pooled, "noop" is the median and
+        # the replay it is there to measure disappears. Read `applied` against the `copy` phase on the
+        # state-load panel: together they are what a load costs on a branch that caches state, the way
+        # snapshot+events+replay are on one that does not.
+        # Full width: this section tiles in 24-wide rows and every other panel here is a half, so a
+        # 23rd half-width panel would leave a hole. test_spec enforces it.
+        Panel(
+            title="Cache catch-up duration by outcome — p50 / p95",
+            unit="s", w=24,
+            targets=[Target("{{outcome}} p50", _q(0.50, "inventory_opt_catchup_duration_seconds_bucket", "le, outcome")),
+                     Target("{{outcome}} p95", _q(0.95, "inventory_opt_catchup_duration_seconds_bucket", "le, outcome"))],
         ),
         Panel(
             title="Outbox backlog (TO family)",
