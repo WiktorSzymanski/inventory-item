@@ -3849,12 +3849,143 @@
     },
     {
       "id": 59,
-      "title": "Checkpoint activity",
+      "title": "NOTIFY commit-serialization lock",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
         "y": 214,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "pg_notify_commit_lock_waiting",
+          "legendFormat": "waiting",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "pg_notify_commit_lock_held",
+          "legendFormat": "held",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 60,
+      "title": "Backends by wait event",
+      "description": "",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 214,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "pg_wait_backends",
+          "legendFormat": "{{type}}/{{event}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 61,
+      "title": "Checkpoint activity",
+      "description": "",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 222,
         "w": 12,
         "h": 8
       },
@@ -3927,13 +4058,13 @@
       ]
     },
     {
-      "id": 60,
+      "id": 62,
       "title": "Container CPU",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 214,
+        "y": 222,
         "w": 6,
         "h": 8
       },
@@ -3988,13 +4119,13 @@
       ]
     },
     {
-      "id": 61,
+      "id": 63,
       "title": "Container memory",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 18,
-        "y": 214,
+        "y": 222,
         "w": 6,
         "h": 8
       },
@@ -4058,13 +4189,13 @@
       ]
     },
     {
-      "id": 62,
+      "id": 64,
       "title": "Container network I/O",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 222,
+        "y": 230,
         "w": 24,
         "h": 8
       },

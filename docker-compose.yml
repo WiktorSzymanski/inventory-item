@@ -150,10 +150,20 @@ services:
 
 
   postgres-exporter:
+    # Pin v0.15.0. PG_EXPORTER_EXTEND_QUERY_PATH is marked DEPRECATED by this build -- it works
+    # here (verified: the custom gauges track pg_locks exactly at 10/30/60 concurrent notifiers,
+    # and all 320 default metric lines still emit alongside them), but a later image could drop
+    # it silently. If this pin is ever bumped, re-verify pg_notify_commit_lock_waiting appears
+    # BEFORE trusting a run: its absence looks identical to "no contention".
     image: prometheuscommunity/postgres-exporter:v0.15.0
     container_name: postgres-exporter
     environment:
       DATA_SOURCE_NAME: "postgresql://inventory:inventory@postgres:5432/inventory?sslmode=disable"
+      PG_EXPORTER_EXTEND_QUERY_PATH: /queries.yaml
+    # Read once at exporter startup. Editing queries.yaml and reloading does NOTHING -- same trap
+    # as prometheus.yml. After any edit: docker compose up -d --force-recreate postgres-exporter.
+    volumes:
+      - ./monitoring/postgres-exporter/queries.yaml:/queries.yaml:ro
     ports:
       - "9187:9187"
     depends_on:

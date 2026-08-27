@@ -371,6 +371,27 @@ SECTIONS = [
                        Target("{{relname}} del", 'rate(pg_stat_user_tables_n_tup_del{schemaname="public"}[1m])')]),
         Panel(title="Locks by mode", unit="short", w=8,
               targets=[Target("{{mode}}", 'pg_locks_count{datname="$db"}')]),
+        # THE PANEL ABOVE CANNOT SHOW THE NOTIFY COMMIT LOCK, and the two below exist because of
+        # it. NOTIFY-in-transaction serialises commits on a SHARED object lock
+        # (locktype=object, classid=1262, objid=0, AccessExclusiveLock) held from pre-commit until
+        # after the commit's WAL fsync. Being shared, its pg_locks.database is 0, so the stock
+        # collector's `LEFT JOIN ON pg_database.oid = tmp2.database` drops it: measured, 39
+        # backends blocked while accessexclusivelock above read 0. Both series come from
+        # monitoring/postgres-exporter/queries.yaml -- see that file for the mechanism.
+        #
+        # No $db filter on either, deliberately: the lock is one per CLUSTER, not per database.
+        #
+        # These are gauges sampled at the 5s scrape, i.e. instantaneous queue depth. That is the
+        # right shape (during the TO-2-fix-A collapse the queue stood for 24 minutes), but never
+        # derive a rate from them and do not expect sub-scrape bursts to appear.
+        Panel(title="NOTIFY commit-serialization lock", unit="short", w=12,
+              targets=[Target("waiting", 'pg_notify_commit_lock_waiting'),
+                       Target("held", 'pg_notify_commit_lock_held')]),
+        # Corroborates the panel above without having to trust the classid: a backend blocked on
+        # that lock reports Lock/object. Unlike the pair above this query IS grouped, so its
+        # series legitimately VANISH when nothing waits -- read a gap here as zero, not as broken.
+        Panel(title="Backends by wait event", unit="short", w=12,
+              targets=[Target("{{type}}/{{event}}", 'pg_wait_backends')]),
         Panel(title="Checkpoint activity", unit="ops", w=12,
               targets=[Target("timed", "rate(pg_stat_bgwriter_checkpoints_timed_total[1m])"),
                        Target("requested", "rate(pg_stat_bgwriter_checkpoints_req_total[1m])"),
