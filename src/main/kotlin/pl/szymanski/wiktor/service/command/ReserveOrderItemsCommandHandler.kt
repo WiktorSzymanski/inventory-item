@@ -60,8 +60,19 @@ class ReserveOrderItemsCommandHandler(
 
     // Same name and tag as the per-line path, so the dashboards resolve unchanged — but ONE sample
     // per order here, where that path recorded one per line.
-    private val dbFetchTimer: Timer = Timer.builder("state_load_time")
+    //
+    // Split by {aggregate} because this handler loads two different things: the order row once, and
+    // the order's inventory rows once. Pooled into one histogram their p50 tracks the mix rather
+    // than the cost of either, and the ES branches — which tag the same metric with the Axon
+    // aggregate type — have nothing to line up against.
+    private val itemLoadTimer: Timer = Timer.builder("state_load_time")
         .tag("source", "db_fetch")
+        .tag("aggregate", "InventoryItem")
+        .register(meterRegistry)
+
+    private val orderLoadTimer: Timer = Timer.builder("state_load_time")
+        .tag("source", "db_fetch")
+        .tag("aggregate", "Order")
         .register(meterRegistry)
 
     private val appendSuccessCounter: Counter = meterRegistry.counter("inventory.append.success")
@@ -74,8 +85,13 @@ class ReserveOrderItemsCommandHandler(
         // Idempotency guard: OrderCreatedEvent may be re-delivered by the backup poller after a
         // crash. A previously confirmed/rejected order is skipped; a still-PENDING order (including
         // one whose prior attempt rolled back and is being retried) proceeds.
-        val order = orderRepo.findById(orderId)
-            .orElseThrow { NotFoundException("Order $orderId not found") }
+        // Timed before the guard below, and before the throw: a missing or already-settled order
+        // still cost a full round trip, and dropping those samples would fit the histogram to the
+        // orders that went on to do work.
+        val orderStartNs = System.nanoTime()
+        val found = orderRepo.findById(orderId)
+        orderLoadTimer.record(System.nanoTime() - orderStartNs, TimeUnit.NANOSECONDS)
+        val order = found.orElseThrow { NotFoundException("Order $orderId not found") }
         if (order.status != OrderStatus.PENDING) {
             log.info("[ORDER] skipping orderId={} already status={} correlationId={}", orderId, order.status, event.correlationId)
             return
@@ -87,7 +103,7 @@ class ReserveOrderItemsCommandHandler(
 
         val dbStartNs = System.nanoTime()
         val loaded = inventoryRepo.findAllById(itemIds).associateBy { it.id }
-        dbFetchTimer.record(System.nanoTime() - dbStartNs, TimeUnit.NANOSECONDS)
+        itemLoadTimer.record(System.nanoTime() - dbStartNs, TimeUnit.NANOSECONDS)
 
         val missing = itemIds.firstOrNull { it !in loaded }
         if (missing != null) {
