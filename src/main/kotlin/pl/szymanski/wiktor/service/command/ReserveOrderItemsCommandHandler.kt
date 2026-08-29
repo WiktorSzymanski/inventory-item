@@ -84,14 +84,34 @@ class ReserveOrderItemsCommandHandler(
         .tag("aggregate", "Order")
         .register(meterRegistry)
 
-    // An order served entirely from the cache issues no SELECT, and until this timer existed it
-    // recorded nothing at all — so state_load_time on this branch measured the miss path only and
-    // its p50 was not the same population as the uncached branches'. Every order now yields exactly
-    // one InventoryItem sample; {source} says whether it came from the cache or the database.
+    // The lookup loop, on EVERY order — not only on the orders it happened to serve whole. Firing
+    // it only when `misses` came back empty left the cache work of every mixed order unmeasured,
+    // and a mixed order is the common case at any hit rate that is not 0 or 1.
+    //
+    // One sample per order, like the other two arms: a single getIfPresent is ~100ns against a
+    // ~25ns System.nanoTime, so timing each key individually would spend a third of the
+    // measurement on the clock. ES-4 can time per load because a deep copy is tens of microseconds.
     private val cacheLoadTimer: Timer = Timer.builder("state_load_time")
         .tag("source", "cache")
         .tag("aggregate", "InventoryItem")
         .register(meterRegistry)
+
+    // Both arms together: what materialising this order's inventory actually cost. The analogue of
+    // ES-4's state_load_time{phase=load}, and it exists for the same reason — `cache` and
+    // `db_fetch` are disjoint populations over disjoint orders whose ratio moves with the hit rate,
+    // so neither one's p95 is the cost of a load on this branch. This is the series that is.
+    private val pooledLoadTimer: Timer = Timer.builder("state_load_time")
+        .tag("source", "load")
+        .tag("aggregate", "InventoryItem")
+        .register(meterRegistry)
+
+    // ES-4's meter names, deliberately: k6/bench/queries.promql and the "Aggregate cache" panel are
+    // shared across both families and read these two by name. Caffeine's own cache_gets_total,
+    // which CaffeineCacheMetrics still exports alongside these, describes the same lookups under a
+    // name nothing in the harness reads. Counted per DISTINCT item, so the hit rate does not move
+    // with ITEMS_PER_ORDER.
+    private val cacheHitCounter: Counter = meterRegistry.counter("inventory.opt.cache.hit")
+    private val cacheMissCounter: Counter = meterRegistry.counter("inventory.opt.cache.miss")
 
     private val appendSuccessCounter: Counter = meterRegistry.counter("inventory.append.success")
 
@@ -120,9 +140,7 @@ class ReserveOrderItemsCommandHandler(
         val itemIds = event.items.map { it.itemId }.distinct().sorted()
 
         // Cache first, per key, then ONE SELECT for whatever it missed. An order whose items are
-        // all cached issues no inventory read at all and skips the round trip entirely — it is
-        // still timed, under source=cache, so that it counts as a load rather than vanishing from
-        // the histogram; only the SELECT is priced as db_fetch.
+        // all cached issues no inventory read at all and skips the round trip entirely.
         val lookupStartNs = System.nanoTime()
         val loaded = HashMap<String, InventoryItem>(itemIds.size)
         val misses = ArrayList<String>(itemIds.size)
@@ -130,6 +148,9 @@ class ReserveOrderItemsCommandHandler(
             val hit = inventoryStateCache.getIfPresent(id)
             if (hit != null) loaded[id] = hit else misses += id
         }
+        cacheLoadTimer.record(System.nanoTime() - lookupStartNs, TimeUnit.NANOSECONDS)
+        cacheHitCounter.increment(loaded.size.toDouble())
+        cacheMissCounter.increment(misses.size.toDouble())
 
         if (misses.isNotEmpty()) {
             // db_fetch still times the SELECT and nothing else, so the series means exactly what it
@@ -137,9 +158,8 @@ class ReserveOrderItemsCommandHandler(
             val dbStartNs = System.nanoTime()
             inventoryRepo.findAllById(misses).forEach { loaded[it.id] = it }
             itemLoadTimer.record(System.nanoTime() - dbStartNs, TimeUnit.NANOSECONDS)
-        } else {
-            cacheLoadTimer.record(System.nanoTime() - lookupStartNs, TimeUnit.NANOSECONDS)
         }
+        pooledLoadTimer.record(System.nanoTime() - lookupStartNs, TimeUnit.NANOSECONDS)
 
         val missing = itemIds.firstOrNull { it !in loaded }
         if (missing != null) {

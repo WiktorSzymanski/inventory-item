@@ -50,17 +50,19 @@ class InventoryStateCacheTest {
     private val clock: Clock = Clock.systemUTC()
 
     private lateinit var cache: Cache<String, InventoryItem>
+    private lateinit var registry: SimpleMeterRegistry
     private lateinit var writeHandler: OrderWriteCommandHandler
     private lateinit var handler: ReserveOrderItemsCommandHandler
 
     @BeforeEach
     fun setUp() {
         cache = Caffeine.newBuilder().build()
+        registry = SimpleMeterRegistry()
         writeHandler = OrderWriteCommandHandler(
-            batchWriter, orderRepo, eventPublisher, cache, SimpleMeterRegistry(),
+            batchWriter, orderRepo, eventPublisher, cache, registry,
         )
         handler = ReserveOrderItemsCommandHandler(
-            inventoryRepo, orderRepo, writeHandler, cache, clock, SimpleMeterRegistry(),
+            inventoryRepo, orderRepo, writeHandler, cache, clock, registry,
         )
         every { orderRepo.findById("ORDER-1") } returns Optional.of(
             Order(orderId = "ORDER-1", userId = "USER-1", items = OrderItems(emptyList()), status = OrderStatus.PENDING)
@@ -82,6 +84,8 @@ class InventoryStateCacheTest {
         correlationId = UUID.randomUUID(),
         createdAt = Instant.EPOCH,
     )
+
+    private fun counted(name: String): Double = registry.find(name).counter()?.count() ?: 0.0
 
     private fun outcomeFor(vararg items: InventoryItem) = OrderReserveOutcome(
         confirmedOrder = Order(
@@ -168,6 +172,38 @@ class InventoryStateCacheTest {
 
         assertEquals(7L, cache.getIfPresent("ITEM-A")?.version)
         assertEquals(5, cache.getIfPresent("ITEM-A")?.availableQty)
+    }
+
+    // ---- what the cache reports ---------------------------------------------------------------
+
+    /**
+     * `inventory.opt.cache.hit` / `.miss` are ES-4's meter names, deliberately: `queries.promql`
+     * and the "Aggregate cache" dashboard panel are shared across the two families and read those
+     * two series by name. Caffeine's own `cache_gets_total{result}` describes the same lookups but
+     * is read by nothing in the harness.
+     */
+    @Test
+    fun `each item the cache serves counts a hit and each one it does not counts a miss`() {
+        cache.put("ITEM-A", item("ITEM-A"))
+        every { inventoryRepo.findAllById(any()) } answers {
+            firstArg<Iterable<String>>().map { item(it) }
+        }
+
+        handler.handle(event("ITEM-A" to 1, "ITEM-B" to 1, "ITEM-C" to 1))
+
+        assertEquals(1.0, counted("inventory.opt.cache.hit"))
+        assertEquals(2.0, counted("inventory.opt.cache.miss"))
+    }
+
+    /** The lookup is per distinct item, so the hit rate must not move with ITEMS_PER_ORDER. */
+    @Test
+    fun `two lines naming one item are a single lookup`() {
+        cache.put("ITEM-A", item("ITEM-A"))
+
+        handler.handle(event("ITEM-A" to 1, "ITEM-A" to 1))
+
+        assertEquals(1.0, counted("inventory.opt.cache.hit"))
+        assertEquals(0.0, counted("inventory.opt.cache.miss"))
     }
 
     // ---- the cache itself -------------------------------------------------------------------

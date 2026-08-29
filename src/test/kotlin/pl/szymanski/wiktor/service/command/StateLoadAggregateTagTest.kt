@@ -37,8 +37,17 @@ import java.util.UUID
  *
  * This branch adds the second half of the problem. An order served entirely from the cache issues
  * no SELECT, and recorded no sample at all — so `state_load_time` here described the miss path
- * only, and its p50 was not the same population as the uncached branches'. Every order now yields
- * exactly one InventoryItem sample; {source} says whether the database or the cache served it.
+ * only, and its p50 was not the same population as the uncached branches'.
+ *
+ * Three InventoryItem arms now, one order's worth of work each:
+ *
+ *  * `cache` — the lookup loop, on EVERY order. It used to fire only when the order was fully
+ *    cached, which left the cache work of every mixed order unmeasured.
+ *  * `db_fetch` — the SELECT for the misses, and nothing else. Unchanged, so it still means what
+ *    it meant before the cache existed.
+ *  * `load` — both arms together, the analogue of ES-4's `state_load_time{phase=load}`. `cache`
+ *    and `db_fetch` are disjoint populations whose ratio moves with the hit rate, so no percentile
+ *    over either one is what a load costs on this branch; this is the series that answers that.
  */
 class StateLoadAggregateTagTest {
 
@@ -139,9 +148,12 @@ class StateLoadAggregateTagTest {
         assertEquals(1L, loads("db_fetch", "Order"))
     }
 
-    /** A partial hit still issues one SELECT, so it is priced as db_fetch and not as a cache load. */
+    /**
+     * A partial hit pays for both arms, so it is sampled in both. Pricing it as `db_fetch` alone
+     * left the lookup that served the rest of the order out of every histogram.
+     */
     @Test
-    fun `an order with any miss is priced as a database fetch`() {
+    fun `an order with any miss times the cache lookup as well as the select`() {
         order()
         cached("item-1" to 10)
         stock("item-2" to 10)
@@ -149,7 +161,29 @@ class StateLoadAggregateTagTest {
         handler.handle(event("item-1" to 1, "item-2" to 1))
 
         assertEquals(1L, loads("db_fetch", "InventoryItem"))
-        assertEquals(0L, loads("cache", "InventoryItem"))
+        assertEquals(1L, loads("cache", "InventoryItem"))
+    }
+
+    /** The pooled arm is what a load costs here, whichever side of the cache served it. */
+    @Test
+    fun `a partially served order records one pooled load sample`() {
+        order()
+        cached("item-1" to 10)
+        stock("item-2" to 10)
+
+        handler.handle(event("item-1" to 1, "item-2" to 1))
+
+        assertEquals(1L, loads("load", "InventoryItem"))
+    }
+
+    @Test
+    fun `an order served entirely from the cache records one pooled load sample`() {
+        order()
+        cached("item-1" to 10)
+
+        handler.handle(event("item-1" to 1))
+
+        assertEquals(1L, loads("load", "InventoryItem"))
     }
 
     @Test
