@@ -72,14 +72,14 @@ class CacheFedSnapshotter(
             // SnapshotTriggerDefinition bean, so Axon applies it to OrderAggregate too and those
             // snapshots arrive here — they must never be served from the InventoryItem cache.
             if (source == null || source.cachedAggregateType != aggregateType) {
-                fromReplay.recordCallable(replayTask::run)
+                fromReplay.recordCallable { replay(replayTask) }
                 return@Runnable
             }
 
             val state = source.confirmedState(aggregateIdentifier)
             if (state == null) {
                 // Cold aggregate, evicted entry, or cache.enabled=false: fall back to the store.
-                fromReplay.recordCallable(replayTask::run)
+                fromReplay.recordCallable { replay(replayTask) }
                 return@Runnable
             }
             if (state.deleted) return@Runnable // matches AggregateSnapshotter returning null
@@ -93,4 +93,15 @@ class CacheFedSnapshotter(
             }
         }
     }
+
+    /**
+     * The stock task replays the aggregate out of the store, and this runs on the command thread at
+     * `onPrepareCommit` — inline, before the insert. Marking it keeps a snapshot replay out of
+     * `state_load_time`'s write-path series: it is real latency on that command, but it is not the
+     * cost of loading state to execute it, and pooled it would add a full replay to the write path
+     * every `snapshot.event-count` commands on an aggregate. It stays visible as `path=snapshot`, and
+     * as `inventory.opt.snapshot.duration{source=replay}`.
+     */
+    private fun replay(replayTask: Runnable) =
+        AggregateLoadPath.on(AggregateLoadPath.SNAPSHOT) { replayTask.run() }
 }

@@ -130,6 +130,21 @@ class InventoryPessimisticConcurrencyTest {
             .`as`("one copy sample per cache hit, and this run is served from cache")
             .isGreaterThan(0L)
         assertThat(copies.totalTime(TimeUnit.NANOSECONDS)).`as`("copies take non-zero time").isGreaterThan(0.0)
+
+        // The write path's whole state-load cost, hits and misses pooled — the series that answers
+        // "what does loading state cost before the append" without first knowing the hit rate. It is
+        // the envelope around `copy`, so it can never be the rarer of the two.
+        val loads = meterRegistry.find("state_load_time").tag("phase", "load")
+            .tag("aggregate", "InventoryItem").tag("path", "command").timer()
+        assertThat(loads).`as`("every write-path load is timed").isNotNull
+        assertThat(loads!!.count())
+            .`as`("one load sample per doLoadWithLock, covering the hit arm copy() also counted")
+            .isGreaterThanOrEqualTo(copies.count())
+        // The repair reads the store on the same thread, but only after the append already failed.
+        // Counting it as a write-path load is exactly the confusion the path tag exists to remove.
+        assertThat(meterRegistry.find("state_load_time").tag("phase", "load").tag("path", "repair").timer())
+            .`as`("a cache repair is never a write-path load")
+            .isNull()
         // Contention here produces far more empty probes than repairs; both must be timed, apart.
         assertThat(catchupDurationCount("noop") + catchupDurationCount("applied"))
             .`as`("every rollback's repair attempt was timed")

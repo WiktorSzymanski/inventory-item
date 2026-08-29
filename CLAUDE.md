@@ -306,7 +306,9 @@ mismatch, or `cache.enabled=false` it falls back to the stock replay task.
   `queries.promql` — that file is byte-shared with ES-2 and this change is ES-4-only, so read
   these from `/actuator/prometheus` or the Prometheus UI. The existing `state_load_time{phase}`
   series already captures the win with no harness edit: after warmup its sample **count** should
-  drop sharply, because the snapshotter's replay was most of what it was measuring.
+  drop sharply, because the snapshotter's replay was most of what it was measuring. The fallback
+  replay is tagged `path="snapshot"` there, so it no longer inflates the write path — see
+  `state_load_time` below.
 - **The failure mode is silent and the benchmark cannot catch it.** A wrong aggregate type name or
   sequence yields an unusable snapshot, and a cache that rarely evicts almost never performs the
   cold load that would read it back. `InventoryPessimisticConcurrencyTest.a cache-fed snapshot
@@ -317,6 +319,47 @@ mismatch, or `cache.enabled=false` it falls back to the stock replay task.
 replay. It is a property *of the copy-on-write cache* rather than generic Axon tuning, which is
 why it is defensible as an ES-4-only change — the other branches have no confirmed-state cache to
 read from. But any table sharing ES-3 and ES-4 snapshot or write-path numbers must say so.
+
+### Reading `state_load_time` on this branch
+
+The metric is recorded in `TimedEventStorageEngine`, which wraps the storage engine and therefore
+sees **every** store round trip with nothing in the call saying who asked. Three unrelated callers
+reach it here, so two tags are needed before any phase means what it looks like:
+
+- `{aggregate}` — `OrderAggregate` is loaded from the store once per order, `InventoryItem` once per
+  line and (on this branch) almost never, because the cache absorbs it. Without the tag one
+  histogram pools both, and the p50 silently changes meaning per branch rather than changing value.
+- `{path}` — `command` is the write path; `repair` is `PessimisticCachingRepository.catchUp` reading
+  the delta *after* the command's append already failed; `snapshot` is `CacheFedSnapshotter` falling
+  back to the stock replay task, which runs inline on the command thread at `onPrepareCommit`. Only
+  an empty repair probe was ever separable before (it identifies no aggregate and lands under
+  `aggregate="unknown"`); a repair that found events looked exactly like a cold miss.
+
+Phases, all of which carry both tags:
+
+| phase | what it measures |
+|---|---|
+| `load` | **the write path's whole state-load cost, before the append** — hits and misses pooled |
+| `copy` | the hit arm: Jackson deep copy + `reconstruct`, what replaces the store round trip |
+| `snapshot` / `events` / `replay` | the miss arm, decomposed: snapshot row read, tail fetch, in-memory replay |
+| `total` | the miss arm end to end, first I/O call to fully replayed |
+
+`load` is the one to read for "what does the write path pay to load state". `copy` and `total`
+describe the two arms and are disjoint populations over disjoint sets of commands, so neither one's
+percentile is that number and the ratio between them moves with the hit rate. `load` is recorded
+around the whole of `doLoadWithLock` (so it also covers `validateOnLoad` and, on a miss, the deep
+copy that seeds the cache); for `OrderAggregate`, which has no caching repository, the engine emits
+it directly from the store round trip. Exactly one of the two records per load.
+
+Only `path="command"` gets a `load` phase at all, so a query needs no path filter to be
+write-path-only — including `queries.promql`'s byte-shared `state_load` row, which picks the new
+phase up unchanged. For the other phases, filter with `path!="repair"` rather than `path="command"`:
+an absent label satisfies `!=`, so the same query also resolves on the other branches and on runs
+archived before the tag existed.
+
+`inventory_opt_catchup_duration_seconds{outcome}` is the whole repair (delta read, copy, replay,
+merge), and `path="repair"` on `state_load_time` is the store read inside it; the gap between them
+is what the repair costs beyond reading.
 
 ### Two traps that have caused real bugs
 

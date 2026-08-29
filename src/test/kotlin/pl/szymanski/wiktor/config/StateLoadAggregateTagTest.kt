@@ -9,8 +9,11 @@ import org.axonframework.eventhandling.TrackingToken
 import org.axonframework.eventsourcing.eventstore.DomainEventStream
 import org.axonframework.eventsourcing.eventstore.EventStorageEngine
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.Optional
+import java.util.concurrent.TimeUnit
 import java.util.stream.Stream
 
 /**
@@ -49,8 +52,10 @@ class StateLoadAggregateTagTest {
     private fun event(type: String, seq: Long) =
         GenericDomainEventMessage(type, "agg-1", seq, "payload-$seq")
 
-    private fun count(phase: String, aggregate: String): Long =
-        registry.find("state_load_time").tag("phase", phase).tag("aggregate", aggregate).timer()?.count() ?: 0L
+    private fun count(phase: String, aggregate: String, path: String = AggregateLoadPath.COMMAND): Long =
+        registry.find("state_load_time")
+            .tag("phase", phase).tag("aggregate", aggregate).tag("path", path)
+            .timer()?.count() ?: 0L
 
     /** Drives one aggregate load the way `AbstractEventStore` does: snapshot first, then the tail. */
     private fun load(engine: TimedEventStorageEngine, readSnapshotFirst: Boolean, firstSequenceNumber: Long = 0L) {
@@ -129,6 +134,111 @@ class StateLoadAggregateTagTest {
 
         assertEquals(1L, count("total", "InventoryItem"))
         assertEquals(0L, count("total", "unknown"))
+    }
+
+    /**
+     * The write path is the default, and it is the only path that gets a `load` phase: an aggregate
+     * loaded straight from the store has no repository envelope, so the round trip IS the load.
+     */
+    @Test
+    fun `a plain load is tagged path=command and carries a load phase equal to total`() {
+        val engine = TimedEventStorageEngine(
+            StubEngine(snapshot = null, events = listOf(event("OrderAggregate", 0))),
+            registry,
+        )
+
+        load(engine, readSnapshotFirst = true)
+
+        assertEquals(1L, count("load", "OrderAggregate"))
+        val load = registry.find("state_load_time").tag("phase", "load").timer()!!
+        val total = registry.find("state_load_time").tag("phase", "total").timer()!!
+        assertEquals(
+            total.totalTime(TimeUnit.NANOSECONDS), load.totalTime(TimeUnit.NANOSECONDS),
+            "load must be the same measurement as total, not a second reading of the clock",
+        )
+    }
+
+    /**
+     * The cache repair. It runs on the losing command's thread but only after its append failed, so
+     * it is the cost of the conflict and must not appear anywhere in the write path — including as a
+     * `load` phase, which would count the repair as if state had been loaded to execute a command.
+     */
+    @Test
+    fun `a repair-path read is tagged path=repair and emits no load phase`() {
+        val engine = TimedEventStorageEngine(
+            StubEngine(snapshot = null, events = listOf(event("InventoryItem", 31))),
+            registry,
+        )
+
+        AggregateLoadPath.on(AggregateLoadPath.REPAIR) {
+            load(engine, readSnapshotFirst = false, firstSequenceNumber = 31L)
+        }
+
+        listOf("events", "replay", "total").forEach {
+            assertEquals(1L, count(it, "InventoryItem", AggregateLoadPath.REPAIR), "phase=$it should be path=repair")
+            assertEquals(0L, count(it, "InventoryItem"), "phase=$it must not land on the command path")
+        }
+        assertEquals(0L, count("load", "InventoryItem", AggregateLoadPath.REPAIR))
+        assertEquals(0L, count("load", "InventoryItem"))
+    }
+
+    /**
+     * The snapshotter's fallback replay. It IS inline on the command thread before the insert, but it
+     * is not the load that command performed, and at a 30-event threshold pooling it would add a full
+     * replay to the write path on every 30th command.
+     */
+    @Test
+    fun `a snapshot-path replay is tagged path=snapshot and emits no load phase`() {
+        val engine = TimedEventStorageEngine(
+            StubEngine(snapshot = null, events = listOf(event("OrderAggregate", 0))),
+            registry,
+        )
+
+        AggregateLoadPath.on(AggregateLoadPath.SNAPSHOT) { load(engine, readSnapshotFirst = true) }
+
+        assertEquals(1L, count("total", "OrderAggregate", AggregateLoadPath.SNAPSHOT))
+        assertEquals(0L, count("total", "OrderAggregate"))
+        assertEquals(0L, count("load", "OrderAggregate", AggregateLoadPath.SNAPSHOT))
+    }
+
+    /**
+     * A caching repository times the whole load itself, over both arms. The store read is then only
+     * part of it, so the engine must stay quiet about `load` or the phase would hold two different
+     * measurements of the same population.
+     */
+    @Test
+    fun `an enveloped load leaves the load phase to the repository`() {
+        val engine = TimedEventStorageEngine(
+            StubEngine(snapshot = null, events = listOf(event("InventoryItem", 0))),
+            registry,
+        )
+
+        AggregateLoadPath.withEnvelope { load(engine, readSnapshotFirst = true) }
+
+        assertEquals(1L, count("total", "InventoryItem"), "the phases are still recorded")
+        assertEquals(0L, count("load", "InventoryItem"), "but the load phase belongs to the envelope")
+    }
+
+    /** A pooled thread must not carry a path or an envelope into its next task. */
+    @Test
+    fun `the path and envelope are restored after use`() {
+        assertEquals(AggregateLoadPath.COMMAND, AggregateLoadPath.current)
+        AggregateLoadPath.on(AggregateLoadPath.REPAIR) {
+            assertEquals(AggregateLoadPath.REPAIR, AggregateLoadPath.current)
+            AggregateLoadPath.on(AggregateLoadPath.SNAPSHOT) {
+                assertEquals(AggregateLoadPath.SNAPSHOT, AggregateLoadPath.current)
+            }
+            assertEquals(AggregateLoadPath.REPAIR, AggregateLoadPath.current)
+        }
+        assertEquals(AggregateLoadPath.COMMAND, AggregateLoadPath.current)
+
+        assertFalse(AggregateLoadPath.isEnveloped)
+        AggregateLoadPath.withEnvelope {
+            assertTrue(AggregateLoadPath.isEnveloped)
+            AggregateLoadPath.withEnvelope { assertTrue(AggregateLoadPath.isEnveloped) }
+            assertTrue(AggregateLoadPath.isEnveloped)
+        }
+        assertFalse(AggregateLoadPath.isEnveloped)
     }
 
     /** The deferred snapshot sample must not leak into the next load on the same thread. */

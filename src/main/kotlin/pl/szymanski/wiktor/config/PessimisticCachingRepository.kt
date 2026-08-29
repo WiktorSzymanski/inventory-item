@@ -57,6 +57,12 @@ import java.util.concurrent.Callable
  * fresh state. The cache itself never goes backwards — every write goes through a monotonic `merge`
  * — and never holds uncommitted state.
  *
+ * Metrics: `state_load_time{phase=load}` is the write path's whole state-load cost per command
+ * attempt, hits and misses pooled; `{phase=copy}` is what the hit arm pays in place of a store round
+ * trip, and the `{phase=snapshot|events|replay|total, path=command}` phases decompose the miss arm.
+ * The repair that follows a lost race is `inventory.opt.catchup.duration` and `path=repair`; it is
+ * not part of any of them.
+ *
  * Cache lifecycle:
  *  - load (hit)  -> deep-copy the confirmed root, reconstruct the aggregate at seq N (NO replay),
  *                   re-attaching the cached [org.axonframework.eventsourcing.SnapshotTrigger] so the
@@ -121,9 +127,11 @@ class PessimisticCachingRepository<T : Any>(
      * empty probe and a real replay are the same call site and differ by orders of magnitude, so a
      * pooled histogram would report the probe as its median and hide the replay entirely.
      *
-     * This does not duplicate the `state_load_time{phase=events|replay}` samples the storage-engine
-     * wrapper already emits for the delta read. Those are the store round trip; this is the whole
-     * repair, and the gap between them is what the repair costs beyond reading.
+     * This does not duplicate the `state_load_time{phase=events|replay,path=repair}` samples the
+     * storage-engine wrapper already emits for the delta read. Those are the store round trip; this
+     * is the whole repair, and the gap between them is what the repair costs beyond reading. They
+     * carry `path=repair` precisely so they stay out of the write-path load — see
+     * [AggregateLoadPath].
      */
     private fun catchupTimer(outcome: String) =
         Timer.builder("inventory.opt.catchup.duration").tag("outcome", outcome).register(meterRegistry)
@@ -141,11 +149,42 @@ class PessimisticCachingRepository<T : Any>(
      * the same panel, the same axis and the same 1us histogram floor as `replay` and `total`. On a
      * branch with no confirmed-state cache the series simply never appears.
      *
+     * It is the hit ARM of the load, not the load: [loadTimer] is what the write path actually pays.
+     *
      * Lazy because the tag comes from `aggregateModel()`, which is not resolvable while the
      * repository is still under construction.
      */
     private val copyTimer: Timer by lazy {
         Timer.builder("state_load_time").tag("phase", "copy").tag("aggregate", aggregateModel().type())
+            // Hard-coded rather than read from [AggregateLoadPath]: a cache hit only ever happens
+            // while executing a command. catchUp's deep copy is repair, and it is timed by
+            // inventory.opt.catchup.duration, not here.
+            .tag("path", AggregateLoadPath.COMMAND)
+            .register(meterRegistry)
+    }
+
+    /**
+     * What the write path pays to materialise this aggregate, end to end, before the command runs and
+     * the append happens — the whole of [doLoadWithLock], both arms.
+     *
+     * This is the number that the phase breakdown could not give. `copy` describes the hit arm and
+     * `total` the miss arm; they are disjoint populations on disjoint sets of commands, so no
+     * percentile over either one is the cost of loading state on this branch, and the ratio between
+     * them shifts with the hit rate. Pooling both here gives one series whose p95 is a real answer,
+     * with the two phases left to explain it.
+     *
+     * It also covers what neither phase does: [validateOnLoad], the hook registration, and — on a
+     * miss — [advance] deep-copying the just-loaded root to seed the cache, which is write-path work
+     * the store round trip does not include.
+     *
+     * Recorded in a `finally`, so a load that throws is counted rather than silently dropped. That
+     * pools a failed load with successful ones, which is the lesser error: loads fail here only when
+     * the store itself is unreachable (conflicts surface at append, not at load), whereas
+     * success-only sampling would quietly hide exactly the pathological case.
+     */
+    private val loadTimer: Timer by lazy {
+        Timer.builder("state_load_time").tag("phase", "load").tag("aggregate", aggregateModel().type())
+            .tag("path", AggregateLoadPath.COMMAND)
             .register(meterRegistry)
     }
     // Deliberately NOT CaffeineCacheMetrics: its `cache.*` meter names have collided with the
@@ -170,7 +209,22 @@ class PessimisticCachingRepository<T : Any>(
             .register(meterRegistry)
     }
 
+    /**
+     * Times the whole load as [loadTimer] and declares the envelope, so [TimedEventStorageEngine]
+     * knows not to emit its own `load` phase for the store read on the miss arm.
+     */
     override fun doLoadWithLock(aggregateIdentifier: String, expectedVersion: Long?): EventSourcedAggregate<T> {
+        val sample = Timer.start(meterRegistry)
+        try {
+            return AggregateLoadPath.withEnvelope { loadFromCacheOrStore(aggregateIdentifier, expectedVersion) }
+        } finally {
+            sample.stop(loadTimer)
+        }
+    }
+
+    // Not named `load`: AbstractRepository already has one, and hiding it silently would be worse
+    // than the compile error it actually causes.
+    private fun loadFromCacheOrStore(aggregateIdentifier: String, expectedVersion: Long?): EventSourcedAggregate<T> {
         val cached = if (cacheEnabled) confirmed.getIfPresent(aggregateIdentifier) else null
         if (cached == null) {
             missCounter.increment()
@@ -241,7 +295,12 @@ class PessimisticCachingRepository<T : Any>(
      * to avoid. An absent entry — expired, or never loaded — needs no repair: the next load misses and
      * cold-replays from the store, which is authoritative.
      */
-    private fun catchUp(id: String, baseSequence: Long) {
+    private fun catchUp(id: String, baseSequence: Long) =
+        // Everything below reads the store, so it must not be tagged as a write-path load: it runs
+        // after this command's append already failed. See [AggregateLoadPath].
+        AggregateLoadPath.on(AggregateLoadPath.REPAIR) { repair(id, baseSequence) }
+
+    private fun repair(id: String, baseSequence: Long) {
         val sample = Timer.start(meterRegistry)
         // Starts as the common case and is promoted only where the work actually happened, so the
         // early returns below (no entry, empty delta, no version) fall through the finally as "noop"
