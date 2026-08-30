@@ -46,6 +46,12 @@ services:
       DB_PASSWORD:         inventory
       AXON_JDBC_POOL_SIZE: "${AXON_JDBC_POOL_SIZE:-350}"
       API_REPLICAS:        "1"
+      # ES only (order-saga TrackingEventProcessor); ignored by the TO branches. Suite-wide
+      # by necessity -- run-suite.sh has no per-variant env hook and a compose default always
+      # SETS the variable, so vary it across passes:
+      #     AXON_SAGA_TOTAL_SEGMENTS=8 scripts/run-suite.sh --only ES-4
+      # Recorded in meta.json as saga_total_segments so runs stay distinguishable.
+      AXON_SAGA_TOTAL_SEGMENTS: "${AXON_SAGA_TOTAL_SEGMENTS:-60}"
       POOLING_INTERVAL:    "${POOLING_INTERVAL:-PT0.1S}"
       CACHE_TTL:           "${CACHE_TTL:-10m}"
       CACHE_MAXIMUM_SIZE:  "${CACHE_MAXIMUM_SIZE:-10000}"

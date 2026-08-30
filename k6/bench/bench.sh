@@ -403,6 +403,11 @@ meta = {
     "db_name": "$DB_NAME",
     "api_container_re": "${API_CONTAINER_RE:-}",
     "expected_replicas": 1,
+    # order-saga segment count actually in force. Not derivable from branch+commit:
+    # compose passes AXON_SAGA_TOTAL_SEGMENTS and application.yaml defaults it to 60,
+    # so two runs of the same commit can differ here. TO variants have no saga processor
+    # and the value is meaningless for them.
+    "saga_total_segments": int("${AXON_SAGA_TOTAL_SEGMENTS:-60}"),
     "k6_exit_code": int("$K6_EXIT"),
     "config": config,
     "steps": steps,
