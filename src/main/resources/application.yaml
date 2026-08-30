@@ -111,7 +111,12 @@ management:
         order.processing.time: true
         order.queue.wait: true
         order.e2e.time: true
-        order.retry.backoff.time: true   # accumulated backoff, one sample per retried order
+        order.retry.backoff.time: true   # accumulated backoff, one sample per retried STEP
+        # One sample per saga step. There is no TO-3 counterpart: an order is one unit of work
+        # there, so the only per-unit latency it can report is order.processing.time. Enabled as a
+        # histogram because the reserve and release steps have visibly different shapes — a release
+        # pays no reserveDelayMs — and a pooled mean would hide that.
+        saga.step.time: true
       # order.e2e.time bounds are pinned explicitly — and must stay identical on every
       # variant branch. Micrometer's default Timer max is 30s; declaring
       # maximum-expected-value for publish.lag alone left order.e2e.time on that default,

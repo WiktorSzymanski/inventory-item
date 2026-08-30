@@ -10,65 +10,109 @@ import org.springframework.dao.OptimisticLockingFailureException
 import org.springframework.dao.PessimisticLockingFailureException
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
-import org.springframework.modulith.events.ApplicationModuleListener
 import org.springframework.stereotype.Service
 import pl.szymanski.wiktor.domain.InventoryItem
 import pl.szymanski.wiktor.domain.Order
-import pl.szymanski.wiktor.domain.OrderCreatedEvent
+import pl.szymanski.wiktor.domain.OrderSaga
+import pl.szymanski.wiktor.domain.SagaStatus
 import pl.szymanski.wiktor.exception.InsufficientStockException
 import pl.szymanski.wiktor.exception.NotFoundException
 import pl.szymanski.wiktor.repository.InventoryRepository
 import pl.szymanski.wiktor.repository.OrderRepository
+import pl.szymanski.wiktor.repository.OrderSagaRepository
+import pl.szymanski.wiktor.service.command.CompleteOrderCommand
+import pl.szymanski.wiktor.service.command.CompleteOrderCommandHandler
 import pl.szymanski.wiktor.service.command.CreateInventoryItemCommandHandler
 import pl.szymanski.wiktor.service.command.CreateItemCommand
 import pl.szymanski.wiktor.service.command.CreateOrderCommand
 import pl.szymanski.wiktor.service.command.CreateOrderCommandHandler
 import pl.szymanski.wiktor.service.command.FailOrderCommand
 import pl.szymanski.wiktor.service.command.FailOrderCommandHandler
-import pl.szymanski.wiktor.service.command.ReserveOrderItemsCommandHandler
+import pl.szymanski.wiktor.service.command.FailReservationCommand
+import pl.szymanski.wiktor.service.command.FailReservationCommandHandler
+import pl.szymanski.wiktor.service.command.ReleaseReservationCommand
+import pl.szymanski.wiktor.service.command.ReleaseReservationCommandHandler
+import pl.szymanski.wiktor.service.command.ReserveOrderItemCommand
+import pl.szymanski.wiktor.service.command.ReserveOrderItemCommandHandler
+import java.time.Clock
+import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 
+/**
+ * Admission, and the execution of ONE saga step per call.
+ *
+ * The shape of this class is the same as TO-3's — accept on the HTTP thread, do the work on the
+ * order-worker pool, retry conflicts off-thread through [OrderRetryScheduler] — and the unit it
+ * applies that shape to is different. TO-3 runs an ORDER on the pool: one task reserves every line
+ * and either confirms or rejects. Here a task runs exactly one step, and which step that is comes
+ * from the saga row rather than from the caller. [OrderReservationSaga] does nothing but hand this
+ * an order id every time one of that order's events comes back through the outbox.
+ *
+ * **Why "advance" takes no step argument.** Reading the saga is the only way to know what the next
+ * step is, and it is the only reliable one: an event carries where the saga WAS, and by the time it
+ * is delivered — possibly twice, possibly after a restart — the saga may be somewhere else entirely.
+ * Deciding from the row means a redelivery re-runs the CURRENT step (which the cursor guard then
+ * makes a no-op) rather than resurrecting an old one, and it collapses all four of the saga's
+ * triggers into one code path.
+ */
 @Service
 class InventoryService(
     private val inventoryRepository: InventoryRepository,
     private val orderRepository: OrderRepository,
+    private val orderSagaRepository: OrderSagaRepository,
     private val createInventoryItemCommandHandler: CreateInventoryItemCommandHandler,
     private val createOrderCommandHandler: CreateOrderCommandHandler,
-    private val reserveOrderItemsCommandHandler: ReserveOrderItemsCommandHandler,
+    private val reserveOrderItemCommandHandler: ReserveOrderItemCommandHandler,
+    private val releaseReservationCommandHandler: ReleaseReservationCommandHandler,
+    private val failReservationCommandHandler: FailReservationCommandHandler,
+    private val completeOrderCommandHandler: CompleteOrderCommandHandler,
     private val failOrderCommandHandler: FailOrderCommandHandler,
     @Qualifier("orderWorkerExecutor") private val orderWorkerExecutor: TaskExecutor,
-    // The retry wait happens here instead of on the worker thread, and is backed by the SAME pool
-    // as orderWorkerExecutor above, so a retry resumes on an order-worker thread rather than on a
-    // lane of its own. The old path had an ObjectProvider<InventoryService> self-proxy in this
-    // slot, needed only so processOrder() went through the @Retryable interceptor; with the loop
-    // explicit, the proxy has nothing to do.
     private val retryScheduler: OrderRetryScheduler,
+    private val clock: Clock,
     private val meterRegistry: MeterRegistry,
 ) {
     private val log = LoggerFactory.getLogger(this::class.java)
 
-    // Admission timestamp handed from acceptOrder (HTTP thread) to the after-commit reservation
-    // trigger, keyed by orderId. Populated before the OrderCreatedEvent can be delivered, removed
-    // when the worker task is submitted. Absent only on backup-poller replay after a crash.
+    // Admission timestamp handed from acceptOrder (HTTP thread) to the first step's pickup, keyed by
+    // orderId. Only order.queue.wait uses it, and only once per order — every other span is measured
+    // from order_saga.started_at, which holds the same instant durably and therefore survives the
+    // hops this map cannot.
     private val acceptedAtByOrderId = ConcurrentHashMap<String, Long>()
 
-    private val processingTimer: Timer = meterRegistry.timer("order.processing.time")
     private val queueWaitTimer: Timer = meterRegistry.timer("order.queue.wait")
     private val optimisticRetryCounter: Counter = meterRegistry.counter("inventory.optimistic.retry")
     private val optimisticExhaustedCounter: Counter = meterRegistry.counter("inventory.optimistic.exhausted")
+    private val retryRejectedCounter: Counter = meterRegistry.counter("order.retry.rejected")
 
-    // The wait moved off the worker thread, so it can be priced. One
-    // sample per RETRIED order (orders that never conflict record nothing), covering the whole
-    // accumulated backoff rather than each individual wait.
+    // The saga row's own read, timed here because this is where it happens: once per step, feeding
+    // both the choice of step and the handler that runs it. `OrderSaga` has no counterpart on TO-3,
+    // which has no saga to load, nor on the ES branches, where the framework loads saga state.
+    private val sagaLoadTimer: Timer = Timer.builder("state_load_time")
+        .tag("source", "db_fetch")
+        .tag("aggregate", "OrderSaga")
+        .register(meterRegistry)
+
+    // ONE SAMPLE PER STEP, where TO-3 records one per order.
+    //
+    // The TO-3 span — first pickup of an order to its final outcome, backoff included — does not
+    // exist on this branch: an order is not processed by one task, it is processed by N tasks that
+    // do not know about each other and are separated by outbox round trips. What is preserved is
+    // the MEANING of the span, which is "worker-side latency of one unit of work including its
+    // retries"; the unit shrank from an order to a line. Divide by ITEMS_PER_ORDER before comparing
+    // it with TO-3's, and use order_e2e_time, which is unchanged, when what is wanted is the order.
+    private val processingTimer: Timer = meterRegistry.timer("order.processing.time")
+
+    // Same name as TO-3, but its `outcome` values changed with the unit: TO-3 tags the accumulated
+    // backoff of an ORDER `confirmed` or `rejected`, and what is retried here is a STEP, whose
+    // outcome is `applied` or `failed`. Nothing queries the tag today; the rename is so that
+    // something querying it later cannot read a step's success as an order's.
     private fun backoffTimer(outcome: String): Timer =
         meterRegistry.timer("order.retry.backoff.time", "outcome", outcome)
-
-    // The retry hop could not be scheduled, i.e. the pools are shutting down. Counted because the
-    // alternative disposition — losing the task — would leave the order PENDING with no signal.
-    private val retryRejectedCounter: Counter = meterRegistry.counter("order.retry.rejected")
 
     private fun e2eTimer(outcome: String): Timer =
         meterRegistry.timer("order.e2e.time", "outcome", outcome)
@@ -76,12 +120,36 @@ class InventoryService(
     private fun completedCounter(outcome: String, reason: String): Counter =
         meterRegistry.counter("orders.completed", "outcome", outcome, "reason", reason)
 
+    // The ES branch's saga metrics, by the same names and tags, so TO-3-Saga and ES-4 line up
+    // panel-for-panel. `saga.lifetime` is measured from admission to the saga's END, which is later
+    // than ES-4 measures it: there the saga ends when it SUBMITS the terminal command, here when
+    // that command has committed. The difference is one transaction and is worth knowing before
+    // reading the two histograms side by side.
+    private fun sagaCompletedCounter(outcome: String): Counter =
+        meterRegistry.counter("saga.completed", "outcome", outcome)
+
+    private fun sagaLifetimeTimer(outcome: String): Timer =
+        Timer.builder("saga.lifetime")
+            .tag("outcome", outcome)
+            .publishPercentileHistogram(true)
+            .maximumExpectedValue(Duration.ofMinutes(10))
+            .register(meterRegistry)
+
+    private fun sagaCommandFailedCounter(stage: String): Counter =
+        meterRegistry.counter("saga.command.failed", "stage", stage)
+
+    private fun sagaStepTimer(step: String, outcome: String): Timer =
+        meterRegistry.timer("saga.step.time", "step", step, "outcome", outcome)
+
     private fun rejectionReason(e: Exception): String = when (e) {
         is InsufficientStockException -> "insufficient_stock"
         is NotFoundException -> "not_found"
         is OptimisticLockingFailureException, is PessimisticLockingFailureException -> "optimistic_exhausted"
         else -> "other"
     }
+
+    private fun isConflict(e: Exception): Boolean =
+        e is OptimisticLockingFailureException || e is PessimisticLockingFailureException
 
     fun createItem(command: CreateItemCommand): InventoryItem =
         createInventoryItemCommandHandler.handle(command)
@@ -97,159 +165,286 @@ class InventoryService(
 
     fun acceptOrder(command: CreateOrderCommand): String {
         val orderId = UUID.randomUUID().toString()
-        // Record admission time before dispatch so it is available to the after-commit trigger,
-        // which may fire on another thread as soon as the admission transaction commits.
+        val acceptedAt = clock.instant()
+        // Recorded before dispatch so it is available to the first step, which may start on another
+        // thread the instant the admission transaction commits.
         acceptedAtByOrderId[orderId] = System.nanoTime()
         log.info("[ORDER] accepted orderId={} userId={} itemCount={} correlationId={}", orderId, command.userId, command.items.size, command.correlationId)
-        // Committed before the reservation is triggered, so the reservation and any concurrent
-        // status query always see the row. Publishes OrderCreatedEvent as part of the same tx.
-        createOrderCommandHandler.handle(orderId, command)
+        // Order, saga and OrderCreatedEvent commit together. The saga's first step is triggered by
+        // that event coming back through the outbox, not from here.
+        createOrderCommandHandler.handle(orderId, command, acceptedAt)
         return orderId
     }
 
     /**
-     * Reservation trigger: consumes OrderCreatedEvent after the admission transaction commits and
-     * hands the work to the unbounded worker pool (execute() never rejects, so there is no
-     * queue-full load shedding — matches the ES branches' unbounded async executors).
+     * Runs whatever step [orderId]'s saga is waiting for, off the calling thread.
+     *
+     * @param first true only for the `OrderCreatedEvent` trigger, which is the one delivery whose
+     *        wait since admission is queueing rather than saga progress.
+     * @return a future completing when the step reaches a terminal outcome — including after its
+     *         retries. [OrderReservationSaga] returns it to Spring Modulith, which completes the
+     *         triggering publication only when it completes, so a step that never ran leaves its
+     *         event to be redelivered instead of silently disappearing.
      */
-    @ApplicationModuleListener
-    fun onOrderCreated(event: OrderCreatedEvent) {
-        val acceptedAtNs = acceptedAtByOrderId.remove(event.orderId) ?: -1L
-        submit(OrderAttempt(event, acceptedAtNs, attempt = 0, firstPickupNs = -1L, backoffNs = 0L))
+    fun submitAdvance(orderId: String, correlationId: UUID, first: Boolean = false): CompletableFuture<Void> {
+        val future = CompletableFuture<Void>()
+        try {
+            orderWorkerExecutor.execute { advance(orderId, correlationId, first, future) }
+        } catch (e: RejectedExecutionException) {
+            // Only reachable at shutdown: the pool's DelayedWorkQueue is unbounded. Failing the
+            // future leaves the publication incomplete, so the republisher picks the step up after
+            // a restart — which is strictly better than completing it and stranding the order.
+            log.warn("[SAGA] worker pool rejected an advance orderId={} — leaving the event incomplete", orderId, e)
+            future.completeExceptionally(e)
+        }
+        return future
     }
 
-    private fun submit(state: OrderAttempt) {
-        orderWorkerExecutor.execute { runOrderTask(state) }
+    private fun advance(orderId: String, correlationId: UUID, first: Boolean, future: CompletableFuture<Void>) {
+        val pickedUpNs = System.nanoTime()
+        if (first) {
+            acceptedAtByOrderId.remove(orderId)?.let {
+                queueWaitTimer.record(pickedUpNs - it, TimeUnit.NANOSECONDS)
+            }
+        }
+
+        val saga = try {
+            val startNs = System.nanoTime()
+            val found = orderSagaRepository.findById(orderId)
+            sagaLoadTimer.record(System.nanoTime() - startNs, TimeUnit.NANOSECONDS)
+            found.orElseThrow { NotFoundException("Saga for order $orderId not found") }
+        } catch (e: Exception) {
+            // Left incomplete deliberately. A saga that is missing now may simply not be visible
+            // yet, and the republisher retrying beats dropping the order's only trigger.
+            log.error("[SAGA] could not load saga orderId={} correlationId={}", orderId, correlationId, e)
+            future.completeExceptionally(e)
+            return
+        }
+
+        val kind = nextStep(saga)
+        if (kind == null) {
+            // ENDED. Every redelivery after the terminal step lands here, which is the common case
+            // for the last event of every order, not an anomaly.
+            future.complete(null)
+            return
+        }
+
+        runStep(
+            StepAttempt(
+                saga = saga,
+                kind = kind,
+                lineIndex = if (kind == StepKind.RELEASE) saga.currentIndex - 1 else saga.currentIndex,
+                correlationId = correlationId,
+                attempt = 0,
+                pickedUpNs = pickedUpNs,
+                backoffNs = 0L,
+                future = future,
+            )
+        )
     }
 
     /**
-     * One attempt at reserving an order. A conflict schedules a later attempt through
-     * [retryScheduler] and RETURNS, so the worker thread is free for the whole backoff — where
-     * Spring's `@Retryable` interceptor used to sleep here instead. The later attempt then runs on
-     * an `order-worker-*` thread from the only pool there is; the two-pool topology this replaces
-     * gave it an `order-retry-*` thread from a second pool.
+     * The saga's transition table, and the only place it lives.
      *
-     * The attempt budget and the backoff curve are unchanged ([OrderRetryPolicy]); the delay
-     * actually waited is that curve plus jitter, which the un-jittered branches do not add.
-     * `backoffNs` accumulates the JITTERED value, so `order.retry.backoff.time` prices what was
-     * really waited rather than what the curve nominally asks for.
+     * Reading it as a function of the ROW rather than of the incoming event is what makes
+     * redelivery harmless: whatever arrives, the answer is "the step this saga is waiting for".
      */
-    private fun runOrderTask(state: OrderAttempt) {
-        val pickedUpNs = System.nanoTime()
-        // Queue wait is a property of admission, so it is measured once, on the first pickup. A
-        // re-submission's wait is backoff, not queueing, and is priced by backoffTimer instead.
-        val firstPickupNs = if (state.firstPickupNs >= 0) {
-            state.firstPickupNs
-        } else {
-            if (state.acceptedAtNs >= 0) {
-                queueWaitTimer.record(pickedUpNs - state.acceptedAtNs, TimeUnit.NANOSECONDS)
-            }
-            pickedUpNs
-        }
+    private fun nextStep(saga: OrderSaga): StepKind? = when {
+        saga.status == SagaStatus.ENDED -> null
+        saga.status == SagaStatus.RUNNING && saga.currentIndex < saga.lineCount -> StepKind.RESERVE
+        saga.status == SagaStatus.RUNNING -> StepKind.COMPLETE
+        saga.currentIndex > 0 -> StepKind.RELEASE
+        else -> StepKind.FAIL_ORDER
+    }
+
+    /**
+     * One attempt at one step. A conflict schedules a later attempt through [retryScheduler] and
+     * RETURNS, so the worker thread is free for the whole backoff — identical to TO-3, except that
+     * what gets retried is a line rather than an order.
+     */
+    private fun runStep(state: StepAttempt) {
+        val startNs = System.nanoTime()
+        val saga = state.saga
+        val orderId = saga.orderId
 
         try {
-            reserveOrderItemsCommandHandler.handle(state.event)
+            when (state.kind) {
+                StepKind.RESERVE -> reserveOrderItemCommandHandler.handle(
+                    saga, ReserveOrderItemCommand(orderId, state.lineIndex, state.correlationId),
+                )
+
+                StepKind.RELEASE -> releaseReservationCommandHandler.handle(
+                    saga, ReleaseReservationCommand(orderId, state.lineIndex, state.correlationId),
+                )
+
+                StepKind.COMPLETE -> {
+                    if (completeOrderCommandHandler.handle(
+                            CompleteOrderCommand(orderId, saga.lineCount, state.correlationId)
+                        )
+                    ) {
+                        recordTerminal(saga, "confirmed", "none")
+                    }
+                }
+
+                StepKind.FAIL_ORDER -> {
+                    val reason = saga.failureReason ?: "reservation failed"
+                    if (failOrderCommandHandler.handle(
+                            FailOrderCommand(orderId, reason, state.correlationId)
+                        )
+                    ) {
+                        recordTerminal(saga, "rejected", saga.failureCode ?: "other")
+                    }
+                }
+            }
         } catch (e: Exception) {
-            val isConflict = e is OptimisticLockingFailureException || e is PessimisticLockingFailureException
-            if (isConflict) {
-                // Every failed attempt, the last one included — TO-3 counted it the same way (its
-                // catch ran before the exception escaped the final attempt), and the pair is only
-                // comparable if this stays identical.
+            val conflict = isConflict(e)
+            if (conflict) {
                 optimisticRetryCounter.increment()
             }
-            if (isConflict && state.attempt < OrderRetryPolicy.MAX_RETRIES && scheduleRetry(state, firstPickupNs)) {
+            if (conflict && state.attempt < OrderRetryPolicy.MAX_RETRIES && scheduleRetry(state)) {
                 return
             }
-            rejectOrder(state, firstPickupNs, e, exhaustedConflict = isConflict)
+            if (conflict) {
+                optimisticExhaustedCounter.increment()
+            }
+            abandon(state, e, startNs)
             return
         }
-        completedCounter("confirmed", "none").increment()
-        recordTerminal(state, firstPickupNs, "confirmed")
+
+        sagaStepTimer(state.kind.tag, "applied").record(System.nanoTime() - startNs, TimeUnit.NANOSECONDS)
+        recordStepLatency(state, "applied")
+        state.future.complete(null)
     }
 
     /** @return true when the next attempt is safely queued and this thread may go. */
-    private fun scheduleRetry(state: OrderAttempt, firstPickupNs: Long): Boolean {
+    private fun scheduleRetry(state: StepAttempt): Boolean {
         val delayMs = OrderRetryPolicy.delayMsFor(state.attempt)
         val next = state.copy(
             attempt = state.attempt + 1,
-            firstPickupNs = firstPickupNs,
             backoffNs = state.backoffNs + TimeUnit.MILLISECONDS.toNanos(delayMs),
         )
         log.debug(
-            "[ORDER] conflict orderId={} attempt={} retrying in {}ms correlationId={}",
-            state.event.orderId, state.attempt + 1, delayMs, state.event.correlationId,
+            "[SAGA] conflict orderId={} step={} line={} attempt={} retrying in {}ms correlationId={}",
+            state.saga.orderId, state.kind, state.lineIndex, state.attempt + 1, delayMs, state.correlationId,
         )
         return try {
-            // ONE hop, where the two-pool topology had a choice of two. The task is queued on the
-            // worker pool with a delay, so it neither holds a thread while it waits nor crosses a
-            // pool boundary to resume: when it comes due an order-worker thread runs the attempt
-            // itself. The old `execute-on-retry-pool=false` is the nearest thing to this, and it
-            // still paid for a second pool and a hand-off.
-            retryScheduler.schedule(delayMs) {
-                // Direct runtime evidence of the property this topology exists for. Logback's
-                // pattern is `[%thread]` and the pool is named, so this prints `order-worker-N`
-                // where the two-pool topology would print `order-retry-N`.
-                if (log.isDebugEnabled) {
-                    log.debug(
-                        "[ORDER] retry executing on {} orderId={} attempt={}",
-                        Thread.currentThread().name, next.event.orderId, next.attempt,
-                    )
-                }
-                runOrderTask(next)
-            }
+            retryScheduler.schedule(delayMs) { runStep(next) }
             true
         } catch (e: RejectedExecutionException) {
             retryRejectedCounter.increment()
-            log.warn("[ORDER] retry scheduler rejected orderId={} — failing the order", state.event.orderId, e)
+            log.warn("[SAGA] retry scheduler rejected orderId={} step={}", state.saga.orderId, state.kind, e)
             false
         }
     }
 
-    private fun rejectOrder(state: OrderAttempt, firstPickupNs: Long, e: Exception, exhaustedConflict: Boolean) {
-        val event = state.event
-        log.warn("[ORDER] rejected orderId={} reason={} correlationId={}", event.orderId, e.message, event.correlationId)
-        meterRegistry.counter("inventory.exception", "type", e.javaClass.simpleName).increment()
-        if (exhaustedConflict) {
-            optimisticExhaustedCounter.increment()
-        }
-        completedCounter("rejected", rejectionReason(e)).increment()
-        // Rejection goes through the aggregate's command handler (own transaction, records
-        // OrderFailedEvent to the outbox). Never let a failure here escape into the executor.
-        try {
-            failOrderCommandHandler.handle(
-                FailOrderCommand(event.orderId, e.message ?: e.javaClass.simpleName, event.correlationId)
+    /**
+     * Terminal disposition for a step that cannot be retried any further, and the point at which
+     * this branch's failure handling stops resembling TO-3's.
+     *
+     * On TO-3 there is one disposition: the reservation transaction rolled back, so reject the order
+     * and be done. Here it depends on WHICH step failed, because the three cases have genuinely
+     * different escape hatches:
+     *
+     *  * **A reserve** turns into `FailReservationCommand`, which starts compensation. That is a
+     *    normal, expected outcome — out of stock is a business answer, not a fault — so the
+     *    publication is completed and the saga proceeds on the compensating path.
+     *  * **A release, a confirm or a reject** has nowhere to go. There is no compensating a
+     *    compensation, and abandoning one would leave stock held or an order PENDING for ever. So
+     *    the future is failed instead, which leaves the triggering publication INCOMPLETE and hands
+     *    the step to `IncompleteEventRepublisher` — a slow retry (its min-age is a minute), but an
+     *    unbounded one, which is the right trade for the paths that must eventually succeed.
+     */
+    private fun abandon(state: StepAttempt, cause: Exception, startNs: Long) {
+        val saga = state.saga
+        val orderId = saga.orderId
+        meterRegistry.counter("inventory.exception", "type", cause.javaClass.simpleName).increment()
+        sagaStepTimer(state.kind.tag, "failed").record(System.nanoTime() - startNs, TimeUnit.NANOSECONDS)
+        recordStepLatency(state, "failed")
+
+        if (state.kind != StepKind.RESERVE) {
+            sagaCommandFailedCounter(state.kind.tag).increment()
+            log.error(
+                "[SAGA] {} step failed orderId={} line={} — leaving the event incomplete for the republisher",
+                state.kind, orderId, state.lineIndex, cause,
             )
-        } catch (rejectError: Exception) {
-            log.error("[ORDER] failed to reject orderId={} correlationId={}", event.orderId, event.correlationId, rejectError)
+            state.future.completeExceptionally(cause)
+            return
         }
-        recordTerminal(state, firstPickupNs, "rejected")
+
+        log.warn(
+            "[SAGA] reserve failed orderId={} line={} reason={} correlationId={}",
+            orderId, state.lineIndex, cause.message, state.correlationId,
+        )
+        try {
+            failReservationCommandHandler.handle(
+                saga,
+                FailReservationCommand(
+                    orderId = orderId,
+                    lineIndex = state.lineIndex,
+                    reason = cause.message ?: cause.javaClass.simpleName,
+                    reasonCode = rejectionReason(cause),
+                    correlationId = state.correlationId,
+                ),
+            )
+            state.future.complete(null)
+        } catch (e: Exception) {
+            // The failure could not even be recorded. Left incomplete so it is tried again: an
+            // order whose compensation never STARTS is the one stranded-PENDING shape this design
+            // has no other defence against.
+            sagaCommandFailedCounter("fail-reservation").increment()
+            log.error("[SAGA] could not start compensation orderId={} line={}", orderId, state.lineIndex, e)
+            state.future.completeExceptionally(e)
+        }
     }
 
     /**
-     * Recorded once per order, at its terminal outcome — not once per attempt. `processingTimer`
-     * therefore still spans first pickup to final outcome with backoff included, which is what it
-     * spanned on TO-3 when the backoff was a sleep inside a single task.
+     * Recorded once per step, at its outcome — attempts and their backoff included, which is what
+     * `order.processing.time` spanned on TO-3 for a whole order.
      */
-    private fun recordTerminal(state: OrderAttempt, firstPickupNs: Long, outcome: String) {
-        val nowNs = System.nanoTime()
-        processingTimer.record(nowNs - firstPickupNs, TimeUnit.NANOSECONDS)
+    private fun recordStepLatency(state: StepAttempt, outcome: String) {
+        processingTimer.record(System.nanoTime() - state.pickedUpNs, TimeUnit.NANOSECONDS)
         if (state.backoffNs > 0) {
             backoffTimer(outcome).record(state.backoffNs, TimeUnit.NANOSECONDS)
         }
-        if (state.acceptedAtNs >= 0) {
-            e2eTimer(outcome).record(nowNs - state.acceptedAtNs, TimeUnit.NANOSECONDS)
-        }
     }
 
     /**
-     * Everything about one order's progress that has to survive being handed to another thread.
-     * On TO-3 all of this was thread-local to a single blocking task.
+     * The order's own outcome, recorded once, where the saga ends.
+     *
+     * Measured from `order_saga.started_at` — the admission instant, written durably in the accept
+     * transaction — rather than from a `System.nanoTime()` held in memory, because nothing in memory
+     * survives the N deliveries between admission and here.
      */
-    private data class OrderAttempt(
-        val event: OrderCreatedEvent,
-        val acceptedAtNs: Long,
+    private fun recordTerminal(saga: OrderSaga, outcome: String, reason: String) {
+        val elapsed = Duration.between(saga.startedAt.toInstant(), clock.instant())
+        completedCounter(outcome, reason).increment()
+        e2eTimer(outcome).record(elapsed)
+        sagaCompletedCounter(if (outcome == "confirmed") "completed" else "failed").increment()
+        sagaLifetimeTimer(if (outcome == "confirmed") "completed" else "failed").record(elapsed)
+    }
+
+    private enum class StepKind(val tag: String) {
+        RESERVE("reserve"),
+        RELEASE("release"),
+        COMPLETE("complete"),
+        FAIL_ORDER("fail-order"),
+    }
+
+    /**
+     * Everything about one step's progress that has to survive being handed to another thread.
+     *
+     * [saga] is the snapshot the step was chosen from and is deliberately NOT re-read between
+     * attempts: a conflict rolls the step back without touching the saga row, and the cursor guard
+     * inside the write re-checks the only thing that could have changed anyway.
+     */
+    private data class StepAttempt(
+        val saga: OrderSaga,
+        val kind: StepKind,
+        val lineIndex: Int,
+        val correlationId: UUID,
         val attempt: Int,
-        val firstPickupNs: Long,
+        val pickedUpNs: Long,
         val backoffNs: Long,
+        val future: CompletableFuture<Void>,
     )
 }

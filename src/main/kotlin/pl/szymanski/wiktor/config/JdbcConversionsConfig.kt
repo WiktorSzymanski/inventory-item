@@ -8,6 +8,7 @@ import org.springframework.data.convert.WritingConverter
 import org.springframework.data.jdbc.repository.config.AbstractJdbcConfiguration
 import pl.szymanski.wiktor.domain.OrderItems
 import pl.szymanski.wiktor.domain.ReservedItem
+import pl.szymanski.wiktor.domain.SagaLines
 import tools.jackson.databind.ObjectMapper
 
 /**
@@ -21,7 +22,43 @@ class JdbcConversionsConfig(private val objectMapper: ObjectMapper) : AbstractJd
     override fun userConverters(): List<*> = listOf(
         OrderItemsToJsonbConverter(objectMapper),
         JsonbToOrderItemsConverter(objectMapper),
+        SagaLinesToJsonbConverter(objectMapper),
+        JsonbToSagaLinesConverter(objectMapper),
     )
+}
+
+/**
+ * The saga's line list, as a JSONB ARRAY — deliberately a different shape from the pair above.
+ *
+ * `OrderItemsToJsonbConverter` writes `{"<itemId>": qty}` because that is what the ES branch's
+ * orders projection stores and the two have to be comparable. That shape is lossy in exactly the
+ * two ways [SagaLines] cannot tolerate: a JSON object has no defined order, and it cannot hold the
+ * same item twice. [OrderSaga.currentIndex] is a position in this list, so either loss silently
+ * renumbers the saga's steps.
+ *
+ * Both converter pairs are registered at once, and Spring Data JDBC picks between them on the
+ * source/target TYPE, which is why [SagaLines] exists as a distinct type rather than as a second
+ * use of [OrderItems].
+ */
+@WritingConverter
+class SagaLinesToJsonbConverter(
+    private val objectMapper: ObjectMapper,
+) : Converter<SagaLines, PGobject> {
+    override fun convert(source: SagaLines): PGobject = PGobject().apply {
+        type = "jsonb"
+        value = objectMapper.writeValueAsString(source.lines)
+    }
+}
+
+@ReadingConverter
+class JsonbToSagaLinesConverter(
+    private val objectMapper: ObjectMapper,
+) : Converter<PGobject, SagaLines> {
+    override fun convert(source: PGobject): SagaLines {
+        val raw = source.value ?: "[]"
+        val lines = objectMapper.readValue(raw, Array<ReservedItem>::class.java)
+        return SagaLines(lines.toList())
+    }
 }
 
 @WritingConverter

@@ -7,6 +7,8 @@ import org.slf4j.LoggerFactory
 import org.springframework.modulith.events.ApplicationModuleListener
 import org.springframework.stereotype.Component
 import pl.szymanski.wiktor.domain.InventoryCreatedEvent
+import pl.szymanski.wiktor.domain.InventoryReservationFailedEvent
+import pl.szymanski.wiktor.domain.InventoryReservationReleasedEvent
 import pl.szymanski.wiktor.domain.InventoryReservedEvent
 import pl.szymanski.wiktor.domain.OrderCompletedEvent
 import pl.szymanski.wiktor.domain.OrderCreatedEvent
@@ -29,6 +31,17 @@ class InventoryEventListener(
 
     @ApplicationModuleListener
     fun on(event: InventoryReservedEvent) = publish("inventory-events", event.id, event, event.createdAt)
+
+    // The two saga-only events. Published for the same reason the others are — a downstream
+    // consumer sees the whole stock story, not just the half that succeeded — and each one adds a
+    // SECOND event_publication row per occurrence, because the saga itself listens to them too.
+    // That doubling is a real cost of the pattern on this branch and is deliberately not optimised
+    // away by folding the two listeners into one.
+    @ApplicationModuleListener
+    fun on(event: InventoryReservationFailedEvent) = publish("inventory-events", event.id, event, event.createdAt)
+
+    @ApplicationModuleListener
+    fun on(event: InventoryReservationReleasedEvent) = publish("inventory-events", event.id, event, event.createdAt)
 
     @ApplicationModuleListener
     fun on(event: OrderCreatedEvent) = publish("order-events", event.orderId, event, event.createdAt)

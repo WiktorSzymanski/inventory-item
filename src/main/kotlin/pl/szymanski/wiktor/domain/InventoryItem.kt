@@ -14,6 +14,16 @@ data class ReserveResult(
     val event: InventoryReservedEvent,
 )
 
+/**
+ * The inverse of [ReserveResult]. There is no reservation to hand back — compensation DELETES the
+ * row this item's reserve inserted — so the caller gets the restored item and the event announcing
+ * it, and deletes by (itemId, reservationId).
+ */
+data class ReleaseResult(
+    val updatedItem: InventoryItem,
+    val event: InventoryReservationReleasedEvent,
+)
+
 @Table("inventory_state")
 data class InventoryItem(
     @Id
@@ -33,6 +43,8 @@ data class InventoryItem(
 ) {
     fun reserve(
         reservationId: String,
+        orderId: String,
+        lineIndex: Int,
         quantity: Int,
         correlationId: UUID,
         clock: Clock,
@@ -53,7 +65,12 @@ data class InventoryItem(
         // duration; the split reserve path runs this in its modify phase, so the sleep now holds
         // neither a lock nor a Hikari connection. Either way it is a model of slow aggregate logic
         // rather than of slow IO — what moved is who else has to wait for it.
-        // See ReserveOrderItemsCommandHandler for the phase boundaries.
+        //
+        // On this branch it is paid ONCE PER LINE and once per RETRY of a line, where TO-3 pays it
+        // once per line inside one order-wide attempt. Same total per successful order, a different
+        // amount per conflict: TO-3 re-sleeps every line of the order when any one of them
+        // conflicts, this re-sleeps only the line that did.
+        // See ReserveOrderItemCommandHandler for the phase boundaries.
         if (reserveDelayMs > 0) {
             Thread.sleep(reserveDelayMs.toLong())
         }
@@ -61,9 +78,32 @@ data class InventoryItem(
         return ReserveResult(
             updatedItem = copy(availableQty = availableQty - quantity),
             reservation = Reservation(itemId = id, reservationId = reservationId, quantity = quantity),
-            event = InventoryReservedEvent(id, reservationId, quantity, correlationId, clock.instant()),
+            event = InventoryReservedEvent(
+                id, reservationId, quantity, correlationId, clock.instant(), orderId, lineIndex,
+            ),
         )
     }
+
+    /**
+     * Compensation for one previously reserved line: puts the quantity back.
+     *
+     * No `reserveDelayMs` here, and no stock check — a release restores state this item itself
+     * produced, so there is nothing to reject and nothing to model as expensive. Mirrors the ES
+     * branch's `ReleaseReservationCommand`, which likewise only applies the released event.
+     */
+    fun release(
+        reservationId: String,
+        orderId: String,
+        lineIndex: Int,
+        quantity: Int,
+        correlationId: UUID,
+        clock: Clock,
+    ): ReleaseResult = ReleaseResult(
+        updatedItem = copy(availableQty = availableQty + quantity),
+        event = InventoryReservationReleasedEvent(
+            id, reservationId, quantity, correlationId, clock.instant(), orderId, lineIndex,
+        ),
+    )
 
     companion object {
         fun create(

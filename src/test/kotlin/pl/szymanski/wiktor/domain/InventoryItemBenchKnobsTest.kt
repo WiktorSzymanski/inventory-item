@@ -30,7 +30,7 @@ class InventoryItemBenchKnobsTest {
     @Test
     fun `padding survives a reserve, so every read-modify-write carries it`() {
         val (created, _) = item(payload = 512)
-        val result = created.reserve("RES-1", 1, UUID.randomUUID(), clock)
+        val result = created.reserve("RES-1", "RES-1", 0, 1, UUID.randomUUID(), clock)
         assertEquals(512, result.updatedItem.additionalBytes.length)
     }
 
@@ -45,7 +45,7 @@ class InventoryItemBenchKnobsTest {
     fun `a successful reserve sleeps for the configured delay`() {
         val (created, _) = item(delayMs = 50)
         val startedNs = System.nanoTime()
-        created.reserve("RES-1", 1, UUID.randomUUID(), clock)
+        created.reserve("RES-1", "RES-1", 0, 1, UUID.randomUUID(), clock)
         val elapsedMs = (System.nanoTime() - startedNs) / 1_000_000
         assertTrue(elapsedMs >= 45, "expected at least 45ms, slept ${elapsedMs}ms")
     }
@@ -54,7 +54,7 @@ class InventoryItemBenchKnobsTest {
     fun `a zero delay does not sleep`() {
         val (created, _) = item(delayMs = 0)
         val startedNs = System.nanoTime()
-        created.reserve("RES-1", 1, UUID.randomUUID(), clock)
+        created.reserve("RES-1", "RES-1", 0, 1, UUID.randomUUID(), clock)
         val elapsedMs = (System.nanoTime() - startedNs) / 1_000_000
         assertTrue(elapsedMs < 20, "expected no sleep, took ${elapsedMs}ms")
     }
@@ -67,7 +67,7 @@ class InventoryItemBenchKnobsTest {
         val (created, _) = item(delayMs = 200, qty = 1)
         val startedNs = System.nanoTime()
         assertThrows<InsufficientStockException> {
-            created.reserve("RES-1", 5, UUID.randomUUID(), clock)
+            created.reserve("RES-1", "RES-1", 0, 5, UUID.randomUUID(), clock)
         }
         val elapsedMs = (System.nanoTime() - startedNs) / 1_000_000
         assertTrue(elapsedMs < 20, "expected no sleep on rejection, took ${elapsedMs}ms")

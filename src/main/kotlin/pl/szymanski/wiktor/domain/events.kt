@@ -18,12 +18,48 @@ data class InventoryCreatedEvent(
     val reserveDelayMs: Int = 0,
 )
 
+// `orderId` and `lineIndex` are what make this event a SAGA STEP RESULT rather than only a record
+// that stock moved. The saga correlates on orderId (there is no association store to look one up
+// in) and resumes at lineIndex + 1, so both have to survive the round trip through
+// event_publication — an in-memory index would not survive a redelivery after a crash.
+//
+// `reservationId` is equal to `orderId` today, exactly as it was on TO-3, because a reservation is
+// keyed (item_id, reservation_id). It is kept as its own field because it is what the reservations
+// TABLE is written with, and the two would have to be told apart the moment a reservation key ever
+// stops being the order id.
 data class InventoryReservedEvent(
     val id: String,
     val reservationId: String,
     val quantity: Int,
     val correlationId: UUID,
     val createdAt: Instant,
+    val orderId: String,
+    val lineIndex: Int,
+)
+
+// The saga's failure signal, and the reason a failed reserve is not simply an exception that dies
+// on a worker thread: it has to reach the saga through the outbox, in a transaction of its own,
+// because the reserve transaction that produced it has already rolled back. Mirrors the ES branch's
+// InventoryReservationFailedEvent, plus the TO-mandatory createdAt and the step coordinates.
+data class InventoryReservationFailedEvent(
+    val id: String,
+    val orderId: String,
+    val lineIndex: Int,
+    val reason: String,
+    val correlationId: UUID,
+    val createdAt: Instant,
+)
+
+// One compensating step. Emitted per released line rather than once per order, so compensation is
+// resumable at exactly the granularity it is performed at.
+data class InventoryReservationReleasedEvent(
+    val id: String,
+    val reservationId: String,
+    val quantity: Int,
+    val correlationId: UUID,
+    val createdAt: Instant,
+    val orderId: String,
+    val lineIndex: Int,
 )
 
 data class ReservedItem(val itemId: String, val quantity: Int)

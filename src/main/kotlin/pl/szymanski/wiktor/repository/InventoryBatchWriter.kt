@@ -112,7 +112,23 @@ class InventoryBatchWriter(
         )
     }
 
+    /**
+     * Removes the row one reserve step inserted. The compensating half of [insertAll], and the
+     * reason it deletes by the full primary key rather than by reservation id alone: a reservation
+     * id is an ORDER id, so `WHERE reservation_id = ?` would release every line of the order at
+     * once — which is precisely the all-or-nothing behaviour this branch exists not to have.
+     *
+     * A row count of 0 is not an error. It means this release has already been applied and is
+     * being replayed; the saga's cursor guard has already decided whether the step is ours, and it
+     * is the only thing entitled to decide that.
+     */
+    fun deleteReservation(itemId: String, reservationId: String): Int =
+        jdbcTemplate.update(DELETE_RESERVATION_SQL, itemId, reservationId)
+
     companion object {
+        const val DELETE_RESERVATION_SQL: String =
+            "DELETE FROM reservations WHERE item_id = ? AND reservation_id = ?"
+
         const val UPDATE_ITEM_SQL: String =
             "UPDATE inventory_state " +
                 "SET available_qty = ?, reserve_delay_ms = ?, additional_bytes = ?, version = ? " +

@@ -10,17 +10,27 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.core.task.SyncTaskExecutor
 import org.springframework.dao.OptimisticLockingFailureException
-import pl.szymanski.wiktor.domain.OrderCreatedEvent
+import pl.szymanski.wiktor.domain.OrderSaga
 import pl.szymanski.wiktor.domain.ReservedItem
+import pl.szymanski.wiktor.domain.SagaLines
 import pl.szymanski.wiktor.exception.InsufficientStockException
 import pl.szymanski.wiktor.repository.InventoryRepository
 import pl.szymanski.wiktor.repository.OrderRepository
+import pl.szymanski.wiktor.repository.OrderSagaRepository
+import pl.szymanski.wiktor.service.command.CompleteOrderCommandHandler
 import pl.szymanski.wiktor.service.command.CreateInventoryItemCommandHandler
 import pl.szymanski.wiktor.service.command.CreateOrderCommandHandler
-import pl.szymanski.wiktor.service.command.FailOrderCommand
 import pl.szymanski.wiktor.service.command.FailOrderCommandHandler
-import pl.szymanski.wiktor.service.command.ReserveOrderItemsCommandHandler
+import pl.szymanski.wiktor.service.command.FailReservationCommand
+import pl.szymanski.wiktor.service.command.FailReservationCommandHandler
+import pl.szymanski.wiktor.service.command.ReleaseReservationCommandHandler
+import pl.szymanski.wiktor.service.command.ReserveOrderItemCommandHandler
+import pl.szymanski.wiktor.service.command.StepOutcome
+import java.time.Clock
 import java.time.Instant
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
+import java.util.Optional
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -28,6 +38,16 @@ import java.util.concurrent.TimeUnit
  * Retry POLICY: 5 total attempts on the 25/50/100/200 ms curve, and the same counter arithmetic
  * TO-3 produced. Only the thread the waiting happens on is different, and that is
  * [OrderRetryUnblocksWorkerTest]'s job.
+ *
+ * **What the port from TO-3 changed, and what it did not.** The budget and the curve are identical,
+ * because the branches are only comparable if they are. What is retried is not: TO-3 retries an
+ * ORDER, re-reading and re-applying every line, and this retries the one LINE that conflicted.
+ *
+ * The terminal disposition changed with it. On TO-3 an exhausted order goes straight to
+ * `FailOrderCommandHandler` — the reserve transaction rolled back, so there is nothing held and the
+ * order can be rejected on the spot. Here it goes to `FailReservationCommandHandler`, which only
+ * STARTS compensation; the rejection happens N releases later, driven by events, and is therefore
+ * asserted in [OrderSagaCompensationTest] rather than here.
  *
  * The delays are asserted as WINDOWS rather than exact values, because this branch jitters each one
  * over [0.5 x base, 1.5 x base). What the loop must still guarantee is the attempt budget and the
@@ -40,21 +60,35 @@ import java.util.concurrent.TimeUnit
  */
 class InventoryServiceRetryTest {
 
-    private val reserveOrderItemsCommandHandler: ReserveOrderItemsCommandHandler = mockk()
+    private val reserveOrderItemCommandHandler: ReserveOrderItemCommandHandler = mockk()
+    private val failReservationCommandHandler: FailReservationCommandHandler = mockk(relaxed = true)
     private val failOrderCommandHandler: FailOrderCommandHandler = mockk(relaxed = true)
+    private val sagaRepo: OrderSagaRepository = mockk()
     private val meterRegistry = SimpleMeterRegistry()
     private val scheduledDelaysMs = mutableListOf<Long>()
+
+    private val saga = OrderSaga(
+        orderId = "ORDER-1",
+        correlationId = UUID.randomUUID(),
+        lines = SagaLines(listOf(ReservedItem("ITEM-001", 1))),
+        startedAt = OffsetDateTime.ofInstant(Instant.EPOCH, ZoneOffset.UTC),
+    )
 
     private lateinit var inventoryService: InventoryService
 
     @BeforeEach
     fun setUp() {
+        every { sagaRepo.findById("ORDER-1") } returns Optional.of(saga)
         inventoryService = InventoryService(
             inventoryRepository = mockk<InventoryRepository>(),
             orderRepository = mockk<OrderRepository>(),
+            orderSagaRepository = sagaRepo,
             createInventoryItemCommandHandler = mockk<CreateInventoryItemCommandHandler>(),
             createOrderCommandHandler = mockk<CreateOrderCommandHandler>(),
-            reserveOrderItemsCommandHandler = reserveOrderItemsCommandHandler,
+            reserveOrderItemCommandHandler = reserveOrderItemCommandHandler,
+            releaseReservationCommandHandler = mockk<ReleaseReservationCommandHandler>(relaxed = true),
+            failReservationCommandHandler = failReservationCommandHandler,
+            completeOrderCommandHandler = mockk<CompleteOrderCommandHandler>(relaxed = true),
             failOrderCommandHandler = failOrderCommandHandler,
             orderWorkerExecutor = SyncTaskExecutor(),
             // Records the delay and runs the retry inline, so the loop is deterministic. Which pool
@@ -63,17 +97,12 @@ class InventoryServiceRetryTest {
                 scheduledDelaysMs += delayMs
                 task.run()
             },
+            clock = Clock.fixed(Instant.EPOCH, ZoneOffset.UTC),
             meterRegistry = meterRegistry,
         )
     }
 
-    private val event = OrderCreatedEvent(
-        orderId = "ORDER-1",
-        userId = "USER-1",
-        items = listOf(ReservedItem("ITEM-001", 1)),
-        correlationId = UUID.randomUUID(),
-        createdAt = Instant.EPOCH,
-    )
+    private fun advance() = inventoryService.submitAdvance("ORDER-1", saga.correlationId, first = true)
 
     /**
      * One scheduled delay per retry, each inside its own attempt's jitter window. Asserting the
@@ -92,50 +121,54 @@ class InventoryServiceRetryTest {
 
     private fun retryCount() = meterRegistry.counter("inventory.optimistic.retry").count()
     private fun exhaustedCount() = meterRegistry.counter("inventory.optimistic.exhausted").count()
-    private fun completedCount(outcome: String, reason: String) =
-        meterRegistry.counter("orders.completed", "outcome", outcome, "reason", reason).count()
 
     @Test
-    fun `a conflict is retried and the order confirms on the second attempt`() {
-        every { reserveOrderItemsCommandHandler.handle(event) } throws
-            OptimisticLockingFailureException("conflict") andThen Unit
+    fun `a conflict is retried and the step applies on the second attempt`() {
+        every { reserveOrderItemCommandHandler.handle(saga, any()) } throws
+            OptimisticLockingFailureException("conflict") andThen StepOutcome.APPLIED
 
-        inventoryService.onOrderCreated(event)
+        advance()
 
-        verify(exactly = 2) { reserveOrderItemsCommandHandler.handle(event) }
+        verify(exactly = 2) { reserveOrderItemCommandHandler.handle(saga, any()) }
         assertDelaysOnCurve(expectedRetries = 1)
-        verify(exactly = 0) { failOrderCommandHandler.handle(any()) }
+        verify(exactly = 0) { failReservationCommandHandler.handle(any(), any()) }
         assertEquals(1.0, retryCount())
         assertEquals(0.0, exhaustedCount())
-        assertEquals(1.0, completedCount("confirmed", "none"))
     }
 
     @Test
-    fun `a persistent conflict is attempted five times with the unchanged backoff, then rejected`() {
-        every { reserveOrderItemsCommandHandler.handle(event) } throws
+    fun `a persistent conflict is attempted five times on the unchanged backoff, then compensated`() {
+        every { reserveOrderItemCommandHandler.handle(saga, any()) } throws
             OptimisticLockingFailureException("conflict")
 
-        inventoryService.onOrderCreated(event)
+        advance()
 
-        verify(exactly = 5) { reserveOrderItemsCommandHandler.handle(event) }
+        verify(exactly = 5) { reserveOrderItemCommandHandler.handle(saga, any()) }
         assertDelaysOnCurve(expectedRetries = 4)
-        verify(exactly = 1) { failOrderCommandHandler.handle(any<FailOrderCommand>()) }
+        // NOT FailOrderCommandHandler. Rejecting the order now would strand whatever earlier lines
+        // this order already holds; compensation has to walk them back first.
+        verify(exactly = 0) { failOrderCommandHandler.handle(any()) }
+        verify(exactly = 1) {
+            failReservationCommandHandler.handle(
+                saga,
+                match<FailReservationCommand> { it.reasonCode == "optimistic_exhausted" && it.lineIndex == 0 },
+            )
+        }
         // Identical to TO-3: every failed attempt counts as a retry, the last one included.
         assertEquals(5.0, retryCount())
         assertEquals(1.0, exhaustedCount())
-        assertEquals(1.0, completedCount("rejected", "optimistic_exhausted"))
     }
 
     @Test
-    fun `accumulated backoff is priced once, at the terminal outcome`() {
-        every { reserveOrderItemsCommandHandler.handle(event) } throws
+    fun `accumulated backoff is priced once, at the step's terminal outcome`() {
+        every { reserveOrderItemCommandHandler.handle(saga, any()) } throws
             OptimisticLockingFailureException("conflict")
 
-        inventoryService.onOrderCreated(event)
+        advance()
 
-        val backoff = meterRegistry.timer("order.retry.backoff.time", "outcome", "rejected")
+        val backoff = meterRegistry.timer("order.retry.backoff.time", "outcome", "failed")
         assertEquals(1L, backoff.count())
-        // 375 ms is the curve's total and the jittered EXPECTATION; one order draws somewhere in
+        // 375 ms is the curve's total and the jittered EXPECTATION; one step draws somewhere in
         // [187.5, 562.5]. What must hold is that the recorded figure is the sum of the delays
         // actually scheduled, not the nominal curve.
         assertEquals(
@@ -147,16 +180,20 @@ class InventoryServiceRetryTest {
 
     @Test
     fun `a business rejection is not retried`() {
-        every { reserveOrderItemsCommandHandler.handle(event) } throws
+        every { reserveOrderItemCommandHandler.handle(saga, any()) } throws
             InsufficientStockException("out of stock")
 
-        inventoryService.onOrderCreated(event)
+        advance()
 
-        verify(exactly = 1) { reserveOrderItemsCommandHandler.handle(event) }
+        verify(exactly = 1) { reserveOrderItemCommandHandler.handle(saga, any()) }
         assertEquals(emptyList<Long>(), scheduledDelaysMs)
-        verify(exactly = 1) { failOrderCommandHandler.handle(any<FailOrderCommand>()) }
+        verify(exactly = 1) {
+            failReservationCommandHandler.handle(
+                saga,
+                match<FailReservationCommand> { it.reasonCode == "insufficient_stock" },
+            )
+        }
         assertEquals(0.0, retryCount())
         assertEquals(0.0, exhaustedCount())
-        assertEquals(1.0, completedCount("rejected", "insufficient_stock"))
     }
 }
