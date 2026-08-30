@@ -23,12 +23,18 @@ axon:
     events: jackson
     messages: jackson
   saga:
-    total-segments: 60              # fixed segment pool, set once at token init (divides 2/3/4/5/6)
+    # Segments are created at token init. reset.sh truncates token_entry with the API
+    # stopped on every bench run, so a changed value takes effect on the next run with
+    # no manual reset; a hand-run stack on a pre-existing volume keeps the old count.
+    total-segments: ${AXON_SAGA_TOTAL_SEGMENTS:60}   # per-run override; 60 divides 2/3/4/5/6 replicas
     replicas: ${API_REPLICAS:1}     # must equal REPLICAS in .env; claim = ceil(total/replicas)
   jdbc:
     pool:
       # Must comfortably exceed the saga per-node claim (ceil(total-segments/replicas) = 60
-      # at REPLICAS=1), because every saga worker holds a connection while it reads its
+      # at REPLICAS=1 AND the default segment count -- AXON_SAGA_TOTAL_SEGMENTS moves it, and
+      # AxonCustomizerConfig logs the resolved budget as [POOLS] at startup and warns when a
+      # raised segment count pushes peak demand past this pool), because every saga worker
+      # holds a connection while it reads its
       # associations, and the 112-thread saga dispatch executor competes for the same pool.
       # At 150 the 60-thread claim exhausted it (active=150, waiting=97) and sagas that
       # failed to dispatch never retried, stranding orders in PENDING forever.

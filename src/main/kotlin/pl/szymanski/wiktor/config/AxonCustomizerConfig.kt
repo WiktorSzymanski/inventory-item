@@ -2,7 +2,9 @@ package pl.szymanski.wiktor.config
 
 import org.axonframework.config.EventProcessingConfigurer
 import org.axonframework.eventhandling.TrackingEventProcessorConfiguration
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Configuration
 
@@ -11,7 +13,11 @@ import org.springframework.context.annotation.Configuration
 class AxonCustomizerConfig {
 
     @Autowired
-    fun configureProcessors(configurer: EventProcessingConfigurer, sagaProps: SagaProcessorProperties) {
+    fun configureProcessors(
+        configurer: EventProcessingConfigurer,
+        sagaProps: SagaProcessorProperties,
+        @Value("\${axon.jdbc.pool.size:50}") axonPoolSize: Int,
+    ) {
         configurer
             .registerTrackingEventProcessor("inventory-projection")
             .registerTrackingEventProcessor("mock-kafka-publisher")
@@ -42,6 +48,55 @@ class AxonCustomizerConfig {
                 .andInitialTrackingToken { source -> source.createHeadToken() }
                 .andBatchSize(100)
         }
+        logPoolBudget(sagaProps, sagaThreadsPerNode, axonPoolSize)
+    }
+
+    /**
+     * The connection budget for the configuration that is ACTUALLY running.
+     *
+     * [CommandGatewayConfig.SAGA_SEGMENT_THREADS] hardcodes the default 60 so
+     * RetryDispatchTargetTest can assert `2 x (112 + 60 + 3) = 350` without a Spring
+     * context. Once `AXON_SAGA_TOTAL_SEGMENTS` can move the real count, that assertion
+     * no longer describes every run, and the failure mode it guards against is silent:
+     * CommandGatewayConfig documents that a starved command stalls on the 5s
+     * connectionTimeout and then fails TERMINALLY into the saga's abandon() path,
+     * because a SQLTransientConnectionException is not a ConcurrencyException and is
+     * therefore not retried. It surfaces as latency and a rejection rate, not an error.
+     *
+     * Only one direction is dangerous. FEWER segments shrink demand -- the pool is merely
+     * oversized. MORE than the default push demand past the 350 that docker-compose
+     * passes, so that case warns.
+     */
+    private fun logPoolBudget(
+        sagaProps: SagaProcessorProperties,
+        sagaThreadsPerNode: Int,
+        axonPoolSize: Int,
+    ) {
+        val busyThreads = CommandGatewayConfig.COMMAND_POOL_SIZE +
+            sagaThreadsPerNode +
+            CommandGatewayConfig.SINGLE_THREADED_PROJECTIONS
+        val peakDemand = CommandGatewayConfig.CONNECTIONS_PER_BUSY_THREAD * busyThreads
+        val budget = "segments=${sagaProps.totalSegments} replicas=${sagaProps.replicas} " +
+            "threads=$sagaThreadsPerNode | peak demand = " +
+            "${CommandGatewayConfig.CONNECTIONS_PER_BUSY_THREAD} x " +
+            "(${CommandGatewayConfig.COMMAND_POOL_SIZE} command + $sagaThreadsPerNode saga + " +
+            "${CommandGatewayConfig.SINGLE_THREADED_PROJECTIONS} projections) = $peakDemand " +
+            "| axon pool = $axonPoolSize"
+        if (peakDemand > axonPoolSize) {
+            log.warn(
+                "[POOLS] {} -- OVERSUBSCRIBED. Commands will stall 5s on connectionTimeout and " +
+                "fail terminally into the saga's abandon() path, showing up as latency and " +
+                "rejections rather than errors. Lower AXON_SAGA_TOTAL_SEGMENTS or raise " +
+                "AXON_JDBC_POOL_SIZE (and PG max_connections with it).",
+                budget,
+            )
+        } else {
+            log.info("[POOLS] {}", budget)
+        }
+    }
+
+    private companion object {
+        private val log = LoggerFactory.getLogger(AxonCustomizerConfig::class.java)
     }
 
     // ES-2's configureInventoryItem() is REMOVED here, and it had to be.
