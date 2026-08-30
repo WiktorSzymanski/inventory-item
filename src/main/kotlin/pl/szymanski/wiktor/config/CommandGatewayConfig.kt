@@ -93,7 +93,18 @@ class CommandGatewayConfig {
          */
         internal const val COMMAND_POOL_SIZE = 112
 
-        /** ceil(total-segments / replicas) at REPLICAS=1; see application.yaml. */
+        /**
+         * ceil(total-segments / replicas) at REPLICAS=1 **for the DEFAULT configuration**;
+         * see application.yaml.
+         *
+         * NOT read at runtime and NOT wired to [SagaProcessorProperties.totalSegments], which is
+         * what actually sizes the processor and is overridable per run via
+         * `AXON_SAGA_TOTAL_SEGMENTS`. This constant exists so the budget assertion below can be
+         * made without a Spring context, and it therefore describes the default run only.
+         * AxonCustomizerConfig logs the RESOLVED budget at startup and warns when the configured
+         * segment count pushes peak demand past the pool -- that is the check that covers a run
+         * with the override set.
+         */
         internal const val SAGA_SEGMENT_THREADS = 60
 
         /** inventory-projection, order-projection, mock-kafka-publisher. reserve-metrics is

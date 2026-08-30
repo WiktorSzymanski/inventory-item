@@ -380,7 +380,7 @@ exception thrown anywhere in the app is `ItemAlreadyExistsException`, from `POST
 
 `src/main/resources/application.yaml`: `snapshot.event-count` (30), `cache.enabled`,
 `cache.ttl` (10m, `CACHE_TTL`) and `cache.maximum-size` (10000, `CACHE_MAXIMUM_SIZE`),
-`axon.saga.total-segments` (60), `axon.saga.replicas` (`${API_REPLICAS:1}`),
+`axon.saga.total-segments` (`${AXON_SAGA_TOTAL_SEGMENTS:60}`), `axon.saga.replicas` (`${API_REPLICAS:1}`),
 `axon.jdbc.pool.size` (300), `axon.eventstore.*` (below), and the Micrometer
 `distribution` block.
 
@@ -398,11 +398,26 @@ one autocommitted statement) and that run measured `completion_ratio_inverse=0.0
 value stands — but revisit it before any run appreciably faster, and treat a non-zero
 `completion_ratio_inverse` on any `ES-4` run as a reason to suspect it first.
 
-**`axon.saga.total-segments` is 60 on every ES branch** and must stay that way — it is the
-fixed segment pool that `ceil(total-segments / replicas)` divides, and 60 splits evenly for
-2/3/4/5/6 replicas. ES-1/2/3 previously used `segments: 32`, so single-node results
-produced before that change are not comparable to later ones. Changing it requires
-resetting the `order-saga` tokens (`TRUNCATE token_entry`, which `k6/bench/reset.sh` does).
+**`axon.saga.total-segments` defaults to 60 on every ES branch, and every archived run used
+that value.** It is the fixed segment pool that `ceil(total-segments / replicas)` divides,
+and 60 splits evenly for 2/3/4/5/6 replicas. ES-1/2/3 previously used `segments: 32`, so
+single-node results produced before that change are not comparable to later ones. Changing
+it requires resetting the `order-saga` tokens (`TRUNCATE token_entry`, which
+`k6/bench/reset.sh` does on every run, so a bench run needs no manual step).
+
+**It is now a per-run knob**: `AXON_SAGA_TOTAL_SEGMENTS` (compose default 60) binds to it,
+and `bench.sh` records the value in `meta.json` as `saga_total_segments` — without which two
+runs of the same commit would be indistinguishable in `bench-results/`. It is suite-wide,
+not per-variant, because `run-suite.sh` has no per-variant env hook and a compose default
+always SETS the variable: vary it across passes, e.g.
+`AXON_SAGA_TOTAL_SEGMENTS=8 scripts/run-suite.sh --only ES-4`.
+
+Why it matters beyond tidiness: `order-saga` is a `TrackingEventProcessor`, so EACH segment
+opens its own tracking query over the whole event stream and discards the events it does not
+own. At 60 segments every appended event is read 63 times (60 saga + 3 projections), which
+the Phase-1 capacity runs measured as ~50-57 Postgres transactions per event — against ~1.2%
+of transactions for the item appends themselves. Prefer a power of two: at 60 under a
+64-bucket hash mask, segments 29-32 carry exactly double the load of the other 56.
 
 **`axon.jdbc.pool.size` must exceed the saga per-node claim.** At the old 150 with a
 60-thread claim the pool ran dry (`active=150, waiting=97`) and sagas that failed to
