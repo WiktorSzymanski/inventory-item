@@ -202,6 +202,28 @@ class SagaCommandFailureIT {
         )
     }
 
+    @Test
+    fun `the intake series are actually scrapeable under the names a panel would query`() {
+        // Micrometer's Java names are not its Prometheus names, and the gap is silent: a series
+        // that never resolves draws an empty panel, not an error. This repo has already lost a
+        // metric that way (a name ending in "created" is mangled by the Prometheus registry), and
+        // saga_intake_wait is the headline series of this branch — it is the only thing that
+        // distinguishes "the bound made it faster" from "the bound moved the wait somewhere I am
+        // not looking".
+        val scrape = rest.getForObject(url("/actuator/prometheus"), String::class.java) ?: ""
+
+        for (series in listOf(
+            "saga_intake_wait_seconds_bucket",   // the Timer's histogram, what percentiles need
+            "saga_intake_wait_seconds_count",
+            "saga_intake_permits_available",
+            "saga_intake_blocked",
+            "saga_intake_capacity",
+            "saga_intake_timeout_total",         // Counter, so `_total` — not the Java name
+        )) {
+            assertTrue(scrape.contains(series), "$series is not scrapeable; a panel on it draws nothing")
+        }
+    }
+
     /** Polls [supplier] until it returns non-null or [timeoutMs] elapses. */
     private fun <T> pollFor(timeoutMs: Long, supplier: () -> T?): T? {
         val deadline = System.currentTimeMillis() + timeoutMs
