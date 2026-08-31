@@ -408,6 +408,10 @@ meta = {
     # so two runs of the same commit can differ here. TO variants have no saga processor
     # and the value is meaningless for them.
     "saga_total_segments": int("${AXON_SAGA_TOTAL_SEGMENTS:-60}"),
+    # ES-4-bounded's intake bound, for the same reason: compose always SETS the variable, so two
+    # runs of the same commit can differ here. Meaningless for every other variant, which binds
+    # the property and never reads it.
+    "saga_intake_capacity": int("${AXON_SAGA_INTAKE_CAPACITY:-112}"),
     "k6_exit_code": int("$K6_EXIT"),
     "config": config,
     "steps": steps,
