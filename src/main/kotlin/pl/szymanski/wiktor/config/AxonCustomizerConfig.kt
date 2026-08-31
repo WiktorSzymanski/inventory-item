@@ -69,6 +69,11 @@ class AxonCustomizerConfig {
      * Only one direction is dangerous. FEWER segments shrink demand -- the pool is merely
      * oversized. MORE than the default push demand past the 350 that docker-compose
      * passes, so that case warns.
+     *
+     * `intake=` is ES-4-bounded's knob and is deliberately printed here rather than in a line of
+     * its own: it is the one number a run's logs must carry to be interpretable at all, and it
+     * does NOT enter the demand arithmetic -- a thread blocked on the intake gate holds the
+     * connection it already had and takes no new one. See [SagaIntakeGate].
      */
     private fun logPoolBudget(
         sagaProps: SagaProcessorProperties,
@@ -80,7 +85,7 @@ class AxonCustomizerConfig {
             CommandGatewayConfig.SINGLE_THREADED_PROJECTIONS
         val peakDemand = CommandGatewayConfig.CONNECTIONS_PER_BUSY_THREAD * busyThreads
         val budget = "segments=${sagaProps.totalSegments} replicas=${sagaProps.replicas} " +
-            "threads=$sagaThreadsPerNode | peak demand = " +
+            "threads=$sagaThreadsPerNode intake=${sagaProps.intakeCapacity} | peak demand = " +
             "${CommandGatewayConfig.CONNECTIONS_PER_BUSY_THREAD} x " +
             "(${CommandGatewayConfig.COMMAND_POOL_SIZE} command + $sagaThreadsPerNode saga + " +
             "${CommandGatewayConfig.SINGLE_THREADED_PROJECTIONS} projections) = $peakDemand " +

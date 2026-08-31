@@ -1,12 +1,15 @@
 package pl.szymanski.wiktor.integration
 
+import io.micrometer.core.instrument.MeterRegistry
 import org.axonframework.commandhandling.CommandBus
 import org.axonframework.commandhandling.gateway.CommandGateway
 import org.axonframework.messaging.MessageHandlerInterceptor
 import org.axonframework.modelling.command.ConcurrencyException
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.boot.test.web.server.LocalServerPort
@@ -16,6 +19,7 @@ import org.springframework.test.context.DynamicPropertySource
 import org.testcontainers.containers.PostgreSQLContainer
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
+import pl.szymanski.wiktor.config.SagaIntakeGate
 import pl.szymanski.wiktor.controller.CreateItemRequest
 import pl.szymanski.wiktor.controller.CreateOrderRequest
 import pl.szymanski.wiktor.controller.CreateOrderResponse
@@ -23,6 +27,7 @@ import pl.szymanski.wiktor.controller.OrderItemRequest
 import pl.szymanski.wiktor.service.command.FailOrderCommand
 import pl.szymanski.wiktor.service.command.SagaReserveItemCommand
 import org.springframework.web.client.RestTemplate
+import java.util.concurrent.Executor
 import javax.sql.DataSource
 
 private const val FAILING_ITEM = "ITEM-DOOMED"
@@ -33,6 +38,10 @@ private const val FAILING_ITEM = "ITEM-DOOMED"
     properties = [
         "axon.saga.total-segments=1",
         "axon.saga.replicas=1",
+        // ES-4-bounded: the tightest bound the gate can take, so every test in this class runs
+        // WITH the intake queue saturated. A bound that throttles is the branch; a bound that
+        // strands an order is the defect, and the assertions below are the same ones either way.
+        "axon.saga.intake-capacity=1",
         "axon.jdbc.pool.size=10",
         "spring.datasource.hikari.maximum-pool-size=10",
         "snapshot.enabled=false",
@@ -85,6 +94,11 @@ class SagaCommandFailureIT {
     @LocalServerPort private var port: Int = 0
     @Autowired private lateinit var dataSource: DataSource
     @Autowired private lateinit var commandGateway: CommandGateway
+    @Autowired private lateinit var meterRegistry: MeterRegistry
+
+    @Autowired
+    @Qualifier("sagaIntakeExecutor")
+    private lateinit var intakeExecutor: Executor
 
     private val rest = RestTemplate()
     private fun url(path: String) = "http://localhost:$port$path"
@@ -134,6 +148,58 @@ class SagaCommandFailureIT {
 
         val second = commandGateway.sendAndWait<Any?>(FailOrderCommand(orderId, "second"))
         assertEquals(false, second, "an already-terminal order must report that it did nothing")
+    }
+
+    @Test
+    fun `a saturated intake bound throttles new orders without stranding any of them`() {
+        // The one thing a bound must never do. Everything upstream of it is recoverable — a
+        // blocked segment thread just stops reading OrderCreatedEvents, and the backlog waits in
+        // the event store — but a start that the gate drops appends no event, completes no gateway
+        // callback and leaves the order PENDING forever with no counter and no log.
+        //
+        // capacity=1 (set on the class) means all but one arrival is blocked at any moment, which
+        // is the state a real run only reaches under saturation. Unit tests cover the gate's
+        // mechanics; only this covers it against a real TrackingEventProcessor, where the deadlock
+        // a saga-lifetime bound would cause would show up as exactly this test timing out.
+        val gate = intakeExecutor as SagaIntakeGate
+        assertEquals(1, gate.capacity, "axon.saga.intake-capacity must reach the gate, not just bind")
+
+        val jdbc = JdbcTemplate(dataSource)
+        val items = (1..4).map { "ITEM-BOUNDED-$it" }
+        items.forEach { rest.postForEntity(url("/inventory"), CreateItemRequest(it, 1000, 0), Void::class.java) }
+
+        // Multi-line orders on purpose: a continuation that queued behind the gate instead of
+        // bypassing it would deadlock here rather than merely slow down.
+        val orderIds = (1..20).map { i ->
+            rest.postForEntity(
+                url("/inventory/orders"),
+                CreateOrderRequest("user-1", items.map { OrderItemRequest(it, 1) }.take(1 + i % 4)),
+                CreateOrderResponse::class.java,
+            ).body!!.orderId
+        }
+
+        val pending = pollFor(90_000) {
+            val placeholders = orderIds.joinToString(",") { "?" }
+            jdbc.queryForObject(
+                "SELECT count(*) FROM orders WHERE order_id IN ($placeholders) AND status = 'PENDING'",
+                Long::class.java,
+                *orderIds.toTypedArray(),
+            )?.takeIf { it == 0L }
+        }
+        assertEquals(0L, pending, "the bound throttled these orders into never finishing")
+
+        assertEquals(
+            0.0,
+            meterRegistry.counter("saga.intake.timeout").count(),
+            "the gate gave up waiting and admitted anyway — this run did not measure capacity=1",
+        )
+        // Every start passed THROUGH the gate rather than around it. The unit tests assert the
+        // routing against a mocked gateway; this asserts it against the real @StartSaga path,
+        // where a missing @Qualifier would silently inject the ungated pool instead.
+        assertTrue(
+            (meterRegistry.find("saga.intake.wait").timer()?.count() ?: 0L) >= orderIds.size,
+            "fewer intake waits than orders — some starts bypassed the gate",
+        )
     }
 
     /** Polls [supplier] until it returns non-null or [timeoutMs] elapses. */

@@ -32,6 +32,18 @@ class OrderReservationSagaTest {
     /** Every command the saga dispatched, in order. */
     private val sent = mutableListOf<Any>()
 
+    /**
+     * Which executor each entry in [sent] was submitted through — parallel to it by index.
+     *
+     * The whole ES-4-bounded branch rests on this routing and NOTHING in the command stream
+     * reveals it: the same SagaReserveItemCommand is dispatched either way. See
+     * [pl.szymanski.wiktor.config.SagaIntakeGate].
+     */
+    private val lanes = mutableListOf<String>()
+
+    /** Set by [laneExecutor] for the duration of a task, so the gateway mock can tag what it sees. */
+    private var currentLane = "direct"
+
     /** Reserve commands for this item id complete exceptionally; everything else succeeds. */
     private var failingItemId: String? = null
 
@@ -57,6 +69,8 @@ class OrderReservationSagaTest {
     @BeforeEach
     fun setUp() {
         sent.clear()
+        lanes.clear()
+        currentLane = "direct"
         failingItemId = null
         failComplete = false
         syncThrowFor = null
@@ -67,6 +81,7 @@ class OrderReservationSagaTest {
         every { gateway.send<Any?>(capture(captured)) } answers {
             val command = captured.captured
             sent.add(command)
+            lanes.add(currentLane)
             if (syncThrowFor?.isInstance(command) == true) {
                 throw IllegalStateException("injected synchronous dispatch failure")
             }
@@ -88,8 +103,27 @@ class OrderReservationSagaTest {
 
     private fun inject(saga: Any) {
         setField(saga, "commandGateway", gateway)
-        setField(saga, "commandExecutor", Executor { it.run() })
+        setField(saga, "commandExecutor", laneExecutor("command"))
+        setField(saga, "intakeExecutor", laneExecutor("intake"))
         setField(saga, "meterRegistry", meters)
+    }
+
+    /** Runs inline, as before, but records which lane the work went through. */
+    private fun laneExecutor(name: String) = Executor { task ->
+        val previous = currentLane
+        currentLane = name
+        try {
+            task.run()
+        } finally {
+            currentLane = previous
+        }
+    }
+
+    /** The lane the first command of [type] was submitted through. */
+    private fun laneOfFirst(type: Class<*>): String {
+        val index = sent.indexOfFirst { type.isInstance(it) }
+        assertTrue(index >= 0, "no ${type.simpleName} was sent, got: $sent")
+        return lanes[index]
     }
 
     private fun setField(target: Any, name: String, value: Any) {
@@ -231,6 +265,45 @@ class OrderReservationSagaTest {
         assertEquals(1, sent.filterIsInstance<FailOrderCommand>().size)
         assertEquals(1.0, counter("fail-order-ignored"), "an ignored FailOrderCommand must be visible")
         assertEquals(0.0, counter("fail-order"), "it did not fail — it was ignored; the two are different")
+    }
+
+    @Test
+    fun `only the first reservation of a new order passes through the intake gate`() {
+        // The property the branch exists for: incoming sagas are bounded, sagas already in
+        // progress are not. Routing a continuation through the gate would put an in-flight saga
+        // back behind the arrivals the gate is holding — the starvation this branch removes,
+        // reintroduced from the inside. Routing the start AROUND it removes the bound entirely,
+        // and both mistakes are invisible in the command stream.
+        fixture.givenNoPriorActivity()
+            .whenPublishingA(OrderCreatedEvent(orderId, "user-1", items, correlationId))
+
+        assertEquals(1, sent.size, "the first reserve is the only command so far, got: $sent")
+        assertEquals("intake", laneOfFirst(SagaReserveItemCommand::class.java))
+
+        fixture.whenPublishingA(InventoryReservedEvent("ITEM-1", correlationId, 2))
+
+        assertEquals(2, sent.size, "the second reserve should now have been sent, got: $sent")
+        assertEquals("command", lanes[1], "a continuation must bypass the gate")
+    }
+
+    @Test
+    fun `completion, failure and compensation all bypass the intake gate`() {
+        // Already-admitted work. A terminal disposition queued behind the arrivals the gate is
+        // holding would keep an order PENDING for exactly as long as the bound is saturated, and
+        // abandon()'s own RejectedExecutionException fallback assumes the ungated pool's
+        // never-rejecting contract.
+        val singleLine = listOf(OrderItem("ITEM-1", 2))
+
+        fixture.givenAPublished(OrderCreatedEvent(orderId, "user-1", singleLine, correlationId))
+            .whenPublishingA(InventoryReservedEvent("ITEM-1", correlationId, 2))
+        assertEquals("command", laneOfFirst(CompleteOrderCommand::class.java))
+
+        setUp()
+        failingItemId = "ITEM-2"
+        fixture.givenAPublished(OrderCreatedEvent(orderId, "user-1", items, correlationId))
+            .whenPublishingA(InventoryReservedEvent("ITEM-1", correlationId, 2))
+        assertEquals("command", laneOfFirst(ReleaseReservationCommand::class.java))
+        assertEquals("command", laneOfFirst(FailOrderCommand::class.java))
     }
 
     private fun counter(stage: String): Double =

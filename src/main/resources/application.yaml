@@ -27,6 +27,14 @@ axon:
     # stopped on every bench run, so a changed value takes effect on the next run with
     # no manual reset; a hand-run stack on a pre-existing volume keeps the old count.
     total-segments: ${AXON_SAGA_TOTAL_SEGMENTS:60}   # per-run override; 60 divides 2/3/4/5/6 replicas
+    # ES-4-bounded's whole variable. The bound on the QUEUE OF INCOMING SAGAS, not on sagas in
+    # flight: a permit is taken when a new order's first reserve is submitted and returned as that
+    # command leaves the command pool's queue. Full => the segment thread blocks in @StartSaga and
+    # the processor stops reading, so backpressure lands in the event store. Default 112 =
+    # CommandGatewayConfig.COMMAND_POOL_SIZE, i.e. at most one command-pool turn of new work ahead
+    # of an in-flight saga's next step. Sweep it DOWN to strengthen the bound. Needs no token reset
+    # (unlike total-segments above) — it is read at bean creation, not at token init.
+    intake-capacity: ${AXON_SAGA_INTAKE_CAPACITY:112}
     replicas: ${API_REPLICAS:1}     # must equal REPLICAS in .env; drives per-node claim = ceil(total/replicas)
   jdbc:
     pool:

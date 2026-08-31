@@ -41,9 +41,25 @@ class OrderReservationSaga {
     // Commands are submitted here so the saga processor thread is never blocked waiting
     // for per-aggregate locks or JDBC writes. The lock wait happens on a pool thread;
     // the result event arrives in the event store when the command succeeds.
+    //
+    // ES-4-bounded: this is the UNGATED lane, and everything already admitted uses it —
+    // continuations, completion, failure, compensation and abandon(). Its queue is unbounded, so
+    // it never rejects except at shutdown, which is the contract abandon()'s own
+    // RejectedExecutionException fallback is written against.
     @Autowired @Transient
     @Qualifier("sagaCommandExecutor")
     private lateinit var commandExecutor: Executor
+
+    // ES-4-bounded: the front door, and the only gated submission in this class. Wraps the same
+    // pool as commandExecutor behind a semaphore of AXON_SAGA_INTAKE_CAPACITY slots, so at most
+    // that many not-yet-started orders can sit in front of an in-flight saga's next step. When it
+    // is full THIS THREAD BLOCKS, which is the point: the order-saga processor stops reading
+    // OrderCreatedEvents and the backlog waits in the durable event store instead of the heap.
+    // See SagaIntakeGate for why the permit is returned at dequeue and why gating anything else
+    // here would deadlock the processor.
+    @Autowired @Transient
+    @Qualifier("sagaIntakeExecutor")
+    private lateinit var intakeExecutor: Executor
 
     @Autowired @Transient
     private lateinit var meterRegistry: MeterRegistry
@@ -71,7 +87,8 @@ class OrderReservationSaga {
         createdAtMillis = timestamp.toEpochMilli()
         SagaLifecycle.associateWith("correlationId", correlationId.toString())
         log.info("[SAGA] start orderId={} items={}", orderId, items.size)
-        sendNextReservation()
+        // The ONLY gated call. This is a new order arriving.
+        sendNextReservation(admit = true)
     }
 
     @SagaEventHandler(associationProperty = "correlationId")
@@ -80,7 +97,9 @@ class OrderReservationSaga {
         currentIndex++
         log.debug("[SAGA] reserved itemId={} ({}/{}) orderId={}", event.id, currentIndex, items.size, orderId)
         if (currentIndex < items.size) {
-            sendNextReservation()
+            // Ungated: this saga was admitted when it started, and making it queue behind the
+            // arrivals the gate is holding is precisely the starvation this branch removes.
+            sendNextReservation(admit = false)
         } else {
             log.info("[SAGA] all items reserved, completing orderId={}", orderId)
             // reservedItems.add above already ran, so this snapshot is the WHOLE order, not a prefix.
@@ -144,7 +163,7 @@ class OrderReservationSaga {
         }
     }
 
-    private fun sendNextReservation() {
+    private fun sendNextReservation(admit: Boolean) {
         val item = items[currentIndex]
         // Snapshotted on the saga processor thread. Safe because reservations are strictly
         // sequential — exactly one command is in flight per saga, and the only thing that mutates
@@ -153,7 +172,8 @@ class OrderReservationSaga {
         val correlationIdCopy = correlationId
         val toRelease = reservedItems.toList()
         log.debug("[SAGA] reserving itemId={} ({}/{}) orderId={}", item.itemId, currentIndex + 1, items.size, orderId)
-        commandExecutor.execute {
+        val executor = if (admit) intakeExecutor else commandExecutor
+        executor.execute {
             dispatchOrAbandon(orderIdCopy, toRelease, "reserve") {
                 commandGateway.send<Any?>(SagaReserveItemCommand(item.itemId, item.quantity, correlationIdCopy))
             }

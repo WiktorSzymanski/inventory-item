@@ -65,6 +65,11 @@ class CommandGatewayConfig {
          * Same 350 that docker-compose's AXON_JDBC_POOL_SIZE default passes, same 175 executing
          * threads, same retry policy. A run that exports a lower pool size silently breaks that.
          *
+         * **ES-4-bounded adds no term to that sum.** [sagaIntakeExecutor] wraps the command pool in
+         * a semaphore; a caller blocked on it is an order-saga segment thread already counted in
+         * the 60, already holding its saga-store connection, and taking no new one while it waits.
+         * The bound moves the backlog into the durable event store, not into the pool.
+         *
          * **TOMCAT IS NOT IN THAT SUM, AND IT IS A REAL DEMANDER.** Inherited from the parent, not
          * introduced here: `InventoryService` dispatches the accept command with `sendAndWait` on
          * the Tomcat thread and `SimpleCommandBus` handles it THERE, so every in-flight POST holds
@@ -178,6 +183,36 @@ class CommandGatewayConfig {
         monitorPool(meterRegistry, "command", "saga-command", pool)
         return pool
     }
+
+    /**
+     * ES-4-bounded: the gated front door onto [sagaCommandExecutor], and the branch's only variable.
+     *
+     * Wraps the pool above rather than replacing it, so the pool itself is byte-identical to ES-4 —
+     * same 112 threads, same unbounded internal queue — and every existing invariant written
+     * against it holds: [ConcurrencyRetryScheduler]'s hand-off and the saga's `abandon()`
+     * disposition still submit to a queue that cannot reject them except at shutdown.
+     *
+     * Only [pl.szymanski.wiktor.domain.saga.OrderReservationSaga]'s `@StartSaga` path takes this
+     * bean. See [SagaIntakeGate] for what it bounds, why the permit is returned at dequeue, and why
+     * a bound on sagas IN FLIGHT would deadlock the order-saga processor.
+     *
+     * **It spends no connections.** A caller blocked here is an order-saga segment thread that
+     * already holds its saga-store connection and takes no new one, so the budget in
+     * [RETRY_POOL_SIZE]'s doc is unchanged. What does change is how LONG that connection is held —
+     * the one way this branch could bite the pool, so read
+     * `hikaricp_connections_timeout_total{pool="axon-jdbc-pool"}` on every run here.
+     */
+    @Bean
+    @Qualifier("sagaIntakeExecutor")
+    fun sagaIntakeExecutor(
+        @Qualifier("sagaCommandExecutor") sagaCommandExecutor: Executor,
+        sagaProps: SagaProcessorProperties,
+        meterRegistry: MeterRegistry,
+    ): Executor = SagaIntakeGate(
+        capacity = sagaProps.intakeCapacity,
+        delegate = sagaCommandExecutor,
+        meterRegistry = meterRegistry,
+    )
 
     /**
      * Named threads so a `jcmd <pid> Thread.print` answers "where does a retry actually execute?"
