@@ -10,10 +10,12 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.boot.test.web.server.LocalServerPort
-import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.data.mongodb.core.MongoOperations
+import org.springframework.data.mongodb.core.query.Criteria.where
+import org.springframework.data.mongodb.core.query.Query
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
-import org.testcontainers.containers.PostgreSQLContainer
+import org.testcontainers.containers.MongoDBContainer
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import pl.szymanski.wiktor.controller.CreateItemRequest
@@ -23,7 +25,8 @@ import pl.szymanski.wiktor.controller.OrderItemRequest
 import pl.szymanski.wiktor.service.command.FailOrderCommand
 import pl.szymanski.wiktor.service.command.SagaReserveItemCommand
 import org.springframework.web.client.RestTemplate
-import javax.sql.DataSource
+import pl.szymanski.wiktor.config.MongoCollections
+import pl.szymanski.wiktor.repository.OrderProjection
 
 private const val FAILING_ITEM = "ITEM-DOOMED"
 
@@ -33,30 +36,30 @@ private const val FAILING_ITEM = "ITEM-DOOMED"
     properties = [
         "axon.saga.total-segments=1",
         "axon.saga.replicas=1",
-        "axon.jdbc.pool.size=10",
-        "spring.datasource.hikari.maximum-pool-size=10",
+        "axon.mongo.pool.size=10",
         "snapshot.enabled=false",
     ],
 )
 class SagaCommandFailureIT {
 
     companion object {
+        // Replica set, not a bare mongod: MongoTransactionManager cannot start a session without
+        // one. MongoDBContainer initiates it for us.
         @Container
         @JvmStatic
-        val postgres: PostgreSQLContainer<*> = PostgreSQLContainer("postgres:16-alpine")
-            .withDatabaseName("inventory")
-            .withUsername("inventory")
-            .withPassword("inventory")
+        val mongoDb: MongoDBContainer = MongoDBContainer("mongo:7")
 
         @JvmStatic
         @DynamicPropertySource
-        fun datasourceProperties(registry: DynamicPropertyRegistry) {
-            registry.add("spring.datasource.url") { postgres.jdbcUrl }
-            registry.add("spring.datasource.username") { postgres.username }
-            registry.add("spring.datasource.password") { postgres.password }
-            registry.add("spring.flyway.url") { postgres.jdbcUrl }
-            registry.add("spring.flyway.user") { postgres.username }
-            registry.add("spring.flyway.password") { postgres.password }
+        fun mongoProperties(registry: DynamicPropertyRegistry) {
+            registry.add("spring.mongodb.uri") {
+                // directConnection=true, and it is required rather than tidy. MongoDBContainer
+                // initiates the replica set advertising the CONTAINER's hostname, which does not
+                // resolve from the host, so a discovering driver times out looking for a primary
+                // it can reach. A direct connection to that primary still supports transactions,
+                // which is what MongoTransactionManager needs.
+                "${mongoDb.getReplicaSetUrl("inventory")}?directConnection=true"
+            }
         }
     }
 
@@ -70,8 +73,9 @@ class SagaCommandFailureIT {
                     val payload = unitOfWork.message.payload
                     // `id`, not `itemId` — see SagaReserveItemCommand's declaration.
                     if (payload is SagaReserveItemCommand && payload.id == FAILING_ITEM) {
-                        // Same exception SQLStateResolver produces from a 23505, so this exercises
-                        // the retry-then-give-up path rather than a bare dispatch error.
+                        // Same exception MongoConflictResolver produces from a duplicate key or a
+                        // WriteConflict, so this exercises the retry-then-give-up path rather than
+                        // a bare dispatch error.
                         throw ConcurrencyException("injected conflict for $FAILING_ITEM")
                     }
                     chain.proceed()
@@ -83,7 +87,7 @@ class SagaCommandFailureIT {
     // Spring Boot 4.0 dropped TestRestTemplate from spring-boot-starter-test (it now lives in the
     // separate spring-boot-restclient-test module), so this drives the random port directly.
     @LocalServerPort private var port: Int = 0
-    @Autowired private lateinit var dataSource: DataSource
+    @Autowired private lateinit var mongo: MongoOperations
     @Autowired private lateinit var commandGateway: CommandGateway
 
     private val rest = RestTemplate()
@@ -91,8 +95,6 @@ class SagaCommandFailureIT {
 
     @Test
     fun `an order whose reservation never succeeds ends REJECTED with no saga left behind`() {
-        val jdbc = JdbcTemplate(dataSource)
-
         rest.postForEntity(url("/inventory"), CreateItemRequest(FAILING_ITEM, 100, 0), Void::class.java)
 
         val orderId = rest.postForEntity(
@@ -102,16 +104,18 @@ class SagaCommandFailureIT {
         ).body!!.orderId
 
         val status = pollFor(60_000) {
-            jdbc.query("SELECT status FROM orders WHERE order_id = ?", { rs, _ -> rs.getString(1) }, orderId)
-                .firstOrNull()
+            mongo.findOne(Query(where("id").`is`(orderId)), OrderProjection::class.java)
+                ?.status
                 ?.takeIf { it != "PENDING" }
         }
         assertEquals("REJECTED", status, "order $orderId never reached a terminal status")
 
-        val sagaRows = pollFor(30_000) {
-            jdbc.queryForObject("SELECT count(*) FROM saga_entry", Long::class.java)?.takeIf { it == 0L }
+        // One collection, not two: MongoSagaStore keeps a saga's association values inside the
+        // saga document, so there is no association_value_entry to check alongside it.
+        val sagaDocs = pollFor(30_000) {
+            mongo.count(Query(), MongoCollections.SAGAS).takeIf { it == 0L }
         }
-        assertEquals(0L, sagaRows, "the abandoned saga was never ended")
+        assertEquals(0L, sagaDocs, "the abandoned saga was never ended")
     }
 
     @Test

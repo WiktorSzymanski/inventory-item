@@ -1,13 +1,9 @@
 package pl.szymanski.wiktor.config
 
 import com.fasterxml.jackson.module.kotlin.kotlinModule
-import com.zaxxer.hikari.HikariDataSource
 import io.micrometer.core.instrument.MeterRegistry
-import org.axonframework.common.jdbc.DataSourceConnectionProvider
 import org.axonframework.common.lock.NullLockFactory
 import org.axonframework.common.transaction.TransactionManager
-import org.axonframework.eventhandling.tokenstore.jdbc.JdbcTokenStore
-import org.axonframework.eventhandling.tokenstore.jdbc.TokenSchema
 import org.axonframework.eventsourcing.EventCountSnapshotTriggerDefinition
 import org.axonframework.eventsourcing.EventSourcingRepository
 import org.axonframework.eventsourcing.GenericAggregateFactory
@@ -16,12 +12,12 @@ import org.axonframework.eventsourcing.SnapshotTriggerDefinition
 import org.axonframework.eventsourcing.Snapshotter
 import org.axonframework.eventsourcing.eventstore.EventStorageEngine
 import org.axonframework.eventsourcing.eventstore.EventStore
-import org.axonframework.eventsourcing.eventstore.jdbc.EventSchema
-import org.axonframework.eventsourcing.eventstore.jdbc.JdbcEventStorageEngine
-import org.axonframework.eventsourcing.eventstore.jpa.SQLStateResolver
-import org.axonframework.modelling.saga.repository.jdbc.JdbcSagaStore
-import org.axonframework.modelling.saga.repository.jdbc.PostgresSagaSqlSchema
-import org.axonframework.modelling.saga.repository.jdbc.SagaSchema
+import org.axonframework.extensions.mongo.eventhandling.saga.repository.MongoSagaStore
+import org.axonframework.extensions.mongo.eventsourcing.eventstore.MongoEventStorageEngine
+import org.axonframework.extensions.mongo.eventsourcing.eventstore.StorageStrategy
+import org.axonframework.extensions.mongo.eventsourcing.eventstore.documentperevent.DocumentPerEventStorageStrategy
+import org.axonframework.extensions.mongo.eventsourcing.eventstore.documentperevent.EventEntryConfiguration
+import org.axonframework.extensions.mongo.eventsourcing.tokenstore.MongoTokenStore
 import org.axonframework.serialization.Serializer
 import org.axonframework.spring.messaging.unitofwork.SpringTransactionManager
 import org.slf4j.LoggerFactory
@@ -31,12 +27,44 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Primary
-import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
-import org.springframework.jdbc.datasource.DataSourceTransactionManager
+import org.springframework.data.mongodb.MongoDatabaseFactory
+import org.springframework.data.mongodb.MongoTransactionManager
 import org.springframework.transaction.PlatformTransactionManager
 import pl.szymanski.wiktor.domain.InventoryItem
-import javax.sql.DataSource
+import java.time.Duration
+import org.axonframework.extensions.mongo.MongoTemplate as AxonMongoTemplate
 
+/**
+ * Every Axon store on this branch, on MongoDB.
+ *
+ * This is the whole of the ES-2 -> ES-2-mongo delta on the write path. The aggregate, the saga,
+ * the processor topology, the thread widths, the retry curve, the snapshot trigger and every
+ * Micrometer name are untouched, which is the point: an ES-2 run and an ES-2-mongo run at the
+ * same workload point differ in the store and in nothing else.
+ *
+ * Three things that were in the Postgres version are GONE rather than translated, and each
+ * absence is deliberate:
+ *
+ *  - **The second connection pool.** ES-2 builds `axonDataSource`, a Hikari pool separate from
+ *    the app's, so Axon never contends with the Spring Data repositories. The premise there is
+ *    that a JDBC connection is held for the length of a transaction, so a busy thread pins two.
+ *    The MongoDB driver checks a connection out per OPERATION and returns it, so there is
+ *    nothing for a second pool to protect against; one client with a wide pool is both simpler
+ *    and the only shape Micrometer's `mongodb.driver.pool.*` gauges can report on. See
+ *    [CommandGatewayConfig] for what that does to the budget arithmetic.
+ *
+ *  - **`EventSchema` / `TokenSchema` / `PostgresSagaSqlSchema`.** Column-name mapping has no
+ *    counterpart; a document carries its own field names. Only the COLLECTION names are chosen,
+ *    in [MongoCollections], and they deliberately match the Postgres table names.
+ *
+ *  - **The three gap knobs.** `max-gap-offset`, `gap-timeout-ms` and `gap-cleaning-threshold`
+ *    exist on ES-2 because `global_index` is a non-transactional `BIGSERIAL`: a rolled-back
+ *    append burns a value and leaves a permanent hole that `GapAwareTrackingToken` must carry.
+ *    `MongoTrackingToken` is not indexed off a sequence at all -- it is a timestamp plus the
+ *    identifiers seen inside a look-back window -- so the concept does not transfer. Its
+ *    analogous CORRECTNESS knob is `lookBackTime` below, and it inherits the same warning:
+ *    a non-zero `completion_ratio_inverse` on any run here should send you to that value first.
+ */
 @Configuration
 @EnableConfigurationProperties(SnapshotProperties::class)
 class AxonConfig {
@@ -50,122 +78,107 @@ class AxonConfig {
             findAndRegisterModules()
         }
 
-    // Dedicated pool for Axon so it never contends with the app's JDBC pool
-    // (Spring Data JDBC repos + NamedParameterJdbcTemplate share the primary DataSource).
-    @Bean(name = ["axonDataSource"])
-    fun axonDataSource(
-        @Value("\${spring.datasource.url}") url: String,
-        @Value("\${spring.datasource.username}") username: String,
-        @Value("\${spring.datasource.password}") password: String,
-        @Value("\${axon.jdbc.pool.size:50}") poolSize: Int,
-    ): DataSource = HikariDataSource().apply {
-        jdbcUrl = url
-        this.username = username
-        this.password = password
-        driverClassName = "org.postgresql.Driver"
-        maximumPoolSize = poolSize
-        connectionTimeout = 5_000
-        poolName = "axon-jdbc-pool"
-    }
-
-    @Bean
-    fun axonTransactionManager(@Qualifier("axonDataSource") axonDataSource: DataSource): TransactionManager =
-        SpringTransactionManager(DataSourceTransactionManager(axonDataSource))
-
-    // Explicit primary transaction manager — Spring Boot's auto-config backs off when any
-    // PlatformTransactionManager bean is present, so we must register this ourselves.
+    /**
+     * Explicit and `@Primary` for the same reason ES-2 declares its own: Spring Boot's
+     * auto-configuration backs off as soon as any `PlatformTransactionManager` bean exists, and
+     * [SpringTransactionManager] below needs one to hand to Axon.
+     *
+     * This is where the single-node replica set earns its keep. `MongoTransactionManager` opens
+     * a real MongoDB session, so an Axon unit of work that appends several events, advances a
+     * token and writes a saga commits all of it or none of it. Against a standalone `mongod` the
+     * same manager would fail at the first `startTransaction`, which is why
+     * `docker-compose.yml` runs `--replSet rs0` and blocks the api on the init container.
+     */
     @Bean("transactionManager")
     @Primary
-    fun transactionManager(dataSource: DataSource): PlatformTransactionManager =
-        DataSourceTransactionManager(dataSource)
-
-    // Spring PlatformTransactionManager backed by axonDataSource — used by projection updaters
-    // so their @Transactional writes draw from the Axon pool instead of the primary Spring pool.
-    @Bean("axonSpringTransactionManager")
-    fun axonSpringTransactionManager(@Qualifier("axonDataSource") axonDataSource: DataSource): PlatformTransactionManager =
-        DataSourceTransactionManager(axonDataSource)
-
-    @Bean("axonJdbcTemplate")
-    fun axonJdbcTemplate(@Qualifier("axonDataSource") axonDataSource: DataSource): NamedParameterJdbcTemplate =
-        NamedParameterJdbcTemplate(axonDataSource)
+    fun transactionManager(factory: MongoDatabaseFactory): PlatformTransactionManager =
+        MongoTransactionManager(factory)
 
     @Bean
-    fun eventSchema(): EventSchema = EventSchema.builder()
-        .eventTable("domain_event_entry")
-        .snapshotTable("snapshot_event_entry")
-        .globalIndexColumn("global_index")
-        .timestampColumn("time_stamp")
-        .eventIdentifierColumn("event_identifier")
-        .aggregateIdentifierColumn("aggregate_identifier")
-        .sequenceNumberColumn("sequence_number")
-        .typeColumn("type")
-        .payloadTypeColumn("payload_type")
-        .payloadRevisionColumn("payload_revision")
-        .payloadColumn("payload")
-        .metaDataColumn("meta_data")
-        .build()
+    fun axonTransactionManager(transactionManager: PlatformTransactionManager): TransactionManager =
+        SpringTransactionManager(transactionManager)
+
+    /**
+     * The collections the Axon stores read and write, session-aware so their writes join the
+     * transaction opened above. [SessionAwareMongoTemplate] explains why this is hand-written
+     * rather than taken from the extension's Spring Boot starter.
+     */
+    @Bean("axonMongoTemplate")
+    fun axonMongoTemplate(factory: MongoDatabaseFactory): AxonMongoTemplate =
+        SessionAwareMongoTemplate(factory)
+
+    /**
+     * How an event becomes a document. `DocumentPerEvent` -- one document per event -- rather
+     * than `DocumentPerCommit`, because it is the strategy that keeps the store queryable the
+     * way `domain_event_entry` is, and because with a transaction manager wired the atomicity
+     * that `DocumentPerCommit` would buy structurally is already there.
+     *
+     * `lookBackTime` is the [MongoTrackingToken] equivalent of ES-2's `max-gap-offset`: how far
+     * back a tracking processor re-reads to catch events whose write landed after it had already
+     * advanced past their timestamp. 1000 ms is the extension's own default. Overridable so it
+     * can be swept, exactly as `max-gap-offset` was on ES-2.
+     */
+    @Bean
+    fun eventStorageStrategy(
+        @Value("\${axon.eventstore.mongo.look-back-time-ms:1000}") lookBackTimeMs: Long,
+    ): StorageStrategy = DocumentPerEventStorageStrategy(
+        EventEntryConfiguration.getDefault(),
+        Duration.ofMillis(lookBackTimeMs),
+    )
+
+    /**
+     * Runs before the stores that need the indexes, by being their constructor argument. See
+     * [MongoIndexInitializer] for why the DDL cannot simply be `ensureIndexes()` on the beans
+     * below.
+     */
+    @Bean
+    fun mongoIndexInitializer(
+        factory: MongoDatabaseFactory,
+        eventStorageStrategy: StorageStrategy,
+        @Qualifier("eventSerializer") eventSerializer: Serializer,
+    ): MongoIndexInitializer =
+        MongoIndexInitializer(DirectMongoTemplate(factory), eventStorageStrategy, eventSerializer)
 
     @Bean
     fun tokenStore(
-        @Qualifier("axonDataSource") axonDataSource: DataSource,
+        @Qualifier("axonMongoTemplate") mongoTemplate: AxonMongoTemplate,
+        axonTransactionManager: TransactionManager,
         serializer: Serializer,
-    ): JdbcTokenStore = JdbcTokenStore.builder()
-        .connectionProvider(DataSourceConnectionProvider(axonDataSource))
+        @Suppress("UNUSED_PARAMETER") mongoIndexInitializer: MongoIndexInitializer,
+    ): MongoTokenStore = MongoTokenStore.builder()
+        .mongoTemplate(mongoTemplate)
         .serializer(serializer)
-        .schema(
-            TokenSchema.builder()
-                .setTokenTable("token_entry")
-                .setProcessorNameColumn("processor_name")
-                .setSegmentColumn("segment")
-                .setTokenColumn("token")
-                .setTokenTypeColumn("token_type")
-                .setTimestampColumn("timestamp")
-                .setOwnerColumn("owner")
-                .build()
-        )
+        .transactionManager(axonTransactionManager)
+        // Already created by mongoIndexInitializer, outside any transaction. Leaving this true
+        // would re-run createIndexes inside the MongoTransactionManager's session, which
+        // MongoDB refuses on an existing collection -- so the app would start once on a virgin
+        // database and fail on every restart afterwards.
+        .ensureIndexes(false)
         .build()
 
     @Bean
     fun eventStorageEngine(
-        @Qualifier("axonDataSource") axonDataSource: DataSource,
+        @Qualifier("axonMongoTemplate") mongoTemplate: AxonMongoTemplate,
         axonTransactionManager: TransactionManager,
-        eventSchema: EventSchema,
+        eventStorageStrategy: StorageStrategy,
         @Qualifier("eventSerializer") eventSerializer: Serializer,
         meterRegistry: MeterRegistry,
-        // Gap-handling tuning. Overridable so the benchmark can A/B the default
-        // (maxGapOffset=10000, gapTimeout=60000) against the tightened values below.
-        @Value("\${axon.eventstore.max-gap-offset:500}") maxGapOffset: Int,
-        @Value("\${axon.eventstore.gap-timeout-ms:5000}") gapTimeoutMs: Int,
-        @Value("\${axon.eventstore.gap-cleaning-threshold:250}") gapCleaningThreshold: Int,
+        @Suppress("UNUSED_PARAMETER") mongoIndexInitializer: MongoIndexInitializer,
     ): EventStorageEngine {
-        val jdbc = JdbcEventStorageEngine.builder()
-            .connectionProvider(DataSourceConnectionProvider(axonDataSource))
+        val mongo = MongoEventStorageEngine.builder()
+            .mongoTemplate(mongoTemplate)
+            .storageStrategy(eventStorageStrategy)
             .transactionManager(axonTransactionManager)
-            .schema(eventSchema)
             .eventSerializer(eventSerializer)
             .snapshotSerializer(eventSerializer)
-            // With NullLockFactory on the InventoryItem repository the UNIQUE
-            // (aggregate_identifier, sequence_number) constraint is the ONLY conflict detector — not a
-            // multi-node backstop but the primary mechanism on every node. Translate Postgres 23xxx
-            // (unique_violation 23505) into Axon's ConcurrencyException so ConcurrencyRetryScheduler
-            // fires instead of leaking a raw store exception. Without this the engine falls back to
-            // JdbcSQLErrorCodesResolver, which is blind to pgjdbc and would make every conflict
-            // terminal.
-            .persistenceExceptionResolver(SQLStateResolver())
-            // A rolled-back append burns a non-transactional BIGSERIAL global_index, leaving a
-            // PERMANENT gap; with defaults (maxGapOffset=10000, gapTimeout=60s) the
-            // GapAwareTrackingToken carries ~10k gaps (~41 kB) rewritten every batch, bloating the
-            // token_entry TOAST. Lock-free, such rollbacks are routine rather than rare, so this is
-            // load-bearing rather than insurance: record gaps only within maxGapOffset of the head,
-            // and let gapCleaningThreshold + the short gapTimeout purge them from the token
-            // continuously (on the fly). Values copied from ES-3/ES-4; the ES-2 baseline runs Axon's
-            // defaults, so this is the SECOND thing this branch changes. See application.yaml for why
-            // maxGapOffset is also a correctness knob.
-            .maxGapOffset(maxGapOffset)
-            .gapTimeout(gapTimeoutMs)
-            .gapCleaningThreshold(gapCleaningThreshold)
+            // The counterpart of ES-2's SQLStateResolver(), and load-bearing for the same
+            // reason: with NullLockFactory below, a conflict that is not reported as a
+            // ConcurrencyException is never retried and fails terminally. The engine installs a
+            // duplicate-key-only resolver by default; [MongoConflictResolver] also recognises
+            // the WriteConflict that the same race produces once appends run in a transaction.
+            .persistenceExceptionResolver(MongoConflictResolver)
             .build()
-        return TimedEventStorageEngine(jdbc, meterRegistry)
+        return TimedEventStorageEngine(mongo, meterRegistry)
     }
 
     @Bean
@@ -178,23 +191,21 @@ class AxonConfig {
         else
             NoSnapshotTriggerDefinition.INSTANCE
 
-    // ES-2-NullLock: uncached event-sourcing repository for the hot InventoryItem aggregate, built
-    // LOCK-FREE with NullLockFactory. Nothing serialises writers to one InventoryItem, in this JVM or
-    // across nodes; conflicts are detected by the event store's unique constraint and resolved by
-    // retry.
-    //
-    // ES-2 declares no repository bean at all and lets Axon's implicit @Aggregate registration build
-    // an EventSourcingRepository on LockingRepository's pessimistic default — there is no lockFactory
-    // line to flip, so the repository has to be introduced here AND named on the annotation.
-    // @Aggregate(repository = "inventoryItemRepository") is what makes this bean take effect: a bean
-    // the annotation does not name is silently ignored and the aggregate keeps its lock. Removing
-    // AxonCustomizerConfig.configureInventoryItem() was equally load-bearing — see the note there.
-    //
-    // The snapshot trigger MOVES here from @Aggregate(snapshotTriggerDefinition = ...): Axon ignores
-    // that attribute once `repository` is set, so leaving it on the annotation would silently disable
-    // snapshotting — the one thing that makes ES-2 ES-2. InventoryLockFreeConcurrencyTest asserts a
-    // snapshot row is still written. OrderAggregate keeps Axon's default (pessimistic, uncached)
-    // repository, which picks up this same trigger as the only SnapshotTriggerDefinition bean.
+    /**
+     * Unchanged from ES-2, including every reason it is spelled out rather than left implicit.
+     *
+     * `@Aggregate(repository = "inventoryItemRepository")` is what makes this bean take effect;
+     * a bean the annotation does not name is silently ignored and the aggregate keeps Axon's
+     * pessimistic default. The snapshot trigger has to be set HERE rather than on the
+     * annotation, because Axon ignores `snapshotTriggerDefinition` once `repository` is set --
+     * and snapshotting at 30 events is the one thing that makes ES-2 ES-2.
+     *
+     * [NullLockFactory] overrides `LockingRepository`'s pessimistic default: concurrent commands
+     * on one aggregate all load at sequence N and all try to append N+1. Exactly one wins; the
+     * losers get a ConcurrencyException (via [MongoConflictResolver] above) and are retried by
+     * [ConcurrencyRetryScheduler], which reloads from the newest snapshot plus its tail and so
+     * sees the winner's event.
+     */
     @Bean
     fun inventoryItemRepository(
         eventStore: EventStore,
@@ -205,32 +216,25 @@ class AxonConfig {
             .eventStore(eventStore)
             .aggregateFactory(GenericAggregateFactory(InventoryItem::class.java))
             .snapshotTriggerDefinition(snapshotTrigger)
-            // Overrides the LockingRepository.Builder default (PessimisticLockFactory): concurrent
-            // commands on one aggregate all load at sequence N and all try to append N+1. Exactly one
-            // wins; the losers get a ConcurrencyException (SQLStateResolver above) and are retried by
-            // ConcurrencyRetryScheduler, which reloads the aggregate from the store — from the newest
-            // snapshot plus its tail — and so sees the winner's event.
             .lockFactory(NullLockFactory.INSTANCE)
             .build()
     }
 
+    /**
+     * One collection, not two. `JdbcSagaStore` needs `saga_entry` AND `association_value_entry`
+     * plus two indexes to join them; [MongoSagaStore] keeps a saga's association values as an
+     * array inside its own document and queries them with a single predicate. The lookup index
+     * is created by [MongoIndexInitializer].
+     */
     @Bean
     fun sagaStore(
-        @Qualifier("axonDataSource") axonDataSource: DataSource,
+        @Qualifier("axonMongoTemplate") mongoTemplate: AxonMongoTemplate,
+        axonTransactionManager: TransactionManager,
         serializer: Serializer,
-    ): JdbcSagaStore = JdbcSagaStore.builder()
-        .connectionProvider(DataSourceConnectionProvider(axonDataSource))
+        @Suppress("UNUSED_PARAMETER") mongoIndexInitializer: MongoIndexInitializer,
+    ): MongoSagaStore = MongoSagaStore.builder()
+        .mongoTemplate(mongoTemplate)
         .serializer(serializer)
-        .sqlSchema(PostgresSagaSqlSchema(SagaSchema.builder()
-            .sagaEntryTable("saga_entry")
-            .associationValueEntryTable("association_value_entry")
-            .sagaIdColumn("saga_id")
-            .revisionColumn("revision")
-            .serializedSagaColumn("serialized_saga")
-            .sagaTypeColumn("saga_type")
-            .associationKeyColumn("association_key")
-            .associationValueColumn("association_value")
-            .build()))
+        .transactionManager(axonTransactionManager)
         .build()
-
 }

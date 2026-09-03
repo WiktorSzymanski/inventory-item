@@ -76,7 +76,7 @@ class StateLoadAggregateTagTest {
     /**
      * The OrderAggregate case, and the reason the snapshot phase cannot record at its own call site:
      * `readSnapshot` returns empty here, so the type only becomes known once the events arrive.
-     * The snapshot phase must still record — an empty lookup is a full JDBC round trip and is a real
+     * The snapshot phase must still record — an empty lookup is a full round trip to the server and is a real
      * part of the load's cost.
      */
     @Test

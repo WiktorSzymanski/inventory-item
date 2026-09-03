@@ -1,1 +1,0 @@
-ALTER TABLE orders ADD COLUMN failure_reason TEXT;

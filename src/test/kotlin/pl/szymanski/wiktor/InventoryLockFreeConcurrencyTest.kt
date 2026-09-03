@@ -7,14 +7,16 @@ import org.axonframework.eventsourcing.EventSourcingRepository
 import org.axonframework.eventsourcing.eventstore.EventStore
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.boot.test.context.SpringBootTest
-import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
+import org.springframework.data.mongodb.core.MongoOperations
+import org.springframework.data.mongodb.core.query.Criteria.where
+import org.springframework.data.mongodb.core.query.Query
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
-import org.testcontainers.containers.PostgreSQLContainer
+import org.testcontainers.containers.MongoDBContainer
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
+import pl.szymanski.wiktor.config.MongoCollections
 import pl.szymanski.wiktor.domain.InventoryCreatedEvent
 import pl.szymanski.wiktor.domain.InventoryItem
 import pl.szymanski.wiktor.domain.InventoryReservationFailedEvent
@@ -28,9 +30,9 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Drives the LOCK-FREE `inventoryItemRepository` under real contention against a Postgres event
- * store: many concurrent reserve commands hit ONE aggregate and collide on the
- * `UNIQUE (aggregate_identifier, sequence_number)` constraint. Verifies that optimistic concurrency
+ * Drives the LOCK-FREE `inventoryItemRepository` under real contention against a MongoDB event
+ * store: many concurrent reserve commands hit ONE aggregate and collide on the unique index over
+ * `{aggregateIdentifier, sequenceNumber}`. Verifies that optimistic concurrency
  * plus the gateway retry produces a correct, consistent result with no over-reservation and no lost
  * updates — and that the conflicts were actually exercised (retries > 0), i.e. nothing serialised
  * them away.
@@ -53,7 +55,7 @@ class InventoryLockFreeConcurrencyTest {
     @Autowired lateinit var meterRegistry: MeterRegistry
     @Autowired lateinit var axonConfiguration: org.axonframework.config.Configuration
     @Autowired lateinit var inventoryItemRepository: EventSourcingRepository<InventoryItem>
-    @Autowired @Qualifier("axonJdbcTemplate") lateinit var jdbc: NamedParameterJdbcTemplate
+    @Autowired lateinit var mongo: MongoOperations
 
     /**
      * The cheap, deterministic half of the wiring check: if `@Aggregate`'s `repository` attribute is
@@ -194,10 +196,10 @@ class InventoryLockFreeConcurrencyTest {
     private fun awaitSnapshot(itemId: String, timeoutMs: Long = 15_000): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
-            val snapshots = jdbc.queryForObject(
-                "SELECT count(*) FROM snapshot_event_entry WHERE aggregate_identifier = :id",
-                mapOf("id" to itemId), Int::class.java,
-            ) ?: 0
+            val snapshots = mongo.count(
+                Query(where("aggregateIdentifier").`is`(itemId)),
+                MongoCollections.SNAPSHOT_EVENTS,
+            )
             if (snapshots > 0) return true
             Thread.sleep(250)
         }
@@ -205,19 +207,28 @@ class InventoryLockFreeConcurrencyTest {
     }
 
     companion object {
+        /**
+         * [MongoDBContainer] initiates a single-node replica set on startup, which is not a
+         * convenience here but a requirement: `MongoTransactionManager` cannot open a session
+         * against a standalone `mongod`, and this branch wires one because an Axon append spans
+         * several documents. A plain `GenericContainer("mongo:7")` would leave every command
+         * failing at `startTransaction`.
+         */
         @Container
         @JvmStatic
-        val postgres = PostgreSQLContainer("postgres:16-alpine")
+        val mongoDb = MongoDBContainer("mongo:7")
 
         @DynamicPropertySource
         @JvmStatic
         fun props(registry: DynamicPropertyRegistry) {
-            registry.add("spring.datasource.url", postgres::getJdbcUrl)
-            registry.add("spring.datasource.username", postgres::getUsername)
-            registry.add("spring.datasource.password", postgres::getPassword)
-            registry.add("spring.flyway.url", postgres::getJdbcUrl)
-            registry.add("spring.flyway.user", postgres::getUsername)
-            registry.add("spring.flyway.password", postgres::getPassword)
+            registry.add("spring.mongodb.uri") {
+                // directConnection=true, and it is required rather than tidy. MongoDBContainer
+                // initiates the replica set advertising the CONTAINER's hostname, which does not
+                // resolve from the host, so a discovering driver times out looking for a primary
+                // it can reach. A direct connection to that primary still supports transactions,
+                // which is what MongoTransactionManager needs.
+                "${mongoDb.getReplicaSetUrl("inventory")}?directConnection=true"
+            }
         }
     }
 }

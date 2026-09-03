@@ -1,19 +1,25 @@
 spring:
   application:
     name: inventory-reservation
-  datasource:
-    url: ${DB_JDBC_URL:jdbc:postgresql://localhost:5432/inventory}
-    username: ${DB_USER:inventory}
-    password: ${DB_PASSWORD:inventory}
-    driver-class-name: org.postgresql.Driver
-    hikari:
-      maximum-pool-size: 50
-  flyway:
-    url: ${DB_JDBC_URL:jdbc:postgresql://localhost:5432/inventory}
-    user: ${DB_USER:inventory}
-    password: ${DB_PASSWORD:inventory}
-    enabled: true
-    locations: classpath:db/migration
+  # `spring.mongodb.*`, NOT `spring.data.mongodb.*`. Spring Boot 4.0 deprecated the old prefix
+  # at ERROR level, which means it is no longer bound at all -- a URI written under it is read
+  # by nothing and the driver silently falls back to mongodb://localhost:27017. That failure
+  # looks like a network problem, not a configuration one.
+  mongodb:
+    # ONE client, and one pool, for the whole application -- both the Axon stores and the
+    # Spring Data read models. ES-2 runs two Hikari pools (app 50 + axon 350) precisely so
+    # Axon cannot starve the projections, and that split does not carry over: a JDBC
+    # connection is pinned for the length of a transaction, a MongoDB connection is checked
+    # out per operation and returned. maxPoolSize is therefore set to the SUM of ES-2's two
+    # pools, so the database-side resource the two branches are given is the same number.
+    #
+    # docker-compose supplies the whole URI including maxPoolSize (AXON_MONGO_POOL_SIZE,
+    # default 400). The value below is the standalone/`bootRun` default and, like ES-2's
+    # `axon.jdbc.pool.size: 300`, is NOT what runs under the harness.
+    #
+    # replicaSet is not optional. MongoTransactionManager cannot start a session against a
+    # standalone mongod, and an Axon append spans several documents.
+    uri: ${MONGO_URI:mongodb://localhost:27017/inventory?replicaSet=rs0&maxPoolSize=400}
 
 axon:
   axonserver:
@@ -28,47 +34,41 @@ axon:
     # no manual reset; a hand-run stack on a pre-existing volume keeps the old count.
     total-segments: ${AXON_SAGA_TOTAL_SEGMENTS:60}   # per-run override; 60 divides 2/3/4/5/6 replicas
     replicas: ${API_REPLICAS:1}     # must equal REPLICAS in .env; claim = ceil(total/replicas)
-  jdbc:
+  mongo:
     pool:
-      # Must comfortably exceed the saga per-node claim (ceil(total-segments/replicas) = 60
-      # at REPLICAS=1 AND the default segment count -- AXON_SAGA_TOTAL_SEGMENTS moves it, and
-      # AxonCustomizerConfig logs the resolved budget as [POOLS] at startup and warns when a
-      # raised segment count pushes peak demand past this pool), because every saga worker
-      # holds a connection while it reads its
-      # associations, and the 112-thread saga dispatch executor competes for the same pool.
-      # At 150 the 60-thread claim exhausted it (active=150, waiting=97) and sagas that
-      # failed to dispatch never retried, stranding orders in PENDING forever.
+      # Mirrors spring.mongodb.uri's maxPoolSize. It is read ONLY by
+      # AxonCustomizerConfig.logPoolBudget, which warns when the resolved thread widths could
+      # demand more connections than the pool holds -- the driver blocks on
+      # waitQueueTimeoutMS rather than failing fast, and a stalled command is not a
+      # ConcurrencyException, so ConcurrencyRetryScheduler will not retry it and it fails
+      # terminally into the saga's abandon() path. That surfaces as latency and a rejection
+      # rate, not as an error, which is why the budget is written down.
       #
-      # THE VALUE BELOW IS NOT WHAT RUNS. docker-compose passes AXON_JDBC_POOL_SIZE (350 since
-      # 2026-08-16), which Spring's relaxed binding maps onto this property and therefore
-      # overrides it. CommandGatewayConfig sizes the command pool to consume that 350 exactly —
-      # 2 x (112 command + 60 saga + 3 projections) — so a run that exports a smaller value is
-      # running a lane wider than the pool that serves it. The retry pool does NOT appear in that
-      # sum since the 2026-08-20 port from ES-4: it only times the backoff and hands the attempt to
-      # the command pool, so its threads open no transaction and take no connection. The two-lane
-      # shape this branch ran until then spent the same 350 as 2 x (82 + 30 + 60 + 3), which is what
-      # makes runs from either side of the port comparable. The 300 here is left as the
-      # standalone/`bootRun` default; see CommandGatewayConfig.RETRY_POOL_SIZE for the derivation
-      # and for why the 99 Tomcat threads are deliberately outside it.
-      size: 300
-  # Tighten gap tracking so tokens don't accumulate the permanent gaps left by rolled-back appends
-  # (see AxonConfig.eventStorageEngine). Defaults would be 10000 / 60000, which is what the ES-2
-  # baseline runs — this branch departs from it because the lock-free write path makes rollbacks
-  # ordinary. Values kept identical to ES-3/ES-4.
+      # CommandGatewayConfig sizes the command pool so that peak demand is
+      # 1 x (112 command + 60 saga + 3 projections) = 175, comfortably inside 400. The
+      # multiplier is 1 rather than ES-2's 2 -- see CommandGatewayConfig.CONNECTIONS_PER_BUSY_THREAD
+      # for why the second connection per busy thread has no Mongo counterpart.
+      #
+      # THE VALUE BELOW IS NOT WHAT RUNS: docker-compose builds the URI from
+      # AXON_MONGO_POOL_SIZE, and Spring reads the pool size from the URI, not from here.
+      size: 400
+  # MongoTrackingToken has no gaps to track, so ES-2's max-gap-offset / gap-timeout-ms /
+  # gap-cleaning-threshold have nothing to configure here and are deleted rather than carried
+  # over dead. Those three exist on ES-2 because global_index is a non-transactional BIGSERIAL:
+  # a rolled-back append burns a value and leaves a PERMANENT hole the token must remember, and
+  # a lock-free write path makes such rollbacks ordinary rather than rare.
   #
-  # max-gap-offset is a CORRECTNESS knob, not just a token-size one. GapAwareTrackingToken drops
-  # every gap more than this many indices behind the token, so an event whose row commits after
-  # the token has advanced that far past it is skipped by every tracking processor permanently.
-  # This branch is lock-free (NullLockFactory), so rolled-back appends are routine at ANY replica
-  # count, not only above 1 — the ES-2 reference run at REPLICAS=2 burnt ~8717 global_index values
-  # in 180s, and each one is a permanent gap because appends autocommit on their own connection.
-  # 500 indices at that rate is a ~1.4s window, shrinking under a capacity staircase. Exposure is
-  # still small — index assignment and commit happen in one autocommitted statement — but treat a
-  # non-zero completion_ratio_inverse on ANY run here as a reason to suspect this value first.
+  # look-back-time-ms is the closest thing this branch has to a CORRECTNESS knob of that class,
+  # and it should be read with the same suspicion. A tracking processor advances its token to
+  # the timestamp of the last event it saw and then re-reads this far back on the next poll, to
+  # catch events whose write landed after it had already passed their timestamp. An event that
+  # commits later than this window behind the token is skipped by that processor PERMANENTLY --
+  # the same failure mode as an over-tight max-gap-offset, arrived at differently. 1000 ms is
+  # the extension's own default. Treat a non-zero completion_ratio_inverse on ANY run here as a
+  # reason to suspect this value first.
   eventstore:
-    max-gap-offset: 500
-    gap-timeout-ms: 5000
-    gap-cleaning-threshold: 250
+    mongo:
+      look-back-time-ms: 1000
 
 snapshot:
   enabled: true

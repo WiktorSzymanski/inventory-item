@@ -40,7 +40,7 @@ class RetryDispatchTargetTest {
         meterRegistry = SimpleMeterRegistry(),
     )
 
-    private fun conflict() = ConcurrencyException("simulated 23505")
+    private fun conflict() = ConcurrencyException("simulated duplicate key")
 
     @Test
     fun `the retried command is executed by the command executor, not on the retry thread`() {
@@ -107,17 +107,29 @@ class RetryDispatchTargetTest {
      * drifting silently.
      */
     @Test
-    fun `the executing lanes consume exactly the Axon pool docker-compose passes`() {
+    fun `the executing lanes match ES-2 in width and fit inside the Mongo pool`() {
         val busyThreads = CommandGatewayConfig.COMMAND_POOL_SIZE +
             CommandGatewayConfig.SAGA_SEGMENT_THREADS +
             CommandGatewayConfig.SINGLE_THREADED_PROJECTIONS
-        val peakDemand = CommandGatewayConfig.CONNECTIONS_PER_BUSY_THREAD * busyThreads
 
+        // The THREAD widths are what has to match ES-2. They are the admission and execution
+        // shape, and holding them equal is what makes an ES-2 vs ES-2-mongo run a comparison of
+        // the store rather than of two differently-resourced applications.
         assertEquals(
-            350, peakDemand,
-            "peak demand changed; either AXON_JDBC_POOL_SIZE must follow or the parity with " +
-                "the two-lane 2 x (82 + 30 + 60 + 3) = 350 is broken and the comparison stops " +
-                "being topology-only",
+            175, busyThreads,
+            "executing width changed; ES-2 runs 112 + 60 + 3 and the cross-store comparison " +
+                "stops isolating the store the moment this diverges",
+        )
+
+        // The CONNECTION demand is not what has to match, and cannot: ES-2 multiplies by two
+        // because its storage engine takes a connection beside the command's transaction rather
+        // than joining it. SessionAwareMongoTemplate joins, and the driver returns a connection
+        // per operation, so the multiplier here is one. See CommandGatewayConfig.RETRY_POOL_SIZE.
+        val peakDemand = CommandGatewayConfig.CONNECTIONS_PER_BUSY_THREAD * busyThreads
+        assertEquals(
+            175, peakDemand,
+            "peak connection demand changed; AXON_MONGO_POOL_SIZE (400) must still cover it " +
+                "with the 99 Tomcat threads on top",
         )
     }
 }
