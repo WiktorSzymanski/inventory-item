@@ -51,7 +51,7 @@ services:
       # SETS the variable, so vary it across passes:
       #     AXON_SAGA_TOTAL_SEGMENTS=8 scripts/run-suite.sh --only ES-4
       # Recorded in meta.json as saga_total_segments so runs stay distinguishable.
-      AXON_SAGA_TOTAL_SEGMENTS: "${AXON_SAGA_TOTAL_SEGMENTS:-60}"
+      AXON_SAGA_TOTAL_SEGMENTS: "${AXON_SAGA_TOTAL_SEGMENTS:-32}"
       # ES-4-bounded ONLY; every other variant binds it and ignores it. The size of the queue of
       # INCOMING sagas — how many not-yet-started orders may sit in front of an in-flight saga's
       # next step. Default 112 = that branch's command-pool width, i.e. one pool turn of new work;
@@ -59,7 +59,7 @@ services:
       #     AXON_SAGA_INTAKE_CAPACITY=8 scripts/run-suite.sh --only ES-4,ES-4-bounded
       # Recorded in meta.json as saga_intake_capacity, since two runs of the same commit differ by
       # it. Unlike AXON_SAGA_TOTAL_SEGMENTS it needs no token reset — it is read at bean creation.
-      AXON_SAGA_INTAKE_CAPACITY: "${AXON_SAGA_INTAKE_CAPACITY:-112}"
+      AXON_SAGA_INTAKE_CAPACITY: "${AXON_SAGA_INTAKE_CAPACITY:-70}"
       POOLING_INTERVAL:    "${POOLING_INTERVAL:-PT0.1S}"
       CACHE_TTL:           "${CACHE_TTL:-10m}"
       CACHE_MAXIMUM_SIZE:  "${CACHE_MAXIMUM_SIZE:-10000}"
