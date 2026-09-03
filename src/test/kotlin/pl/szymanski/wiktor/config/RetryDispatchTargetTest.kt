@@ -103,10 +103,16 @@ class RetryDispatchTargetTest {
      * The widths are spread across this file and application.yaml, and the pool size that has to
      * cover them is passed by docker-compose. Asserting the sum here is what stops the branch's
      * headline property — same connection budget as its parent — drifting silently.
+     *
+     * THE DEFAULT RUN ONLY. Both widths are now per-run overridable (`COMMAND_POOL`,
+     * `AXON_SAGA_TOTAL_SEGMENTS`), so this asserts the shape the branch ships with, not the shape
+     * every run has. AxonCustomizerConfig's [POOLS] line recomputes the same sum from what is
+     * actually configured and warns when it exceeds the pool; that is the check that covers an
+     * overridden run.
      */
     @Test
     fun `the executing lanes consume exactly the Axon pool docker-compose passes`() {
-        val busyThreads = CommandGatewayConfig.COMMAND_POOL_SIZE +
+        val busyThreads = CommandGatewayConfig.DEFAULT_COMMAND_POOL_SIZE +
             CommandGatewayConfig.SAGA_SEGMENT_THREADS +
             CommandGatewayConfig.SINGLE_THREADED_PROJECTIONS
         val peakDemand = CommandGatewayConfig.CONNECTIONS_PER_BUSY_THREAD * busyThreads

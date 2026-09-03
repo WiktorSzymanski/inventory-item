@@ -2,11 +2,14 @@ package pl.szymanski.wiktor.config
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
@@ -27,7 +30,7 @@ class PoolVisibilityTest {
     @Test
     fun `command pool threads are named so a thread dump identifies them`() {
         val registry = SimpleMeterRegistry()
-        val pool = config.sagaCommandExecutor(registry)
+        val pool = config.sagaCommandExecutor(registry, SagaProcessorProperties())
         val name = AtomicReference<String>()
         val ran = CountDownLatch(1)
 
@@ -64,7 +67,7 @@ class PoolVisibilityTest {
     @Test
     fun `both pools publish active, queued and size`() {
         val registry = SimpleMeterRegistry()
-        val pool = config.sagaCommandExecutor(registry)
+        val pool = config.sagaCommandExecutor(registry, SagaProcessorProperties())
         val timer = config.retryTimerExecutor(registry)
 
         for (lane in listOf("command", "retry")) {
@@ -90,7 +93,7 @@ class PoolVisibilityTest {
         }
 
         // `size` is threads ALIVE, not the configured width: a fixed ThreadPoolExecutor creates
-        // its threads lazily, so the gauge starts at 0 and ramps to COMMAND_POOL_SIZE under load.
+        // its threads lazily, so the gauge starts at 0 and ramps to the configured width under load.
         // Reading a mid-run value of, say, 40 as "the pool is misconfigured" would be wrong — it
         // means only 40 threads were ever needed at once. Left lazy on purpose: prestarting would
         // change thread-creation timing against the parent branch and break the topology-only A/B.
@@ -104,5 +107,43 @@ class PoolVisibilityTest {
 
         (pool as ExecutorService).shutdownNow()
         timer.shutdownNow()
+    }
+
+    /**
+     * COMMAND_POOL is the point of the knob: it must reach the pool, because it is also half the
+     * connection budget AxonCustomizerConfig's [POOLS] line warns on. A run that exported it and
+     * got the default width back would be measured, charted and compared as though the override
+     * had taken — the failure is silent in exactly the way the [POOLS] warning cannot catch,
+     * since that line reads the same property rather than the pool.
+     */
+    @Test
+    fun `the configured width sizes the pool, not the default`() {
+        val registry = SimpleMeterRegistry()
+        val pool = config.sagaCommandExecutor(registry, SagaProcessorProperties(commandPoolSize = 7))
+
+        assertEquals(7, (pool as ThreadPoolExecutor).corePoolSize)
+        assertEquals(7, pool.maximumPoolSize, "the pool must stay fixed-width, not just start at 7")
+        assertNotEquals(
+            CommandGatewayConfig.DEFAULT_COMMAND_POOL_SIZE, pool.corePoolSize,
+            "the override must not silently fall back to the shipped default",
+        )
+        pool.shutdownNow()
+    }
+
+    /**
+     * COMMAND_POOL is set per run from a shell, so 0 is a typo away. ThreadPoolExecutor would
+     * throw its own IllegalArgumentException from inside context refresh, which reads as an
+     * unrelated startup failure rather than as "your knob is wrong".
+     */
+    @Test
+    fun `a non-positive width is rejected with a message naming the knob`() {
+        val registry = SimpleMeterRegistry()
+        val thrown = assertThrows(IllegalArgumentException::class.java) {
+            config.sagaCommandExecutor(registry, SagaProcessorProperties(commandPoolSize = 0))
+        }
+        assertTrue(
+            thrown.message!!.contains("COMMAND_POOL"),
+            "the message must name the env var an operator actually set; was ${thrown.message}",
+        )
     }
 }
