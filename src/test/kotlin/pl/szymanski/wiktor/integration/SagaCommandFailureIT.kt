@@ -104,7 +104,7 @@ class SagaCommandFailureIT {
         ).body!!.orderId
 
         val status = pollFor(60_000) {
-            mongo.findOne(Query(where("id").`is`(orderId)), OrderProjection::class.java)
+            mongo.findOne(Query(where("orderId").`is`(orderId)), OrderProjection::class.java)
                 ?.status
                 ?.takeIf { it != "PENDING" }
         }
