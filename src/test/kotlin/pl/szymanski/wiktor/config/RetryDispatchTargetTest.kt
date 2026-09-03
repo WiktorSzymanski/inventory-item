@@ -121,15 +121,16 @@ class RetryDispatchTargetTest {
                 "stops isolating the store the moment this diverges",
         )
 
-        // The CONNECTION demand is not what has to match, and cannot: ES-2 multiplies by two
-        // because its storage engine takes a connection beside the command's transaction rather
-        // than joining it. SessionAwareMongoTemplate joins, and the driver returns a connection
-        // per operation, so the multiplier here is one. See CommandGatewayConfig.RETRY_POOL_SIZE.
+        // The CONNECTION demand matches ES-2 too, and for the same two reasons: the command's
+        // transaction plus the event store's own. AxonConfig.axonTransactionManager is
+        // PROPAGATION_REQUIRES_NEW so a storage operation suspends the command's transaction
+        // rather than joining it -- the Mongo counterpart of ES-2's non-UnitOfWorkAware
+        // DataSourceConnectionProvider.
         val peakDemand = CommandGatewayConfig.CONNECTIONS_PER_BUSY_THREAD * busyThreads
         assertEquals(
-            175, peakDemand,
-            "peak connection demand changed; AXON_MONGO_POOL_SIZE (400) must still cover it " +
-                "with the 99 Tomcat threads on top",
+            350, peakDemand,
+            "peak connection demand changed; ES-2 spends the same 350 and AXON_MONGO_POOL_SIZE " +
+                "(400, which also serves the read models ES-2 gives a separate 50) must cover it",
         )
     }
 }

@@ -42,8 +42,9 @@ the delta is the store. It runs from the `main-mongo` harness, not from `main`.
 | `JdbcSagaStore` + `PostgresSagaSqlSchema`, two tables | `MongoSagaStore`, one collection (associations live in the saga document) |
 | `SQLStateResolver()` maps `23505` | `MongoConflictResolver` maps duplicate key **and** WriteConflict |
 | Flyway, `V1`..`V11` | `MongoIndexInitializer` -- indexes only, no schema |
-| Two Hikari pools (app 50 + axon 350) | One driver pool (400) |
+| Two Hikari pools (app 50 + axon 350) | One driver pool (400 = their sum) |
 | `SpringTransactionManager` over `axonDataSource` | `SpringTransactionManager` over `MongoTransactionManager` |
+| storage engine on its own non-UnitOfWorkAware connection | `axonTransactionManager` is `PROPAGATION_REQUIRES_NEW` |
 | Spring Data JDBC read models, raw SQL upserts | Spring Data MongoDB read models, `$inc`/upsert with the same revision guard |
 | `JdbcConvertersConfig` (`PGobject`/`jsonb`) | deleted -- BSON holds a nested map |
 
@@ -292,17 +293,17 @@ Retry threads leave the sum on either store because a thread that only calls `ex
 opens no transaction and takes no connection, and the backoff is served in the
 `DelayedWorkQueue` on no thread at all.
 
-**The THREAD widths match `ES-2` exactly (175 executing, 99 Tomcat) and that is what has to
-match** -- it is the admission and execution shape, and holding it equal is what makes the
-cross-store comparison a comparison of the store. **The CONNECTION arithmetic does not match
-and cannot.** `ES-2`'s multiplier is 2 because its storage engine takes a connection beside the
-command's transaction rather than joining it, and because a JDBC connection is pinned for the
-length of that transaction. Neither survives: there is one pool here, `SessionAwareMongoTemplate`
-joins the transaction, and the driver checks a connection out per *operation*. So the multiplier
-is 1, and the pool is the sum of `ES-2`'s two (400) so the database-side resource the two
-branches are given is the same number. `RetryDispatchTargetTest` asserts the width and the sum.
-`hikaricp_connections_*` has no counterpart; watch `mongodb_driver_pool_checkedout` against
-`mongodb_driver_pool_size`.
+**The thread widths AND the connection budget both match `ES-2`** (175 executing, 99 Tomcat;
+`2 x 175 = 350`). A busy thread still holds two: its command's transaction, and the event
+store's own, because `AxonConfig.axonTransactionManager` is `PROPAGATION_REQUIRES_NEW` and a
+storage operation suspends the command's transaction rather than joining it — the Mongo
+counterpart of `ES-2`'s non-`UnitOfWorkAware` `DataSourceConnectionProvider`. That separation
+is not a stylistic choice: joining means a post-rollback read runs in an aborted session
+(`NoSuchTransaction`, 251) and a reload cannot see the winner's just-committed event, because a
+Mongo transaction reads at its own start timestamp. The pool is 400 rather than 350 only
+because this one client also serves the read models, which `ES-2` gives a separate 50.
+`RetryDispatchTargetTest` asserts the width and the sum. `hikaricp_connections_*` has no
+counterpart; watch `mongodb_driver_pool_checkedout` against `mongodb_driver_pool_size`.
 
 **Two effects push opposite ways, which is the question.** A retry now rejoins an unbounded
 FIFO at the **tail**, behind first attempts admitted after it, so its real wait becomes backoff

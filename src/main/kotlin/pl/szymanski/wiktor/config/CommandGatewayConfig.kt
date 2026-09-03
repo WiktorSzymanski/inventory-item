@@ -54,40 +54,44 @@ class CommandGatewayConfig {
          * 1 that fallback now stalls every other retry's backoff, not one lane of thirty. It is
          * counted: `inventory_retry_handoff_rejected`.
          *
-         * THE THREAD WIDTHS ARE UNCHANGED FROM ES-2, which is what makes the two branches
-         * comparable: they admit and execute at the same width, and differ in the store.
+         * THE THREAD WIDTHS AND THE CONNECTION BUDGET ARE BOTH UNCHANGED FROM ES-2, which is
+         * what makes the two branches comparable: they admit and execute at the same width and
+         * make the same demand of the database, and differ in the store.
          *
-         * THE CONNECTION ARITHMETIC IS NOT, and cannot be. On ES-2 one busy thread holds TWO
-         * `axon-jdbc-pool` connections at once — its command's Spring transaction, plus one more
-         * per event-store read/append, because the storage engine is wired with a plain
-         * DataSourceConnectionProvider that never joins that transaction. Neither half of that
-         * premise survives the move:
-         *   1. there is ONE pool here, not two. A second pool on ES-2 protects the Spring Data
-         *      repositories from Axon; the MongoDB driver checks a connection out per OPERATION
-         *      and returns it, so there is no pinning for a second pool to protect against;
-         *   2. the Axon stores go through [SessionAwareMongoTemplate], so an append DOES join the
-         *      transaction its unit of work opened, rather than taking a connection beside it.
+         * One busy thread holds TWO connections at the same time, for the same two reasons it
+         * does on ES-2:
+         *   1. its command's transaction — [AxonConfig] registers a SpringTransactionManager, so
+         *      Axon's TransactionManagingInterceptor opens one per command;
+         *   2. one more per event-store read/append, because [AxonConfig.axonTransactionManager]
+         *      is PROPAGATION_REQUIRES_NEW: a storage operation SUSPENDS (1) and runs in its own
+         *      session rather than joining it. On ES-2 the same separation comes from a plain
+         *      DataSourceConnectionProvider that is not UnitOfWorkAware. Read that bean's doc
+         *      before changing it — joining breaks conflict detection, silently.
+         * A thread that only submits opens no transaction and takes no connection, so the retry
+         * lane drops out of the sum and the command lane absorbs its 30 threads:
          *
-         * So the multiplier is 1, and the pool is the SUM of ES-2's two (400, not 350) so the
-         * database-side resource the two branches are given is the same number:
-         *
-         *     ES-2      2 x (112 command + 0 retry + 60 saga + 3 projections) = 350, pool 350
-         *     here      1 x (112 command + 0 retry + 60 saga + 3 projections) = 175, pool 400
+         *     two-lane  2 x ( 82 command + 30 retry + 60 saga + 3 projections) = 350
+         *     here      2 x (112 command +  0 retry + 60 saga + 3 projections) = 350
          *
          * 60 is ceil(total-segments / replicas) at REPLICAS=1; the 3 are inventory-projection,
          * order-projection and mock-kafka-publisher (reserve-metrics is SUBSCRIBING and runs on the
-         * appending thread, already counted). The 400 comes from docker-compose's
-         * `AXON_MONGO_POOL_SIZE` default, which it splices into the connection URI — Spring reads
-         * maxPoolSize from the URI, so `axon.mongo.pool.size` in application.yaml informs the
-         * startup warning but does not size anything.
+         * appending thread, already counted).
          *
-         * **TOMCAT IS STILL NOT IN THAT SUM, AND IS STILL A REAL DEMANDER.** `InventoryService`
-         * dispatches the accept command with `sendAndWait` on the Tomcat thread and
-         * `SimpleCommandBus` handles it THERE, so every in-flight POST demands a connection like
-         * any other command thread. `server.tomcat.threads.max` is 99, so true peak demand is
-         * 99 + 175 = 274 against a pool of 400 — which, unlike ES-2's 548 against 350, actually
-         * fits. That headroom is a consequence of the driver's model, not a resourcing decision,
-         * and it is one of the things an ES-2 vs ES-2-mongo comparison is measuring.
+         * **The pool is 400, not ES-2's 350, and that is not extra headroom for Axon.** ES-2 runs
+         * TWO Hikari pools — 350 for Axon and 50 for the Spring Data read models — because a JDBC
+         * connection is pinned for a transaction and the two must not starve each other. One
+         * MongoClient serves both here, so its `maxPoolSize` is their SUM and the database-side
+         * resource the branches are given is the same number. `AXON_MONGO_POOL_SIZE` sets it, and
+         * docker-compose splices it into the connection URI; Spring reads maxPoolSize from the
+         * URI, so `axon.mongo.pool.size` in application.yaml informs the startup warning but
+         * sizes nothing.
+         *
+         * **TOMCAT IS NOT IN THAT SUM, AND IT IS A REAL DEMANDER.** `InventoryService` dispatches
+         * the accept command with `sendAndWait` on the Tomcat thread and `SimpleCommandBus` handles
+         * it THERE, so every in-flight POST holds the same two connections as any other command
+         * thread. `server.tomcat.threads.max` is 99, so true peak demand is 2 x (99 + 175) = 548
+         * against a pool of 400; it holds only because offered load, not the thread cap, bounds how
+         * many POSTs are in flight — the same way it holds on ES-2 against 350.
          *
          * Starvation still does not fail cleanly, which is why the budget is written down rather
          * than left to the run: the driver blocks on `waitQueueTimeoutMS` rather than failing
@@ -129,12 +133,8 @@ class CommandGatewayConfig {
          *  SUBSCRIBING and runs on the appending thread, so it is already counted. */
         internal const val SINGLE_THREADED_PROJECTIONS = 3
 
-        /**
-         * One, not ES-2's two. See the [RETRY_POOL_SIZE] doc: the second connection there is the
-         * event store taking its own beside the command's transaction, which the session-aware
-         * Mongo template does not do.
-         */
-        internal const val CONNECTIONS_PER_BUSY_THREAD = 1
+        /** See the [RETRY_POOL_SIZE] doc: command transaction + event-store transaction. */
+        internal const val CONNECTIONS_PER_BUSY_THREAD = 2
     }
 
     @Bean(destroyMethod = "shutdownNow")

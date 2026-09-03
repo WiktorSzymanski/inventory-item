@@ -30,6 +30,8 @@ import org.springframework.context.annotation.Primary
 import org.springframework.data.mongodb.MongoDatabaseFactory
 import org.springframework.data.mongodb.MongoTransactionManager
 import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.TransactionDefinition
+import org.springframework.transaction.support.DefaultTransactionDefinition
 import pl.szymanski.wiktor.domain.InventoryItem
 import java.time.Duration
 import org.axonframework.extensions.mongo.MongoTemplate as AxonMongoTemplate
@@ -46,12 +48,11 @@ import org.axonframework.extensions.mongo.MongoTemplate as AxonMongoTemplate
  * absence is deliberate:
  *
  *  - **The second connection pool.** ES-2 builds `axonDataSource`, a Hikari pool separate from
- *    the app's, so Axon never contends with the Spring Data repositories. The premise there is
- *    that a JDBC connection is held for the length of a transaction, so a busy thread pins two.
- *    The MongoDB driver checks a connection out per OPERATION and returns it, so there is
- *    nothing for a second pool to protect against; one client with a wide pool is both simpler
- *    and the only shape Micrometer's `mongodb.driver.pool.*` gauges can report on. See
- *    [CommandGatewayConfig] for what that does to the budget arithmetic.
+ *    the app's, so Axon never contends with the Spring Data repositories. One MongoClient with a
+ *    pool as wide as ES-2's two combined replaces it: the driver checks a connection out per
+ *    operation rather than pinning one per pool, and a single client is also the only shape
+ *    Micrometer's `mongodb.driver.pool.*` gauges can report on. The SEPARATION of the Axon
+ *    stores' transactions from the command's survives -- see [axonTransactionManager].
  *
  *  - **`EventSchema` / `TokenSchema` / `PostgresSagaSqlSchema`.** Column-name mapping has no
  *    counterpart; a document carries its own field names. Only the COLLECTION names are chosen,
@@ -94,9 +95,34 @@ class AxonConfig {
     fun transactionManager(factory: MongoDatabaseFactory): PlatformTransactionManager =
         MongoTransactionManager(factory)
 
+    /**
+     * The transaction manager the Axon STORES run in, and `REQUIRES_NEW` is the load-bearing part.
+     *
+     * ES-2 wires its storage engine with a plain `DataSourceConnectionProvider` that is
+     * deliberately NOT wrapped in `UnitOfWorkAwareConnectionProviderWrapper`, so every event-store
+     * read and append takes its own connection and its own transaction, entirely separate from the
+     * one the command's unit of work opened. That separation has to be reproduced explicitly here,
+     * because on Mongo the default `REQUIRED` would join instead.
+     *
+     * **Why joining is wrong, and why it fails silently.** A losing append rolls the unit of work
+     * back, and anything that then reads the store on that thread -- from an `onRollback` handler,
+     * or from the retry that follows -- would be reading inside the session the server has just
+     * aborted, and get `NoSuchTransaction (251)`. Independently of that, a Mongo transaction reads
+     * at its own start timestamp, so a joined session could not see the winner's just-committed
+     * event even if it were still alive: a reload that is supposed to observe the conflict would
+     * observe nothing and re-append the same sequence number.
+     *
+     * ES-4-mongo demonstrates both concretely -- its cache repair path reads the delta from
+     * `onRollback`, and with `REQUIRED` its concurrency tests fail with exactly that 251. Nothing
+     * on THIS branch reads the store from a rollback handler today, so the setting is
+     * insurance here rather than a live fix; keep the two branches in step.
+     */
     @Bean
     fun axonTransactionManager(transactionManager: PlatformTransactionManager): TransactionManager =
-        SpringTransactionManager(transactionManager)
+        SpringTransactionManager(
+            transactionManager,
+            DefaultTransactionDefinition(TransactionDefinition.PROPAGATION_REQUIRES_NEW),
+        )
 
     /**
      * The collections the Axon stores read and write, session-aware so their writes join the

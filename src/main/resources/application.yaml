@@ -8,10 +8,12 @@ spring:
   mongodb:
     # ONE client, and one pool, for the whole application -- both the Axon stores and the
     # Spring Data read models. ES-2 runs two Hikari pools (app 50 + axon 350) precisely so
-    # Axon cannot starve the projections, and that split does not carry over: a JDBC
-    # connection is pinned for the length of a transaction, a MongoDB connection is checked
-    # out per operation and returned. maxPoolSize is therefore set to the SUM of ES-2's two
-    # pools, so the database-side resource the two branches are given is the same number.
+    # Axon cannot starve the projections. A JDBC connection is pinned for the length of a
+    # transaction while a MongoDB connection is checked out per operation and returned, so one
+    # client suffices. maxPoolSize is therefore set to the SUM of ES-2's two pools, so the
+    # database-side resource the two branches are given is the same number. The separation that
+    # pool split protects is kept a different way -- see AxonConfig.axonTransactionManager,
+    # which runs every storage operation in its OWN transaction rather than the command's.
     #
     # docker-compose supplies the whole URI including maxPoolSize (AXON_MONGO_POOL_SIZE,
     # default 400). The value below is the standalone/`bootRun` default and, like ES-2's
@@ -44,10 +46,14 @@ axon:
       # terminally into the saga's abandon() path. That surfaces as latency and a rejection
       # rate, not as an error, which is why the budget is written down.
       #
-      # CommandGatewayConfig sizes the command pool so that peak demand is
-      # 1 x (112 command + 60 saga + 3 projections) = 175, comfortably inside 400. The
-      # multiplier is 1 rather than ES-2's 2 -- see CommandGatewayConfig.CONNECTIONS_PER_BUSY_THREAD
-      # for why the second connection per busy thread has no Mongo counterpart.
+      # CommandGatewayConfig sizes the command pool so peak demand is
+      # 2 x (112 command + 60 saga + 3 projections) = 350 -- the SAME demand ES-2 makes, because
+      # a busy thread still holds two: its command's transaction, and the event store's own
+      # (AxonConfig.axonTransactionManager is PROPAGATION_REQUIRES_NEW, so a storage operation
+      # suspends the command's transaction instead of joining it).
+      #
+      # 400 rather than ES-2's 350 because this ONE pool also serves the Spring Data read models,
+      # which ES-2 gives a separate 50-connection Hikari pool. 350 + 50 = 400: same total.
       #
       # THE VALUE BELOW IS NOT WHAT RUNS: docker-compose builds the URI from
       # AXON_MONGO_POOL_SIZE, and Spring reads the pool size from the URI, not from here.
