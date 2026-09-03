@@ -37,8 +37,26 @@ class Section:
 DUP_EXEMPT = set()
 
 
+# `job=~`, not `job=`, everywhere -- and the same on every hand-written selector below.
+#
+# On the live dashboard $job is a query variable that resolves to the single value `inventory`,
+# so `job=~"inventory"` and `job="inventory"` are the same query and nothing changes there.
+#
+# bench-runs is why it has to be the regex form. Its $job is a CONSTANT (query variables resolve
+# against the anchor window, which holds no data), but the archive it reads is not uniform: a
+# variant that gives actuator its own connector is scraped under `inventory-mgmt` rather than
+# `inventory` -- see monitoring/prometheus/prometheus.yml -- and each run records which one it
+# used in meta.json's `prom_job`. runs.py builds the constant as the alternation of every
+# prom_job in the run set, so one dashboard matches both. With `job=` that constant would be a
+# literal job name that no run has, and every panel would render "No data": exactly what
+# happened to the two TO-2-fix-A runs, where 90 of 91 $job-filtered targets returned nothing and
+# the dashboard read as a missing snapshot rather than a one-word label mismatch.
+#
+# Widening the matcher can only over-match if two API jobs carry the same metric at the same
+# instant, which needs two API containers scraped at once; the stack runs one. Verified against
+# the 12-run phase-1 archive: no instant of any run has both jobs present.
 def _q(quantile, metric, by, job=True, extra=""):
-    labels = ['job="$job"'] if job else []
+    labels = ['job=~"$job"'] if job else []
     if extra:
         labels.append(extra)
     selector = "{" + ",".join(labels) + "}"
@@ -53,14 +71,14 @@ SECTIONS = [
             description="sum(rate(http_server_requests_seconds_count)) by (uri, method). Replaces the "
                         "separate per-family throughput panels the three old dashboards each had.",
             targets=[Target("{{method}} {{uri}}",
-                            'sum(rate(http_server_requests_seconds_count{job="$job"}[1m])) by (uri, method)')],
+                            'sum(rate(http_server_requests_seconds_count{job=~"$job"}[1m])) by (uri, method)')],
         ),
         Panel(
             title="POST /inventory/orders by status",
             unit="reqps", w=12,
             description="Admission outcome.",
             targets=[Target("{{status}}",
-                            'sum(rate(http_server_requests_seconds_count{job="$job",method="POST",uri="/inventory/orders"}[1m])) by (status)')],
+                            'sum(rate(http_server_requests_seconds_count{job=~"$job",method="POST",uri="/inventory/orders"}[1m])) by (status)')],
         ),
         Panel(
             title="Request latency — p50 / p95 / p99",
@@ -73,7 +91,7 @@ SECTIONS = [
             title="HTTP error rate (4xx / 5xx)",
             unit="reqps", w=12,
             targets=[Target("{{status}} {{uri}}",
-                            'sum(rate(http_server_requests_seconds_count{job="$job",status=~"[45].."}[1m])) by (uri, status)')],
+                            'sum(rate(http_server_requests_seconds_count{job=~"$job",status=~"[45].."}[1m])) by (uri, status)')],
         ),
     ]),
     Section("Orders & domain", [
@@ -82,16 +100,16 @@ SECTIONS = [
             unit="reqps", w=24, h=9,
             description="One axis, orders/s. Dashed = asked of the system, solid = done by it.",
             targets=[Target("accepted (202)",
-                            'sum(rate(http_server_requests_seconds_count{job="$job",method="POST",uri="/inventory/orders",status="202"}[1m]))'),
-                     Target("terminal", 'sum(rate(order_e2e_time_seconds_count{job="$job"}[1m]))')],
+                            'sum(rate(http_server_requests_seconds_count{job=~"$job",method="POST",uri="/inventory/orders",status="202"}[1m]))'),
+                     Target("terminal", 'sum(rate(order_e2e_time_seconds_count{job=~"$job"}[1m]))')],
         ),
         Panel(
             title="In-flight orders (saturation)",
             unit="short", w=12,
             description="Admitted minus terminal. Monotonic growth on a constant-rate plateau is saturation.",
             targets=[Target("in-flight",
-                            '(sum(http_server_requests_seconds_count{job="$job",method="POST",uri="/inventory/orders",status="202"}) or vector(0))'
-                            ' - (sum(order_e2e_time_seconds_count{job="$job"}) or vector(0))')],
+                            '(sum(http_server_requests_seconds_count{job=~"$job",method="POST",uri="/inventory/orders",status="202"}) or vector(0))'
+                            ' - (sum(order_e2e_time_seconds_count{job=~"$job"}) or vector(0))')],
         ),
         Panel(
             title="Order e2e latency by outcome — p50 / p95 / p99",
@@ -116,24 +134,24 @@ SECTIONS = [
             title="Orders completed by outcome & reason (TO family)",
             unit="ops", w=12,
             targets=[Target("{{outcome}} {{reason}}",
-                            'sum by (outcome, reason) (rate(orders_completed_total{job="$job"}[1m]))')],
+                            'sum by (outcome, reason) (rate(orders_completed_total{job=~"$job"}[1m]))')],
         ),
         Panel(
             title="Business exception rate by type",
             unit="ops", w=12,
-            targets=[Target("{{type}}", 'sum by (type) (rate(inventory_exception_total{job="$job"}[1m]))')],
+            targets=[Target("{{type}}", 'sum by (type) (rate(inventory_exception_total{job=~"$job"}[1m]))')],
         ),
         Panel(
             title="Optimistic locking — append success vs conflict",
             unit="ops", w=12,
-            targets=[Target("append success", 'sum(rate(inventory_append_success_total{job="$job"}[1m]))'),
-                     Target("retry", 'sum(rate(inventory_optimistic_retry_total{job="$job"}[1m]))'),
-                     Target("exhausted", 'sum(rate(inventory_optimistic_exhausted_total{job="$job"}[1m]))')],
+            targets=[Target("append success", 'sum(rate(inventory_append_success_total{job=~"$job"}[1m]))'),
+                     Target("retry", 'sum(rate(inventory_optimistic_retry_total{job=~"$job"}[1m]))'),
+                     Target("exhausted", 'sum(rate(inventory_optimistic_exhausted_total{job=~"$job"}[1m]))')],
         ),
         Panel(
             title="Events processed by type",
             unit="ops", w=12,
-            targets=[Target("{{eventType}}", 'sum by (eventType) (rate(es_events_processed_total{job="$job"}[1m]))')],
+            targets=[Target("{{eventType}}", 'sum by (eventType) (rate(es_events_processed_total{job=~"$job"}[1m]))')],
         ),
         Panel(
             title="Publish lag by event type — p50 / p95 / p99",
@@ -152,13 +170,37 @@ SECTIONS = [
         # label, so the grouping yields one series per phase exactly as it did before.
         # aggregate="unknown" is a delta read that identified no aggregate — the cache-repair probe,
         # not a load. See TimedEventStorageEngine on the ES branches.
+        # `path` (ES-4 and later) names WHO asked, and adds no series: it is a label on groups this
+        # panel already drew, verified against the archive — the ES-4 capacity run returns 13 series
+        # with the grouping and 13 without. What it fixes is a legend that lied. `InventoryItem ·
+        # events` reads as a cold write-path miss, but on a caching branch it is
+        # PessimisticCachingRepository.catchUp reading the delta AFTER that command's append already
+        # failed — the cost of the conflict, not of the write — and the snapshotter's fallback replay
+        # pools into the same line. path=command is the write path, repair and snapshot are not.
         Panel(
-            title="State load time by aggregate and phase — p50 / p95",
+            title="State load time by aggregate, path and phase — p50 / p95",
             unit="s", w=12,
-            targets=[Target("{{aggregate}} · {{phase}} p50",
-                            _q(0.50, "state_load_time_seconds_bucket", "le, phase, aggregate")),
-                     Target("{{aggregate}} · {{phase}} p95",
-                            _q(0.95, "state_load_time_seconds_bucket", "le, phase, aggregate"))],
+            targets=[Target("{{aggregate}} · {{path}} · {{phase}} p50",
+                            _q(0.50, "state_load_time_seconds_bucket", "le, phase, aggregate, path")),
+                     Target("{{aggregate}} · {{path}} · {{phase}} p95",
+                            _q(0.95, "state_load_time_seconds_bucket", "le, phase, aggregate, path"))],
+        ),
+        # Counts, because the panel above cannot answer "did the write path read the store at all".
+        # A percentile of a phase with no samples does not draw a zero, it stops drawing, which on a
+        # timeseries is indistinguishable from a scrape gap. `total` is emitted once per store round
+        # trip end to end, so its rate IS store reads/s, and the cache-hit arm (`copy`) is excluded
+        # by construction — a branch whose cache absorbs the write path has NO InventoryItem·command
+        # line here at all. Measured on the phase-1 archive: ES-2 1427/s against ES-4 0/s, which is
+        # the copy-on-write cache result in one panel.
+        # Empty on the TO family, and correctly so: TO has no event store and its state_load_time
+        # carries source="db_fetch" with no phase, so phase="total" matches nothing there.
+        Panel(
+            title="Store round trips by aggregate and path",
+            unit="ops", w=24,
+            description="Aggregate loads that actually went to the event store, once per round trip. "
+                        "ES only — see the panel description in spec.py.",
+            targets=[Target("{{aggregate}} · {{path}}",
+                            'sum by (aggregate, path) (rate(state_load_time_seconds_count{job=~"$job",phase="total"}[1m]))')],
         ),
         # Committed only, so the series means what it meant before the outcome tag existed and a
         # replayed pre-tag run still resolves (those buckets carry no outcome label, and !="conflict"
@@ -192,9 +234,9 @@ SECTIONS = [
         Panel(
             title="Aggregate cache — hit vs miss vs catch-up",
             unit="ops", w=12,
-            targets=[Target("hit", 'sum(rate(inventory_opt_cache_hit_total{job="$job"}[1m]))'),
-                     Target("miss", 'sum(rate(inventory_opt_cache_miss_total{job="$job"}[1m]))'),
-                     Target("catch-up", 'sum(rate(inventory_opt_catchup_total{job="$job"}[1m]))')],
+            targets=[Target("hit", 'sum(rate(inventory_opt_cache_hit_total{job=~"$job"}[1m]))'),
+                     Target("miss", 'sum(rate(inventory_opt_cache_miss_total{job=~"$job"}[1m]))'),
+                     Target("catch-up", 'sum(rate(inventory_opt_catchup_total{job=~"$job"}[1m]))')],
         ),
         # The cache repair, which runs between a conflict and its retry. Split by outcome because the
         # probe fires on EVERY rollback and usually finds nothing — pooled, "noop" is the median and
@@ -212,7 +254,7 @@ SECTIONS = [
         Panel(
             title="Outbox backlog (TO family)",
             unit="short", w=12,
-            targets=[Target("backlog", 'outbox_backlog{job="$job"}')],
+            targets=[Target("backlog", 'outbox_backlog{job=~"$job"}')],
         ),
         Panel(
             title="Outbox write time — p50 / p95 (TO family)",
@@ -227,80 +269,80 @@ SECTIONS = [
         Panel(
             title="Executor pools — threads & queue",
             unit="short", w=12,
-            targets=[Target("{{name}} active", 'executor_active_threads{job="$job"}'),
-                     Target("{{name}} pool size", 'executor_pool_size_threads{job="$job"}'),
-                     Target("{{name}} queued", 'executor_queued_tasks{job="$job"}')],
+            targets=[Target("{{name}} active", 'executor_active_threads{job=~"$job"}'),
+                     Target("{{name}} pool size", 'executor_pool_size_threads{job=~"$job"}'),
+                     Target("{{name}} queued", 'executor_queued_tasks{job=~"$job"}')],
         ),
         Panel(
             title="Saga outcome — completed vs failed (ES family)",
             unit="ops", w=24,
-            targets=[Target("completed", 'sum(rate(saga_completed_total{job="$job"}[1m]))'),
-                     Target("command failed", 'sum(rate(saga_command_failed_total{job="$job"}[1m]))')],
+            targets=[Target("completed", 'sum(rate(saga_completed_total{job=~"$job"}[1m]))'),
+                     Target("command failed", 'sum(rate(saga_command_failed_total{job=~"$job"}[1m]))')],
         ),
     ]),
     Section("JVM", [
         Panel(title="Heap memory", unit="bytes", w=12,
-              targets=[Target("used", 'sum(jvm_memory_used_bytes{job="$job",area="heap"})'),
-                       Target("max", 'sum(jvm_memory_max_bytes{job="$job",area="heap"})'),
-                       Target("committed", 'sum(jvm_memory_committed_bytes{job="$job",area="heap"})')]),
+              targets=[Target("used", 'sum(jvm_memory_used_bytes{job=~"$job",area="heap"})'),
+                       Target("max", 'sum(jvm_memory_max_bytes{job=~"$job",area="heap"})'),
+                       Target("committed", 'sum(jvm_memory_committed_bytes{job=~"$job",area="heap"})')]),
         Panel(title="Non-heap memory by pool", unit="bytes", w=12,
-              targets=[Target("{{id}}", 'sum(jvm_memory_used_bytes{job="$job",area="nonheap"}) by (id)')]),
+              targets=[Target("{{id}}", 'sum(jvm_memory_used_bytes{job=~"$job",area="nonheap"}) by (id)')]),
         Panel(title="CPU", unit="percentunit", w=12, max=1,
-              targets=[Target("process", 'avg(process_cpu_usage{job="$job"})'),
-                       Target("system", 'avg(system_cpu_usage{job="$job"})')]),
+              targets=[Target("process", 'avg(process_cpu_usage{job=~"$job"})'),
+                       Target("system", 'avg(system_cpu_usage{job=~"$job"})')]),
         # avg/max only, no quantiles: Micrometer publishes buckets for a Timer solely when the
         # meter is listed under management.metrics.distribution.percentiles-histogram, and
         # jvm.gc.pause is on no branch's list, so jvm_gc_pause_seconds_bucket does not exist.
         Panel(title="GC pause duration — avg / max", unit="s", w=12,
               targets=[Target("avg",
-                             'rate(jvm_gc_pause_seconds_sum{job="$job"}[1m]) / rate(jvm_gc_pause_seconds_count{job="$job"}[1m])'),
-                       Target("max", 'jvm_gc_pause_seconds_max{job="$job"}')]),
+                             'rate(jvm_gc_pause_seconds_sum{job=~"$job"}[1m]) / rate(jvm_gc_pause_seconds_count{job=~"$job"}[1m])'),
+                       Target("max", 'jvm_gc_pause_seconds_max{job=~"$job"}')]),
         Panel(title="JVM threads", unit="short", w=8,
-              targets=[Target("live", 'jvm_threads_live_threads{job="$job"}'),
-                       Target("daemon", 'jvm_threads_daemon_threads{job="$job"}'),
-                       Target("peak", 'jvm_threads_peak_threads{job="$job"}')]),
+              targets=[Target("live", 'jvm_threads_live_threads{job=~"$job"}'),
+                       Target("daemon", 'jvm_threads_daemon_threads{job=~"$job"}'),
+                       Target("peak", 'jvm_threads_peak_threads{job=~"$job"}')]),
         Panel(title="Loaded classes", unit="short", w=8,
-              targets=[Target("loaded classes", 'jvm_classes_loaded_classes{job="$job"}')]),
+              targets=[Target("loaded classes", 'jvm_classes_loaded_classes{job=~"$job"}')]),
         Panel(title="Process uptime", unit="s", w=8,
-              targets=[Target("uptime", 'process_uptime_seconds{job="$job"}')]),
+              targets=[Target("uptime", 'process_uptime_seconds{job=~"$job"}')]),
         # Absorbed from TO-2's jvm-dashboard.json (Task 9 deleted it; Task 10 merges its signals).
         Panel(title="System load vs CPU cores", unit="short", w=8,
-              targets=[Target("load 1m", 'system_load_average_1m{job="$job"}'),
-                       Target("cpu cores", 'system_cpu_count{job="$job"}')]),
+              targets=[Target("load 1m", 'system_load_average_1m{job=~"$job"}'),
+                       Target("cpu cores", 'system_cpu_count{job=~"$job"}')]),
         Panel(title="Threads by state", unit="short", w=8,
-              targets=[Target("{{state}}", 'jvm_threads_states_threads{job="$job"}')]),
+              targets=[Target("{{state}}", 'jvm_threads_states_threads{job=~"$job"}')]),
         Panel(title="In-flight HTTP requests", unit="short", w=8,
-              targets=[Target("in-flight", 'sum(http_server_requests_active_seconds_gcount{job="$job"})')]),
+              targets=[Target("in-flight", 'sum(http_server_requests_active_seconds_gcount{job=~"$job"})')]),
         Panel(title="GC allocation & promotion rate", unit="Bps", w=8,
-              targets=[Target("allocation", 'rate(jvm_gc_memory_allocated_bytes_total{job="$job"}[1m])'),
-                       Target("promotion", 'rate(jvm_gc_memory_promoted_bytes_total{job="$job"}[1m])')]),
+              targets=[Target("allocation", 'rate(jvm_gc_memory_allocated_bytes_total{job=~"$job"}[1m])'),
+                       Target("promotion", 'rate(jvm_gc_memory_promoted_bytes_total{job=~"$job"}[1m])')]),
         Panel(title="GC overhead", unit="percentunit", w=8, max=1,
-              targets=[Target("overhead", 'jvm_gc_overhead{job="$job"}')]),
+              targets=[Target("overhead", 'jvm_gc_overhead{job=~"$job"}')]),
         Panel(title="Live data after GC", unit="bytes", w=8,
-              targets=[Target("live data (old gen)", 'jvm_gc_live_data_size_bytes{job="$job"}'),
-                       Target("old gen max", 'jvm_gc_max_data_size_bytes{job="$job"}')]),
+              targets=[Target("live data (old gen)", 'jvm_gc_live_data_size_bytes{job=~"$job"}'),
+                       Target("old gen max", 'jvm_gc_max_data_size_bytes{job=~"$job"}')]),
         Panel(title="Log events by level", unit="ops", w=12,
-              targets=[Target("{{level}}", 'sum by (level) (rate(logback_events_total{job="$job"}[1m]))')]),
+              targets=[Target("{{level}}", 'sum by (level) (rate(logback_events_total{job=~"$job"}[1m]))')]),
         Panel(title="Spring Data repository invocations (top 10)", unit="ops", w=12,
               targets=[Target("{{repository}}.{{method}}",
-                              'topk(10, sum by (repository, method) (rate(spring_data_repository_invocations_seconds_count{job="$job"}[1m])))')]),
+                              'topk(10, sum by (repository, method) (rate(spring_data_repository_invocations_seconds_count{job=~"$job"}[1m])))')]),
     ]),
     Section("Spring pools", [
         Panel(title="HikariCP connections", unit="short", w=8,
-              targets=[Target("active", 'hikaricp_connections_active{job="$job"}'),
-                       Target("pending", 'hikaricp_connections_pending{job="$job"}'),
-                       Target("max", 'hikaricp_connections_max{job="$job"}')]),
+              targets=[Target("active", 'hikaricp_connections_active{job=~"$job"}'),
+                       Target("pending", 'hikaricp_connections_pending{job=~"$job"}'),
+                       Target("max", 'hikaricp_connections_max{job=~"$job"}')]),
         # Absorbed from TO-2's jvm-dashboard.json and ES-1's inventory-es-dashboard.json
         # (Task 9 deleted both; Task 10 merges their signals).
         Panel(title="HikariCP — acquire & usage time", unit="s", w=8,
               targets=[Target("acquire avg",
-                              'rate(hikaricp_connections_acquire_seconds_sum{job="$job"}[1m]) / rate(hikaricp_connections_acquire_seconds_count{job="$job"}[1m])'),
-                       Target("acquire max", 'hikaricp_connections_acquire_seconds_max{job="$job"}'),
+                              'rate(hikaricp_connections_acquire_seconds_sum{job=~"$job"}[1m]) / rate(hikaricp_connections_acquire_seconds_count{job=~"$job"}[1m])'),
+                       Target("acquire max", 'hikaricp_connections_acquire_seconds_max{job=~"$job"}'),
                        Target("usage avg",
-                              'rate(hikaricp_connections_usage_seconds_sum{job="$job"}[1m]) / rate(hikaricp_connections_usage_seconds_count{job="$job"}[1m])'),
-                       Target("usage max", 'hikaricp_connections_usage_seconds_max{job="$job"}')]),
+                              'rate(hikaricp_connections_usage_seconds_sum{job=~"$job"}[1m]) / rate(hikaricp_connections_usage_seconds_count{job=~"$job"}[1m])'),
+                       Target("usage max", 'hikaricp_connections_usage_seconds_max{job=~"$job"}')]),
         Panel(title="HikariCP — connection timeouts", unit="ops", w=8,
-              targets=[Target("timeouts", 'rate(hikaricp_connections_timeout_total{job="$job"}[1m])')]),
+              targets=[Target("timeouts", 'rate(hikaricp_connections_timeout_total{job=~"$job"}[1m])')]),
         # The two halves of the same question, for both families: a lane is capped either by its
         # THREADS or by the CONNECTIONS those threads borrow, and reading one without the other
         # is how a saturated pool gets mistaken for a slow database.
@@ -335,13 +377,13 @@ SECTIONS = [
         # order_retry_pool_queued does still exist on those four but means only "in backoff", so
         # executor_queued_tasks minus it is the ready backlog.
         Panel(title="Busy threads by pool (TO & ES)", unit="short", w=12,
-              targets=[Target("{{name}}", 'sum by (name) (executor_active_threads{job="$job"})'),
-                       Target("order-retry", 'sum(order_retry_pool_active{job="$job"})'),
-                       Target("saga {{pool}}", 'sum by (pool) (saga_pool_active{job="$job"})')]),
+              targets=[Target("{{name}}", 'sum by (name) (executor_active_threads{job=~"$job"})'),
+                       Target("order-retry", 'sum(order_retry_pool_active{job=~"$job"})'),
+                       Target("saga {{pool}}", 'sum by (pool) (saga_pool_active{job=~"$job"})')]),
         Panel(title="Connections in use by pool (TO & ES)", unit="short", w=12,
-              targets=[Target("{{pool}} active", 'sum by (pool) (hikaricp_connections_active{job="$job"})'),
-                       Target("{{pool}} pending", 'sum by (pool) (hikaricp_connections_pending{job="$job"})'),
-                       Target("{{pool}} max", 'sum by (pool) (hikaricp_connections_max{job="$job"})')]),
+              targets=[Target("{{pool}} active", 'sum by (pool) (hikaricp_connections_active{job=~"$job"})'),
+                       Target("{{pool}} pending", 'sum by (pool) (hikaricp_connections_pending{job=~"$job"})'),
+                       Target("{{pool}} max", 'sum by (pool) (hikaricp_connections_max{job=~"$job"})')]),
     ]),
     Section("PostgreSQL", [
         Panel(title="Database size", unit="bytes", w=8,

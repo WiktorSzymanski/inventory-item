@@ -108,11 +108,12 @@ def _meta(run_id, variant, point, start, end):
 class ScanRuns(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.root = self.tmp.name
+        self.root = os.path.join(self.tmp.name, "dirA")
+        os.makedirs(self.root)
         self.addCleanup(self.tmp.cleanup)
 
-    def write(self, run_id, variant, point, start, end, meta=True, snapshot=True):
-        d = os.path.join(self.root, run_id)
+    def write(self, run_id, variant, point, start, end, meta=True, snapshot=True, under=""):
+        d = os.path.join(self.root, under, run_id)
         os.makedirs(d)
         if snapshot:
             os.makedirs(os.path.join(d, "prom-snapshot"))
@@ -151,9 +152,11 @@ class ScanRuns(unittest.TestCase):
 
     def test_labels_carry_no_option_separators(self):
         """Grafana parses a custom variable's option list as `label : value, label : value`,
-        so a colon or comma in a label silently splits it into a different option."""
+        so a colon or comma in a label silently splits it into a different option. The label is
+        built from directory names now, which are the user's to choose."""
         self.write("TO-1_capacity_W-base_20260812T140542Z", "TO-1", "W-base", 1786543581, 1786547987)
-        self.write("ES-4-NullLock_capacity_W-hot_20260813T144640Z", "ES-4", "W-hot", 1786633600, 1786637000)
+        self.write("ES-4-NullLock_capacity_W-hot_20260813T144640Z", "ES-4", "W-hot", 1786633600, 1786637000,
+                   under="phase 1: TO, then ES")
         for run in runs.scan_runs([self.root]):
             with self.subTest(run=run.run_id):
                 self.assertNotIn(":", run.label)
@@ -169,12 +172,63 @@ class ScanRuns(unittest.TestCase):
         self.write("TO-1_capacity_W-base_20260812T140542Z", "TO-1", "W-base", 1786543581, 1786547987)
         self.assertEqual(len(runs.scan_runs([self.root, self.root])), 1)
 
-    def test_grouped_by_workload_point_then_variant(self):
-        self.write("ES-1_capacity_W-hot_20260813T120929Z", "ES-1", "W-hot", 1786620000, 1786623000)
-        self.write("TO-2_capacity_W-base_20260812T152159Z", "TO-2", "W-base", 1786550000, 1786553000)
+    def test_ordered_by_path_so_the_dropdown_reads_as_a_tree(self):
+        """The dropdown text IS the path now, so any other order leaves the options in a
+        sequence the labels do not explain -- and scatters one directory's runs through the
+        list, which is what naming them after their directory is meant to fix."""
+        self.write("ES-1_capacity_W-hot_20260813T120929Z", "ES-1", "W-hot", 1786620000, 1786623000,
+                   under="dirC")
+        self.write("TO-2_capacity_W-base_20260812T152159Z", "TO-2", "W-base", 1786550000, 1786553000,
+                   under="dirB")
+        self.write("TO-1_capacity_W-base_20260812T140542Z", "TO-1", "W-base", 1786543581, 1786547987,
+                   under="dirB")
+        self.assertEqual([r.label for r in runs.scan_runs([self.root])], [
+            "dirA - dirB - TO-1_capacity_W-base_20260812T140542Z",
+            "dirA - dirB - TO-2_capacity_W-base_20260812T152159Z",
+            "dirA - dirC - ES-1_capacity_W-hot_20260813T120929Z",
+        ])
+
+    def test_a_run_directly_under_the_root_is_labelled_root_then_run(self):
         self.write("TO-1_capacity_W-base_20260812T140542Z", "TO-1", "W-base", 1786543581, 1786547987)
-        self.assertEqual([(r.point, r.variant) for r in runs.scan_runs([self.root])],
-                         [("W-base", "TO-1"), ("W-base", "TO-2"), ("W-hot", "ES-1")])
+        self.assertEqual([r.label for r in runs.scan_runs([self.root])],
+                         ["dirA - TO-1_capacity_W-base_20260812T140542Z"])
+
+    def test_runs_nested_arbitrarily_deep_are_found(self):
+        """Two levels was the old limit, and a campaign directory of campaign directories --
+        which is what accumulating phases produces -- put every run one level past it."""
+        self.write("TO-1_capacity_W-base_20260812T140542Z", "TO-1", "W-base", 1786543581, 1786547987,
+                   under=os.path.join("dirB", "dirC", "dirD"))
+        found = runs.scan_runs([self.root])
+        self.assertEqual([r.label for r in found],
+                         ["dirA - dirB - dirC - dirD - TO-1_capacity_W-base_20260812T140542Z"])
+
+    def test_the_root_label_can_be_overridden(self):
+        """docker-compose.replay-load.yml bind-mounts the selected directory at /runs, so the
+        name the user knows it by is not on the container's filesystem at all."""
+        self.write("TO-1_capacity_W-base_20260812T140542Z", "TO-1", "W-base", 1786543581, 1786547987)
+        found = runs.scan_runs([self.root], ["Final-Bench"])
+        self.assertEqual([r.label for r in found],
+                         ["Final-Bench - TO-1_capacity_W-base_20260812T140542Z"])
+
+    def test_a_tsdb_block_is_not_mistaken_for_a_run(self):
+        """Every block under prom-snapshot/ carries a meta.json of its own -- Prometheus' block
+        descriptor, which has no `windows` and would blow up on the first field read."""
+        self.write("TO-1_capacity_W-base_20260812T140542Z", "TO-1", "W-base", 1786543581, 1786547987)
+        block = os.path.join(self.root, "TO-1_capacity_W-base_20260812T140542Z",
+                             "prom-snapshot", "01M1ECNMB93M3TTMMJQSRAWZ3E")
+        os.makedirs(os.path.join(block, "prom-snapshot"))
+        with open(os.path.join(block, "meta.json"), "w") as fh:
+            json.dump({"ulid": "01M1ECNMB93M3TTMMJQSRAWZ3E", "minTime": 0}, fh)
+        self.assertEqual(len(runs.scan_runs([self.root])), 1)
+
+    def test_a_self_referential_symlink_does_not_recurse(self):
+        """ensure_results_link() leaves `bench-results/bench-results -> <RESULTS_DIR>` when
+        MAIN_ROOT is not the repo root. A recursive glob walks through it forever; os.walk
+        does not follow symlinks, which is the whole reason it is used here."""
+        self.write("TO-1_capacity_W-base_20260812T140542Z", "TO-1", "W-base", 1786543581, 1786547987)
+        os.symlink(self.root, os.path.join(self.root, "dirA"))
+        self.assertEqual([r.label for r in runs.scan_runs([self.root])],
+                         ["dirA - TO-1_capacity_W-base_20260812T140542Z"])
 
 
 class BuildRunsDashboard(unittest.TestCase):
@@ -216,6 +270,8 @@ class BuildRunsDashboard(unittest.TestCase):
         for name, value in (("job", "inventory"), ("db", "inventory"), ("dbc", "postgres")):
             with self.subTest(name=name):
                 self.assertEqual(self.vars[name]["type"], "constant")
+                # Both sample runs default to prom_job="inventory", so the alternation
+                # collapses to the single name. PerRunScrapeJob covers the mixed set.
                 self.assertEqual(self.vars[name]["query"], value)
 
     def test_every_target_is_offset(self):
@@ -237,7 +293,8 @@ class BuildRunsDashboard(unittest.TestCase):
 
     def test_carries_every_live_panel(self):
         live = [p for s in spec.SECTIONS for p in s.panels if p.targets]
-        self.assertEqual(len(self.panels), len(live) + len(runs.POOLED.panels))
+        self.assertEqual(len(self.panels),
+                         len(live) + len(runs.POOLED.panels) + len(runs.TOTALS.panels))
 
 
 class ClipsToTheSelectedRun(unittest.TestCase):
@@ -294,9 +351,9 @@ class ClipsToTheSelectedRun(unittest.TestCase):
 
     @staticmethod
     def original(title, legend):
-        # POOLED first: the pooled publish-lag panel is declared in runs.py, not spec.py, but
-        # is rewritten by the same pick() and must round-trip the same way.
-        for section in [runs.POOLED] + spec.SECTIONS:
+        # The replay-only sections first: POOLED and TOTALS are declared in runs.py, not
+        # spec.py, but are rewritten by the same pick() and must round-trip the same way.
+        for section in [runs.POOLED, runs.TOTALS] + spec.SECTIONS:
             for panel in section.panels:
                 if panel.title != title:
                     continue
@@ -383,6 +440,184 @@ class PooledPublishLag(unittest.TestCase):
                 self.assertNotIn(panel.title, live_titles)
 
 
+class CompletedOrdersRunningTotal(unittest.TestCase):
+    """The one panel that answers "how many orders did this run finish", not "how fast".
+
+    Every other orders panel is a rate. This is the undifferentiated counter, so the legend
+    table's `Last *` column is the run's total per outcome.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sample = runs.Run("TO-1_capacity_W-base_20260812T140542Z", "TO-1", "TO", "W-base",
+                              1786543581, 1786547987)
+        cls.dash = runs.build_runs([cls.sample])
+        titles = {p.title for p in runs.TOTALS.panels}
+        cls.panels = [p for p in cls.dash["panels"] if p.get("title") in titles]
+
+    def targets(self):
+        for panel in self.panels:
+            for target in panel["targets"]:
+                yield panel["title"], target
+
+    def test_panel_is_present_and_is_a_count_curve(self):
+        self.assertEqual(len(self.panels), len(runs.TOTALS.panels))
+        for panel in self.panels:
+            with self.subTest(panel=panel["title"]):
+                self.assertEqual(panel["type"], "timeseries")
+                # `short`, not `ops`: this is a count, not a per-second rate. Shipping it as
+                # `ops` would label 1.6M completed orders as "1.6 Mops" beside the rate panels.
+                self.assertEqual(panel["fieldConfig"]["defaults"]["unit"], "short")
+
+    def test_the_legend_carries_the_run_total(self):
+        """`Last *` is the whole point of the panel -- the count is read off the legend, not
+        off the axis. The shared builder supplies it; this pins that it stays supplied."""
+        for panel in self.panels:
+            with self.subTest(panel=panel["title"]):
+                self.assertIn("lastNotNull", panel["options"]["legend"]["calcs"])
+                self.assertEqual(panel["options"]["legend"]["displayMode"], "table")
+
+    def test_it_is_split_by_outcome_and_nothing_else(self):
+        """`by (outcome)` collapses the `reason` dimension. The outcome x reason split is
+        already drawn, as a rate, by "Orders completed by outcome & reason"."""
+        for title, target in self.targets():
+            with self.subTest(panel=title):
+                self.assertIn("by (outcome)", target["expr"])
+                self.assertNotIn("reason", target["expr"])
+                self.assertEqual(target["legendFormat"], "{{outcome}}")
+
+    def test_the_counter_is_undifferentiated(self):
+        """No rate(), no increase(), no irate(): differentiating it turns this back into a
+        copy of the rate panel and the legend's `Last *` stops being a count."""
+        for title, target in self.targets():
+            with self.subTest(panel=title):
+                self.assertIn("orders_completed_total", target["expr"])
+                for fn in ("rate(", "irate(", "increase(", "delta("):
+                    self.assertNotIn(fn, target["expr"])
+
+    def test_no_baseline_is_subtracted_at_the_window_start(self):
+        """The obvious warm-up fix -- `counter - counter @ start()` -- is wrong here, and
+        wrong in the silent direction.
+
+        Prometheus carries a series' last sample forward for 5 minutes and run-suite.sh
+        restarts the stack back-to-back, so a series with no sample yet in THIS run resolves
+        to the PREVIOUS run's final value just past t0. In the 12-run phase-1 archive that
+        hits `rejected` on 2 of the 6 TO runs (opening at 238 140 and 43 400, because no order
+        had been rejected when measured load started). Subtracting that baseline drives the
+        whole series negative, and a negative series is not drawn on a `min: 0` axis -- so
+        101 767 rejections would read as "no rejections", with nothing on screen to say so.
+        The raw counter instead shows the carry-over as a plateau-then-cliff in the first
+        minutes, which is visible, and every point after it is this run's own.
+        """
+        for title, target in self.targets():
+            with self.subTest(panel=title):
+                self.assertNotIn("@ start()", target["expr"])
+                self.assertNotIn("clamp_min", target["expr"])
+
+    def test_it_is_offset_and_clipped_like_every_other_curve(self):
+        """One offset on its single selector, and CLIP so the curve stops at the selected
+        run's end rather than climbing into the next run's counter."""
+        for title, target in self.targets():
+            with self.subTest(panel=title):
+                self.assertEqual(target["expr"].count(OFF), 1)
+                self.assertTrue(target["expr"].endswith(runs.CLIP), target["expr"])
+
+    def test_it_is_replay_only(self):
+        """On the live dashboard the same expression would draw the counter since JVM start,
+        which is a different quantity and not one anyone watches climb."""
+        live_titles = {p.title for s in spec.SECTIONS for p in s.panels}
+        for panel in runs.TOTALS.panels:
+            with self.subTest(panel=panel.title):
+                self.assertNotIn(panel.title, live_titles)
+
+    def test_it_sits_directly_under_the_pooled_publish_lag(self):
+        """POOLED stays first -- it is the reason to open this dashboard on a finished run --
+        and the run's totals come next, above the per-instant rates."""
+        ordered = [p for p in self.dash["panels"] if p["type"] not in ("row", "text")]
+        self.assertEqual(ordered[0]["title"], runs.POOLED.panels[0].title)
+        self.assertEqual(ordered[1]["title"], runs.TOTALS.panels[0].title)
+
+
+class PerRunScrapeJob(unittest.TestCase):
+    """$job must cover every scrape job the archived run set actually used.
+
+    monitoring/prometheus/prometheus.yml declares two application jobs: `inventory`, and
+    `inventory-mgmt` for variants that give actuator its own connector. Which one a run landed
+    under is a property of the variant, recorded per run in meta.json as `prom_job`.
+
+    With $job pinned to the literal `inventory`, selecting a run scraped as `inventory-mgmt`
+    left 90 of its 91 $job-filtered targets returning nothing -- the entire dashboard blank,
+    reading as a missing TSDB snapshot rather than a one-word label mismatch. In the phase-1
+    archive that is both TO-2-fix-A runs, which are the A/B evidence for the watermark cursor.
+    """
+
+    MIXED = [
+        runs.Run("TO-1_capacity_W-base_20260812T140542Z", "TO-1", "TO", "W-base",
+                 1786543581, 1786547987, "inventory"),
+        runs.Run("TO-2-fix-A_capacity_W-base_20260828T202501Z", "TO-2-fix-A", "TO", "W-base",
+                 1786633600, 1786637000, "inventory-mgmt"),
+    ]
+
+    def test_the_constant_is_the_alternation_of_every_job_in_the_set(self):
+        self.assertEqual(runs._job_constant(self.MIXED), "inventory|inventory-mgmt")
+
+    def test_a_uniform_run_set_collapses_to_one_name(self):
+        """No gratuitous alternation when every run agrees -- the common case stays readable."""
+        self.assertEqual(runs._job_constant(self.MIXED[:1]), "inventory")
+
+    def test_it_is_deduplicated_and_ordered(self):
+        """The value goes into a generated file that is diffed against the committed one, so it
+        must not depend on the order scan_runs happened to return."""
+        doubled = self.MIXED + list(reversed(self.MIXED))
+        self.assertEqual(runs._job_constant(doubled), "inventory|inventory-mgmt")
+
+    def test_an_empty_set_still_yields_a_usable_job(self):
+        """`""` would interpolate as {job=~""}, which matches only the empty job name."""
+        self.assertEqual(runs._job_constant([]), runs.DEFAULT_PROM_JOB)
+
+    def test_the_dashboard_carries_it(self):
+        var = {v["name"]: v for v in runs.build_runs(self.MIXED)["templating"]["list"]}["job"]
+        self.assertEqual(var["type"], "constant")
+        self.assertEqual(var["query"], "inventory|inventory-mgmt")
+        # A constant with `current: {}` interpolates empty exactly like an unresolved query
+        # variable, so declaring the value is only half of it.
+        self.assertEqual(var["current"]["value"], "inventory|inventory-mgmt")
+
+    def test_every_job_filtered_target_uses_a_regex_matcher(self):
+        """`job="inventory|inventory-mgmt"` is a literal job name no run has, so `=~` is what
+        makes the alternation mean anything. This is the half of the fix that lives in spec.py
+        and it is silent when wrong -- the panels render empty, they do not error."""
+        for panel in runs.build_runs(self.MIXED)["panels"]:
+            for target in panel.get("targets", []):
+                if "$job" not in target["expr"]:
+                    continue
+                with self.subTest(panel=panel["title"]):
+                    self.assertIn('job=~"$job"', target["expr"])
+                    self.assertNotIn('job="$job"', target["expr"])
+
+    def _scan_one(self, run_id, variant, prom_job):
+        """One archived run on disk, with prom_job present or absent, through scan_runs()."""
+        with tempfile.TemporaryDirectory() as root:
+            d = os.path.join(root, run_id)
+            os.makedirs(os.path.join(d, "prom-snapshot"))
+            meta = _meta(run_id, variant, "W-base", 1786543581, 1786547987)
+            if prom_job is not None:
+                meta["prom_job"] = prom_job
+            with open(os.path.join(d, "meta.json"), "w") as fh:
+                json.dump(meta, fh)
+            return runs.scan_runs([root])
+
+    def test_scan_runs_defaults_the_job_for_a_meta_without_one(self):
+        """Runs archived before bench.sh recorded prom_job predate the second job entirely."""
+        found = self._scan_one("TO-1_capacity_W-base_20260812T140542Z", "TO-1", None)
+        self.assertEqual([r.prom_job for r in found], [runs.DEFAULT_PROM_JOB])
+
+    def test_scan_runs_reads_prom_job_from_meta(self):
+        found = self._scan_one("TO-2-fix-A_capacity_W-base_20260828T202501Z", "TO-2-fix-A",
+                               "inventory-mgmt")
+        self.assertEqual([r.prom_job for r in found], ["inventory-mgmt"])
+
+
 class MarkerCoverage(unittest.TestCase):
     """The marker series has to span the whole visible window: Grafana resolves label_values()
     over whatever range is on screen, so a series that stopped at the anchor would leave $end
@@ -411,6 +646,46 @@ class MarkerCoverage(unittest.TestCase):
         text, _ = self.markers.build_openmetrics([run], run.seconds)
         self.assertIn(f'end_at="{runs.ANCHOR_EPOCH + run.seconds}"', text)
         self.assertIn(f'offset="{run.offset}s"', text)
+
+
+class VerifierReadsTheDashboardsConstants(unittest.TestCase):
+    """verify_dashboard_metrics.py must not keep its own copy of a template constant.
+
+    It is the tool that answers "does this panel actually resolve?", so a stale value there
+    reports a bug in the dashboard that is really a bug in the verifier. That had already
+    happened twice: DEFAULT_VARS still held `job: inventory-to` and `dbc: postgres-to` long
+    after the stack dropped the family suffixes, and its hardcoded `job: inventory` reported
+    27/117 targets resolving on a TO-2-fix-A run where the dashboard renders 104/117.
+    """
+
+    def setUp(self):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self.script = os.path.join(root, "scripts", "verify_dashboard_metrics.py")
+        self.dash_dir = os.path.join(root, "monitoring", "grafana", "provisioning", "dashboards")
+        with open(self.script) as fh:
+            self.source = fh.read()
+
+    def constants(self, name):
+        with open(os.path.join(self.dash_dir, f"{name}.json")) as fh:
+            variables = json.load(fh)["templating"]["list"]
+        return {v["name"]: v["query"] for v in variables if v.get("type") == "constant"}
+
+    def test_it_reads_the_constants_out_of_the_dashboard_json(self):
+        self.assertIn("def dashboard_constants(", self.source)
+        self.assertIn("variables.update(dashboard_constants(", self.source)
+
+    def test_the_committed_dashboards_declare_the_constants_it_needs(self):
+        """bench-runs must carry $job as a constant, or the verifier silently falls back to the
+        DEFAULT_VARS literal and the drift this test exists to prevent is back."""
+        self.assertIn("job", self.constants("bench-runs"))
+        self.assertEqual(self.constants("bench-runs")["job"], "inventory|inventory-mgmt")
+
+    def test_no_default_carries_a_job_or_container_name_the_stack_dropped(self):
+        """The `-to`/`-es` suffixes were removed from every job, database and container name."""
+        head = self.source[:self.source.index("def ")]
+        for stale in ("inventory-to", "inventory-es", "postgres-to", "postgres-es"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(f'"{stale}"', head)
 
 
 class AnchorsAgree(unittest.TestCase):

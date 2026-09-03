@@ -114,11 +114,14 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("roots", nargs="+", metavar="DIR",
                     help="the same run directories passed to build.py --runs")
+    ap.add_argument("--root-label", nargs="+", metavar="NAME", default=[],
+                    help="the same --root-label passed to build.py: the marker series carries "
+                         "each run's dropdown label, so the two must agree")
     ap.add_argument("--volume", default=REPLAY_VOLUME, help=f"default: {REPLAY_VOLUME}")
     ap.add_argument("--dry-run", action="store_true", help="print the OpenMetrics text and stop")
     args = ap.parse_args()
 
-    found = runs_mod.scan_runs(args.roots)
+    found = runs_mod.scan_runs(args.roots, args.root_label)
     if not found:
         sys.exit(f"no completed runs found under: {' '.join(args.roots)}")
     span = max(run.seconds for run in found)

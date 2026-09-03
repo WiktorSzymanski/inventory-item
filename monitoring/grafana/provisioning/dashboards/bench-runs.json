@@ -11,8 +11,8 @@
   ],
   "timezone": "browser",
   "time": {
-    "from": "2026-09-01T00:00:00.000Z",
-    "to": "2026-09-01T01:20:00.000Z"
+    "from": "2027-01-01T00:00:00.000Z",
+    "to": "2027-01-01T01:40:00.000Z"
   },
   "timepicker": {},
   "annotations": {
@@ -26,53 +26,118 @@
         "name": "run",
         "label": "Run",
         "type": "custom",
-        "query": "ES-1 \u00b7 W-base \u00b7 0822-1510 : 809351s, ES-1 \u00b7 W-base \u00b7 0822-2319 : 780031s, ES-2 \u00b7 W-base \u00b7 0827-0330 : 419349s, ES-4 \u00b7 W-base \u00b7 0827-0437 : 415342s, TO-2-fix-A \u00b7 W-base \u00b7 0825-2356 : 518618s, TO-2-fix-A \u00b7 W-base \u00b7 0826-0330 : 505761s, TO-2-fix-A-2 \u00b7 W-base \u00b7 0826-2307 : 435170s, TO-2-fix-A-2 \u00b7 W-base \u00b7 0827-0119 : 427226s",
+        "query": "Final-Bench - 1-TO-event-dilivery - TO-1_avg-load_W-base : 10502114s, Final-Bench - 1-TO-event-dilivery - TO-1_breakpoint_W-base : 10830899s, Final-Bench - 1-TO-event-dilivery - TO-1_breakpoint_W-base_100_pool : 10755677s, Final-Bench - 1-TO-event-dilivery - TO-1_breakpoint_W-base_200_pool : 10761669s, Final-Bench - 1-TO-event-dilivery - TO-2-fix-A_capacity_W-base_20260828T202501Z : 10812818s, Final-Bench - 1-TO-event-dilivery - TO-2-fix-A_soak_W-base_20260828T220527Z : 10806791s, Final-Bench - 1-TO-event-dilivery - TO-3_capacity_W-base_20260828T165120Z : 10825635s, Final-Bench - 1-TO-event-dilivery - TO-3_soak_W-base_20260827T080656Z : 10943352s, Final-Bench - 1-TO-event-dilivery - new?_TO-3_capacity_W-base_20260829T155523Z : 10742592s, Final-Bench - 2-ES-snapshot - ES-1_capacity_W-base_20260831T221657Z : 10546902s, Final-Bench - 2-ES-snapshot - ES-1_steady_W-base_20260901T135415Z : 10490662s, Final-Bench - 2-ES-snapshot - ES-2_capacity_W-base_20260831T233802Z : 10542034s, Final-Bench - 2-ES-snapshot - ES-2_steady_W-base_20260901T032139Z : 10528618s, Final-Bench - 3-Cache - ES-2_capacity_C10_20260901T221042Z : 10460424s, Final-Bench - 3-Cache - ES-4_capacity_C10_20260901T234045Z : 10455023s, Final-Bench - 3-Cache - ES-4_capacity_W-base_20260901T004957Z : 10537718s, Final-Bench - 3-Cache - ES-4_steady_W-base_20260901T042506Z : 10524812s, Final-Bench - 4-Saga - ES-2_capacity_C01_20260902T022502Z : 10445163s, Final-Bench - 4-Saga - ES-2_capacity_C02_20260902T051213Z : 10435133s, Final-Bench - 4-Saga - TO-3_capacity_C01_20260902T010021Z : 10450248s, Final-Bench - 4-Saga - TO-3_capacity_C02_20260902T034532Z : 10440332s",
         "options": [
           {
             "selected": true,
-            "text": "ES-1 \u00b7 W-base \u00b7 0822-1510",
-            "value": "809351s"
+            "text": "Final-Bench - 1-TO-event-dilivery - TO-1_avg-load_W-base",
+            "value": "10502114s"
           },
           {
             "selected": false,
-            "text": "ES-1 \u00b7 W-base \u00b7 0822-2319",
-            "value": "780031s"
+            "text": "Final-Bench - 1-TO-event-dilivery - TO-1_breakpoint_W-base",
+            "value": "10830899s"
           },
           {
             "selected": false,
-            "text": "ES-2 \u00b7 W-base \u00b7 0827-0330",
-            "value": "419349s"
+            "text": "Final-Bench - 1-TO-event-dilivery - TO-1_breakpoint_W-base_100_pool",
+            "value": "10755677s"
           },
           {
             "selected": false,
-            "text": "ES-4 \u00b7 W-base \u00b7 0827-0437",
-            "value": "415342s"
+            "text": "Final-Bench - 1-TO-event-dilivery - TO-1_breakpoint_W-base_200_pool",
+            "value": "10761669s"
           },
           {
             "selected": false,
-            "text": "TO-2-fix-A \u00b7 W-base \u00b7 0825-2356",
-            "value": "518618s"
+            "text": "Final-Bench - 1-TO-event-dilivery - TO-2-fix-A_capacity_W-base_20260828T202501Z",
+            "value": "10812818s"
           },
           {
             "selected": false,
-            "text": "TO-2-fix-A \u00b7 W-base \u00b7 0826-0330",
-            "value": "505761s"
+            "text": "Final-Bench - 1-TO-event-dilivery - TO-2-fix-A_soak_W-base_20260828T220527Z",
+            "value": "10806791s"
           },
           {
             "selected": false,
-            "text": "TO-2-fix-A-2 \u00b7 W-base \u00b7 0826-2307",
-            "value": "435170s"
+            "text": "Final-Bench - 1-TO-event-dilivery - TO-3_capacity_W-base_20260828T165120Z",
+            "value": "10825635s"
           },
           {
             "selected": false,
-            "text": "TO-2-fix-A-2 \u00b7 W-base \u00b7 0827-0119",
-            "value": "427226s"
+            "text": "Final-Bench - 1-TO-event-dilivery - TO-3_soak_W-base_20260827T080656Z",
+            "value": "10943352s"
+          },
+          {
+            "selected": false,
+            "text": "Final-Bench - 1-TO-event-dilivery - new?_TO-3_capacity_W-base_20260829T155523Z",
+            "value": "10742592s"
+          },
+          {
+            "selected": false,
+            "text": "Final-Bench - 2-ES-snapshot - ES-1_capacity_W-base_20260831T221657Z",
+            "value": "10546902s"
+          },
+          {
+            "selected": false,
+            "text": "Final-Bench - 2-ES-snapshot - ES-1_steady_W-base_20260901T135415Z",
+            "value": "10490662s"
+          },
+          {
+            "selected": false,
+            "text": "Final-Bench - 2-ES-snapshot - ES-2_capacity_W-base_20260831T233802Z",
+            "value": "10542034s"
+          },
+          {
+            "selected": false,
+            "text": "Final-Bench - 2-ES-snapshot - ES-2_steady_W-base_20260901T032139Z",
+            "value": "10528618s"
+          },
+          {
+            "selected": false,
+            "text": "Final-Bench - 3-Cache - ES-2_capacity_C10_20260901T221042Z",
+            "value": "10460424s"
+          },
+          {
+            "selected": false,
+            "text": "Final-Bench - 3-Cache - ES-4_capacity_C10_20260901T234045Z",
+            "value": "10455023s"
+          },
+          {
+            "selected": false,
+            "text": "Final-Bench - 3-Cache - ES-4_capacity_W-base_20260901T004957Z",
+            "value": "10537718s"
+          },
+          {
+            "selected": false,
+            "text": "Final-Bench - 3-Cache - ES-4_steady_W-base_20260901T042506Z",
+            "value": "10524812s"
+          },
+          {
+            "selected": false,
+            "text": "Final-Bench - 4-Saga - ES-2_capacity_C01_20260902T022502Z",
+            "value": "10445163s"
+          },
+          {
+            "selected": false,
+            "text": "Final-Bench - 4-Saga - ES-2_capacity_C02_20260902T051213Z",
+            "value": "10435133s"
+          },
+          {
+            "selected": false,
+            "text": "Final-Bench - 4-Saga - TO-3_capacity_C01_20260902T010021Z",
+            "value": "10450248s"
+          },
+          {
+            "selected": false,
+            "text": "Final-Bench - 4-Saga - TO-3_capacity_C02_20260902T034532Z",
+            "value": "10440332s"
           }
         ],
         "current": {
           "selected": true,
-          "text": "ES-1 \u00b7 W-base \u00b7 0822-1510",
-          "value": "809351s"
+          "text": "Final-Bench - 1-TO-event-dilivery - TO-1_avg-load_W-base",
+          "value": "10502114s"
         },
         "multi": false,
         "includeAll": false,
@@ -107,17 +172,17 @@
         "name": "job",
         "label": "API job",
         "type": "constant",
-        "query": "inventory",
+        "query": "inventory|inventory-mgmt",
         "current": {
           "selected": false,
-          "text": "inventory",
-          "value": "inventory"
+          "text": "inventory|inventory-mgmt",
+          "value": "inventory|inventory-mgmt"
         },
         "options": [
           {
             "selected": true,
-            "text": "inventory",
-            "value": "inventory"
+            "text": "inventory|inventory-mgmt",
+            "value": "inventory|inventory-mgmt"
           }
         ],
         "hide": 2
@@ -183,7 +248,7 @@
   },
   "panels": [
     {
-      "id": 65,
+      "id": 70,
       "type": "text",
       "title": "Selected run",
       "gridPos": {
@@ -198,7 +263,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "## ${run:text}\n\nThe axis on every panel is **minutes since this run's own t0** (`meta.json` `windows.full[0]`, i.e. the start of measured load). The axis is 80 minutes wide \u2014 sized for the longest archived run \u2014 but every panel stops at **this** run's end, so a shorter run simply leaves the right side empty rather than continuing into whichever run came next.\n\nThe time picker is pinned to a fixed anchor and must stay there: the run is reached by the offset carried in the **Run** variable, not by the time range."
+        "content": "## ${run:text}\n\nThe axis on every panel is **minutes since this run's own t0** (`meta.json` `windows.full[0]`, i.e. the start of measured load). The axis is 100 minutes wide \u2014 sized for the longest archived run \u2014 but every panel stops at **this** run's end, so a shorter run simply leaves the right side empty rather than continuing into whichever run came next.\n\nThe time picker is pinned to a fixed anchor and must stay there: the run is reached by the offset carried in the **Run** variable, not by the time range."
       }
     },
     {
@@ -269,7 +334,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.5, sum(rate(publish_lag_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.5, sum(rate(publish_lag_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "p50",
           "refId": "A"
         },
@@ -278,7 +343,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.95, sum(rate(publish_lag_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.95, sum(rate(publish_lag_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "p95",
           "refId": "B"
         },
@@ -287,7 +352,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.99, sum(rate(publish_lag_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.99, sum(rate(publish_lag_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -296,7 +361,7 @@
     {
       "id": 3,
       "type": "row",
-      "title": "HTTP",
+      "title": "Orders completed, running total",
       "collapsed": false,
       "gridPos": {
         "x": 0,
@@ -308,13 +373,13 @@
     },
     {
       "id": 4,
-      "title": "Request rate by endpoint & method",
-      "description": "sum(rate(http_server_requests_seconds_count)) by (uri, method). Replaces the separate per-family throughput panels the three old dashboards each had.",
+      "title": "Orders completed by outcome \u2014 running total",
+      "description": "Cumulative count of terminal orders, by outcome, over the selected run. The run's total per outcome is the legend table's `Last *` column. TO family only. Two caveats, both by design: the ~5 000 warm-up orders completed before t0 are included in `confirmed`, and on a run whose first rejection came minutes after t0 the `rejected` curve opens on the previous run's final value \u2014 Prometheus' 5-minute lookback \u2014 until this run's own series appears and the counter resets. Every point after that cliff, the total included, is this run's own.",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
         "y": 13,
-        "w": 12,
+        "w": 24,
         "h": 8
       },
       "datasource": {
@@ -323,7 +388,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "short",
           "min": 0,
           "color": {
             "mode": "palette-classic"
@@ -361,20 +426,33 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(rate(http_server_requests_seconds_count{job=\"$job\"}[1m] offset $run)) by (uri, method)) and on() (vector(time()) < vector($end))",
-          "legendFormat": "{{method}} {{uri}}",
+          "expr": "(sum by (outcome) (orders_completed_total{job=~\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
+          "legendFormat": "{{outcome}}",
           "refId": "A"
         }
       ]
     },
     {
       "id": 5,
-      "title": "POST /inventory/orders by status",
-      "description": "Admission outcome.",
+      "type": "row",
+      "title": "HTTP",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 6,
+      "title": "Request rate by endpoint & method",
+      "description": "sum(rate(http_server_requests_seconds_count)) by (uri, method). Replaces the separate per-family throughput panels the three old dashboards each had.",
       "type": "timeseries",
       "gridPos": {
-        "x": 12,
-        "y": 13,
+        "x": 0,
+        "y": 22,
         "w": 12,
         "h": 8
       },
@@ -422,20 +500,81 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(rate(http_server_requests_seconds_count{job=\"$job\",method=\"POST\",uri=\"/inventory/orders\"}[1m] offset $run)) by (status)) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(rate(http_server_requests_seconds_count{job=~\"$job\"}[1m] offset $run)) by (uri, method)) and on() (vector(time()) < vector($end))",
+          "legendFormat": "{{method}} {{uri}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "POST /inventory/orders by status",
+      "description": "Admission outcome.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 22,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-replay"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-replay"
+          },
+          "expr": "(sum(rate(http_server_requests_seconds_count{job=~\"$job\",method=\"POST\",uri=\"/inventory/orders\"}[1m] offset $run)) by (status)) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{status}}",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 6,
+      "id": 8,
       "title": "Request latency \u2014 p50 / p95 / p99",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 21,
+        "y": 30,
         "w": 12,
         "h": 8
       },
@@ -483,7 +622,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.5, sum(rate(http_server_requests_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, uri, method))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.5, sum(rate(http_server_requests_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le, uri, method))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{method}} {{uri}} p50",
           "refId": "A"
         },
@@ -492,7 +631,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, uri, method))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le, uri, method))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{method}} {{uri}} p95",
           "refId": "B"
         },
@@ -501,20 +640,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, uri, method))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le, uri, method))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{method}} {{uri}} p99",
           "refId": "C"
         }
       ]
     },
     {
-      "id": 7,
+      "id": 9,
       "title": "HTTP error rate (4xx / 5xx)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 21,
+        "y": 30,
         "w": 12,
         "h": 8
       },
@@ -562,33 +701,33 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(rate(http_server_requests_seconds_count{job=\"$job\",status=~\"[45]..\"}[1m] offset $run)) by (uri, status)) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(rate(http_server_requests_seconds_count{job=~\"$job\",status=~\"[45]..\"}[1m] offset $run)) by (uri, status)) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{status}} {{uri}}",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 8,
+      "id": 10,
       "type": "row",
       "title": "Orders & domain",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 29,
+        "y": 38,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 9,
+      "id": 11,
       "title": "Offered vs accepted vs terminal",
       "description": "One axis, orders/s. Dashed = asked of the system, solid = done by it.",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 30,
+        "y": 39,
         "w": 24,
         "h": 9
       },
@@ -636,7 +775,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(rate(http_server_requests_seconds_count{job=\"$job\",method=\"POST\",uri=\"/inventory/orders\",status=\"202\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(rate(http_server_requests_seconds_count{job=~\"$job\",method=\"POST\",uri=\"/inventory/orders\",status=\"202\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
           "legendFormat": "accepted (202)",
           "refId": "A"
         },
@@ -645,20 +784,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(rate(order_e2e_time_seconds_count{job=\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(rate(order_e2e_time_seconds_count{job=~\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
           "legendFormat": "terminal",
           "refId": "B"
         }
       ]
     },
     {
-      "id": 10,
+      "id": 12,
       "title": "In-flight orders (saturation)",
       "description": "Admitted minus terminal. Monotonic growth on a constant-rate plateau is saturation.",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 39,
+        "y": 48,
         "w": 12,
         "h": 8
       },
@@ -706,20 +845,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "((sum(http_server_requests_seconds_count{job=\"$job\",method=\"POST\",uri=\"/inventory/orders\",status=\"202\"} offset $run) or vector(0)) - (sum(order_e2e_time_seconds_count{job=\"$job\"} offset $run) or vector(0))) and on() (vector(time()) < vector($end))",
+          "expr": "((sum(http_server_requests_seconds_count{job=~\"$job\",method=\"POST\",uri=\"/inventory/orders\",status=\"202\"} offset $run) or vector(0)) - (sum(order_e2e_time_seconds_count{job=~\"$job\"} offset $run) or vector(0))) and on() (vector(time()) < vector($end))",
           "legendFormat": "in-flight",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 11,
+      "id": 13,
       "title": "Order e2e latency by outcome \u2014 p50 / p95 / p99",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 39,
+        "y": 48,
         "w": 12,
         "h": 8
       },
@@ -767,7 +906,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.5, sum(rate(order_e2e_time_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, outcome))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.5, sum(rate(order_e2e_time_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le, outcome))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{outcome}} p50",
           "refId": "A"
         },
@@ -776,7 +915,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.95, sum(rate(order_e2e_time_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, outcome))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.95, sum(rate(order_e2e_time_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le, outcome))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{outcome}} p95",
           "refId": "B"
         },
@@ -785,20 +924,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.99, sum(rate(order_e2e_time_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, outcome))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.99, sum(rate(order_e2e_time_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le, outcome))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{outcome}} p99",
           "refId": "C"
         }
       ]
     },
     {
-      "id": 12,
+      "id": 14,
       "title": "Order processing time \u2014 p50 / p95 (TO family)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 47,
+        "y": 56,
         "w": 12,
         "h": 8
       },
@@ -846,7 +985,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.5, sum(rate(order_processing_time_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.5, sum(rate(order_processing_time_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "p50",
           "refId": "A"
         },
@@ -855,20 +994,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.95, sum(rate(order_processing_time_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.95, sum(rate(order_processing_time_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "p95",
           "refId": "B"
         }
       ]
     },
     {
-      "id": 13,
+      "id": 15,
       "title": "Order queue wait \u2014 p50 / p95 (TO family)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 47,
+        "y": 56,
         "w": 12,
         "h": 8
       },
@@ -916,7 +1055,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.5, sum(rate(order_queue_wait_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.5, sum(rate(order_queue_wait_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "p50",
           "refId": "A"
         },
@@ -925,20 +1064,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.95, sum(rate(order_queue_wait_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.95, sum(rate(order_queue_wait_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "p95",
           "refId": "B"
         }
       ]
     },
     {
-      "id": 14,
+      "id": 16,
       "title": "Orders completed by outcome & reason (TO family)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 55,
+        "y": 64,
         "w": 12,
         "h": 8
       },
@@ -986,20 +1125,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum by (outcome, reason) (rate(orders_completed_total{job=\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
+          "expr": "(sum by (outcome, reason) (rate(orders_completed_total{job=~\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{outcome}} {{reason}}",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 15,
+      "id": 17,
       "title": "Business exception rate by type",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 55,
+        "y": 64,
         "w": 12,
         "h": 8
       },
@@ -1047,20 +1186,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum by (type) (rate(inventory_exception_total{job=\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
+          "expr": "(sum by (type) (rate(inventory_exception_total{job=~\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{type}}",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 16,
+      "id": 18,
       "title": "Optimistic locking \u2014 append success vs conflict",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 63,
+        "y": 72,
         "w": 12,
         "h": 8
       },
@@ -1108,7 +1247,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(rate(inventory_append_success_total{job=\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(rate(inventory_append_success_total{job=~\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
           "legendFormat": "append success",
           "refId": "A"
         },
@@ -1117,7 +1256,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(rate(inventory_optimistic_retry_total{job=\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(rate(inventory_optimistic_retry_total{job=~\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
           "legendFormat": "retry",
           "refId": "B"
         },
@@ -1126,20 +1265,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(rate(inventory_optimistic_exhausted_total{job=\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(rate(inventory_optimistic_exhausted_total{job=~\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
           "legendFormat": "exhausted",
           "refId": "C"
         }
       ]
     },
     {
-      "id": 17,
+      "id": 19,
       "title": "Events processed by type",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 63,
+        "y": 72,
         "w": 12,
         "h": 8
       },
@@ -1187,20 +1326,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum by (eventType) (rate(es_events_processed_total{job=\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
+          "expr": "(sum by (eventType) (rate(es_events_processed_total{job=~\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{eventType}}",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 18,
+      "id": 20,
       "title": "Publish lag by event type \u2014 p50 / p95 / p99",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 71,
+        "y": 80,
         "w": 12,
         "h": 8
       },
@@ -1248,7 +1387,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.5, sum(rate(publish_lag_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, eventType))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.5, sum(rate(publish_lag_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le, eventType))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{eventType}} p50",
           "refId": "A"
         },
@@ -1257,7 +1396,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.95, sum(rate(publish_lag_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, eventType))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.95, sum(rate(publish_lag_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le, eventType))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{eventType}} p95",
           "refId": "B"
         },
@@ -1266,20 +1405,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.99, sum(rate(publish_lag_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, eventType))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.99, sum(rate(publish_lag_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le, eventType))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{eventType}} p99",
           "refId": "C"
         }
       ]
     },
     {
-      "id": 19,
-      "title": "State load time by aggregate and phase \u2014 p50 / p95",
+      "id": 21,
+      "title": "State load time by aggregate, path and phase \u2014 p50 / p95",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 71,
+        "y": 80,
         "w": 12,
         "h": 8
       },
@@ -1327,8 +1466,8 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.5, sum(rate(state_load_time_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, phase, aggregate))) and on() (vector(time()) < vector($end))",
-          "legendFormat": "{{aggregate}} \u00b7 {{phase}} p50",
+          "expr": "(histogram_quantile(0.5, sum(rate(state_load_time_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le, phase, aggregate, path))) and on() (vector(time()) < vector($end))",
+          "legendFormat": "{{aggregate}} \u00b7 {{path}} \u00b7 {{phase}} p50",
           "refId": "A"
         },
         {
@@ -1336,20 +1475,81 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, phase, aggregate))) and on() (vector(time()) < vector($end))",
-          "legendFormat": "{{aggregate}} \u00b7 {{phase}} p95",
+          "expr": "(histogram_quantile(0.95, sum(rate(state_load_time_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le, phase, aggregate, path))) and on() (vector(time()) < vector($end))",
+          "legendFormat": "{{aggregate}} \u00b7 {{path}} \u00b7 {{phase}} p95",
           "refId": "B"
         }
       ]
     },
     {
-      "id": 20,
+      "id": 22,
+      "title": "Store round trips by aggregate and path",
+      "description": "Aggregate loads that actually went to the event store, once per round trip. ES only \u2014 see the panel description in spec.py.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 88,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-replay"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-replay"
+          },
+          "expr": "(sum by (aggregate, path) (rate(state_load_time_seconds_count{job=~\"$job\",phase=\"total\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
+          "legendFormat": "{{aggregate}} \u00b7 {{path}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 23,
       "title": "State persist time by source \u2014 p50 / p95 / p99 (committed)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 79,
+        "y": 96,
         "w": 12,
         "h": 8
       },
@@ -1397,7 +1597,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.5, sum(rate(state_persist_time_seconds_bucket{job=\"$job\",outcome!=\"conflict\"}[1m] offset $run)) by (le, source))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.5, sum(rate(state_persist_time_seconds_bucket{job=~\"$job\",outcome!=\"conflict\"}[1m] offset $run)) by (le, source))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{source}} p50",
           "refId": "A"
         },
@@ -1406,7 +1606,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.95, sum(rate(state_persist_time_seconds_bucket{job=\"$job\",outcome!=\"conflict\"}[1m] offset $run)) by (le, source))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.95, sum(rate(state_persist_time_seconds_bucket{job=~\"$job\",outcome!=\"conflict\"}[1m] offset $run)) by (le, source))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{source}} p95",
           "refId": "B"
         },
@@ -1415,20 +1615,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.99, sum(rate(state_persist_time_seconds_bucket{job=\"$job\",outcome!=\"conflict\"}[1m] offset $run)) by (le, source))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.99, sum(rate(state_persist_time_seconds_bucket{job=~\"$job\",outcome!=\"conflict\"}[1m] offset $run)) by (le, source))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{source}} p99",
           "refId": "C"
         }
       ]
     },
     {
-      "id": 21,
+      "id": 24,
       "title": "State persist time \u2014 losing attempts (TO family)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 87,
+        "y": 104,
         "w": 24,
         "h": 8
       },
@@ -1476,7 +1676,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.5, sum(rate(state_persist_time_seconds_bucket{job=\"$job\",outcome=\"conflict\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.5, sum(rate(state_persist_time_seconds_bucket{job=~\"$job\",outcome=\"conflict\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "conflict p50",
           "refId": "A"
         },
@@ -1485,7 +1685,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.95, sum(rate(state_persist_time_seconds_bucket{job=\"$job\",outcome=\"conflict\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.95, sum(rate(state_persist_time_seconds_bucket{job=~\"$job\",outcome=\"conflict\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "conflict p95",
           "refId": "B"
         },
@@ -1494,20 +1694,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.99, sum(rate(state_persist_time_seconds_bucket{job=\"$job\",outcome=\"conflict\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.99, sum(rate(state_persist_time_seconds_bucket{job=~\"$job\",outcome=\"conflict\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "conflict p99",
           "refId": "C"
         }
       ]
     },
     {
-      "id": 22,
+      "id": 25,
       "title": "Projection lag \u2014 p50 / p95 / p99",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 95,
+        "y": 112,
         "w": 12,
         "h": 8
       },
@@ -1555,7 +1755,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.5, sum(rate(projection_lag_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.5, sum(rate(projection_lag_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "inventory p50",
           "refId": "A"
         },
@@ -1564,7 +1764,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.95, sum(rate(projection_lag_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.95, sum(rate(projection_lag_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "inventory p95",
           "refId": "B"
         },
@@ -1573,20 +1773,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.95, sum(rate(order_projection_lag_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.95, sum(rate(order_projection_lag_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "order p95",
           "refId": "C"
         }
       ]
     },
     {
-      "id": 23,
+      "id": 26,
       "title": "Aggregate cache \u2014 hit vs miss vs catch-up",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 95,
+        "y": 112,
         "w": 12,
         "h": 8
       },
@@ -1634,7 +1834,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(rate(inventory_opt_cache_hit_total{job=\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(rate(inventory_opt_cache_hit_total{job=~\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
           "legendFormat": "hit",
           "refId": "A"
         },
@@ -1643,7 +1843,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(rate(inventory_opt_cache_miss_total{job=\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(rate(inventory_opt_cache_miss_total{job=~\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
           "legendFormat": "miss",
           "refId": "B"
         },
@@ -1652,20 +1852,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(rate(inventory_opt_catchup_total{job=\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(rate(inventory_opt_catchup_total{job=~\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
           "legendFormat": "catch-up",
           "refId": "C"
         }
       ]
     },
     {
-      "id": 24,
+      "id": 27,
       "title": "Cache catch-up duration by outcome \u2014 p50 / p95",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 103,
+        "y": 120,
         "w": 24,
         "h": 8
       },
@@ -1713,7 +1913,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.5, sum(rate(inventory_opt_catchup_duration_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, outcome))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.5, sum(rate(inventory_opt_catchup_duration_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le, outcome))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{outcome}} p50",
           "refId": "A"
         },
@@ -1722,20 +1922,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.95, sum(rate(inventory_opt_catchup_duration_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le, outcome))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.95, sum(rate(inventory_opt_catchup_duration_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le, outcome))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{outcome}} p95",
           "refId": "B"
         }
       ]
     },
     {
-      "id": 25,
+      "id": 28,
       "title": "Outbox backlog (TO family)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 111,
+        "y": 128,
         "w": 12,
         "h": 8
       },
@@ -1783,20 +1983,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(outbox_backlog{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(outbox_backlog{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "backlog",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 26,
+      "id": 29,
       "title": "Outbox write time \u2014 p50 / p95 (TO family)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 111,
+        "y": 128,
         "w": 12,
         "h": 8
       },
@@ -1844,7 +2044,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.5, sum(rate(outbox_write_time_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.5, sum(rate(outbox_write_time_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "p50",
           "refId": "A"
         },
@@ -1853,20 +2053,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(histogram_quantile(0.95, sum(rate(outbox_write_time_seconds_bucket{job=\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
+          "expr": "(histogram_quantile(0.95, sum(rate(outbox_write_time_seconds_bucket{job=~\"$job\"}[1m] offset $run)) by (le))) and on() (vector(time()) < vector($end))",
           "legendFormat": "p95",
           "refId": "B"
         }
       ]
     },
     {
-      "id": 27,
+      "id": 30,
       "title": "Executor pools \u2014 threads & queue",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 119,
+        "y": 136,
         "w": 12,
         "h": 8
       },
@@ -1914,7 +2114,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(executor_active_threads{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(executor_active_threads{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{name}} active",
           "refId": "A"
         },
@@ -1923,7 +2123,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(executor_pool_size_threads{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(executor_pool_size_threads{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{name}} pool size",
           "refId": "B"
         },
@@ -1932,20 +2132,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(executor_queued_tasks{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(executor_queued_tasks{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{name}} queued",
           "refId": "C"
         }
       ]
     },
     {
-      "id": 28,
+      "id": 31,
       "title": "Saga outcome \u2014 completed vs failed (ES family)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 127,
+        "y": 144,
         "w": 24,
         "h": 8
       },
@@ -1993,7 +2193,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(rate(saga_completed_total{job=\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(rate(saga_completed_total{job=~\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
           "legendFormat": "completed",
           "refId": "A"
         },
@@ -2002,33 +2202,33 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(rate(saga_command_failed_total{job=\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(rate(saga_command_failed_total{job=~\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
           "legendFormat": "command failed",
           "refId": "B"
         }
       ]
     },
     {
-      "id": 29,
+      "id": 32,
       "type": "row",
       "title": "JVM",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 135,
+        "y": 152,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 30,
+      "id": 33,
       "title": "Heap memory",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 136,
+        "y": 153,
         "w": 12,
         "h": 8
       },
@@ -2076,7 +2276,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(jvm_memory_used_bytes{job=\"$job\",area=\"heap\"} offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(jvm_memory_used_bytes{job=~\"$job\",area=\"heap\"} offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "used",
           "refId": "A"
         },
@@ -2085,7 +2285,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(jvm_memory_max_bytes{job=\"$job\",area=\"heap\"} offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(jvm_memory_max_bytes{job=~\"$job\",area=\"heap\"} offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "max",
           "refId": "B"
         },
@@ -2094,20 +2294,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(jvm_memory_committed_bytes{job=\"$job\",area=\"heap\"} offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(jvm_memory_committed_bytes{job=~\"$job\",area=\"heap\"} offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "committed",
           "refId": "C"
         }
       ]
     },
     {
-      "id": 31,
+      "id": 34,
       "title": "Non-heap memory by pool",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 136,
+        "y": 153,
         "w": 12,
         "h": 8
       },
@@ -2155,20 +2355,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(jvm_memory_used_bytes{job=\"$job\",area=\"nonheap\"} offset $run) by (id)) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(jvm_memory_used_bytes{job=~\"$job\",area=\"nonheap\"} offset $run) by (id)) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{id}}",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 32,
+      "id": 35,
       "title": "CPU",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 144,
+        "y": 161,
         "w": 12,
         "h": 8
       },
@@ -2217,7 +2417,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(avg(process_cpu_usage{job=\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(avg(process_cpu_usage{job=~\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "process",
           "refId": "A"
         },
@@ -2226,20 +2426,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(avg(system_cpu_usage{job=\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(avg(system_cpu_usage{job=~\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "system",
           "refId": "B"
         }
       ]
     },
     {
-      "id": 33,
+      "id": 36,
       "title": "GC pause duration \u2014 avg / max",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 144,
+        "y": 161,
         "w": 12,
         "h": 8
       },
@@ -2287,7 +2487,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(rate(jvm_gc_pause_seconds_sum{job=\"$job\"}[1m] offset $run) / rate(jvm_gc_pause_seconds_count{job=\"$job\"}[1m] offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(rate(jvm_gc_pause_seconds_sum{job=~\"$job\"}[1m] offset $run) / rate(jvm_gc_pause_seconds_count{job=~\"$job\"}[1m] offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "avg",
           "refId": "A"
         },
@@ -2296,20 +2496,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(jvm_gc_pause_seconds_max{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(jvm_gc_pause_seconds_max{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "max",
           "refId": "B"
         }
       ]
     },
     {
-      "id": 34,
+      "id": 37,
       "title": "JVM threads",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 152,
+        "y": 169,
         "w": 8,
         "h": 8
       },
@@ -2357,7 +2557,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(jvm_threads_live_threads{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(jvm_threads_live_threads{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "live",
           "refId": "A"
         },
@@ -2366,7 +2566,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(jvm_threads_daemon_threads{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(jvm_threads_daemon_threads{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "daemon",
           "refId": "B"
         },
@@ -2375,20 +2575,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(jvm_threads_peak_threads{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(jvm_threads_peak_threads{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "peak",
           "refId": "C"
         }
       ]
     },
     {
-      "id": 35,
+      "id": 38,
       "title": "Loaded classes",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 152,
+        "y": 169,
         "w": 8,
         "h": 8
       },
@@ -2436,20 +2636,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(jvm_classes_loaded_classes{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(jvm_classes_loaded_classes{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "loaded classes",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 36,
+      "id": 39,
       "title": "Process uptime",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 152,
+        "y": 169,
         "w": 8,
         "h": 8
       },
@@ -2497,20 +2697,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(process_uptime_seconds{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(process_uptime_seconds{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "uptime",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 37,
+      "id": 40,
       "title": "System load vs CPU cores",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 160,
+        "y": 177,
         "w": 8,
         "h": 8
       },
@@ -2558,7 +2758,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(system_load_average_1m{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(system_load_average_1m{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "load 1m",
           "refId": "A"
         },
@@ -2567,20 +2767,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(system_cpu_count{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(system_cpu_count{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "cpu cores",
           "refId": "B"
         }
       ]
     },
     {
-      "id": 38,
+      "id": 41,
       "title": "Threads by state",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 160,
+        "y": 177,
         "w": 8,
         "h": 8
       },
@@ -2628,20 +2828,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(jvm_threads_states_threads{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(jvm_threads_states_threads{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{state}}",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 39,
+      "id": 42,
       "title": "In-flight HTTP requests",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 160,
+        "y": 177,
         "w": 8,
         "h": 8
       },
@@ -2689,20 +2889,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(http_server_requests_active_seconds_gcount{job=\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(http_server_requests_active_seconds_gcount{job=~\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "in-flight",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 40,
+      "id": 43,
       "title": "GC allocation & promotion rate",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 168,
+        "y": 185,
         "w": 8,
         "h": 8
       },
@@ -2750,7 +2950,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(rate(jvm_gc_memory_allocated_bytes_total{job=\"$job\"}[1m] offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(rate(jvm_gc_memory_allocated_bytes_total{job=~\"$job\"}[1m] offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "allocation",
           "refId": "A"
         },
@@ -2759,20 +2959,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(rate(jvm_gc_memory_promoted_bytes_total{job=\"$job\"}[1m] offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(rate(jvm_gc_memory_promoted_bytes_total{job=~\"$job\"}[1m] offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "promotion",
           "refId": "B"
         }
       ]
     },
     {
-      "id": 41,
+      "id": 44,
       "title": "GC overhead",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 168,
+        "y": 185,
         "w": 8,
         "h": 8
       },
@@ -2821,20 +3021,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(jvm_gc_overhead{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(jvm_gc_overhead{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "overhead",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 42,
+      "id": 45,
       "title": "Live data after GC",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 168,
+        "y": 185,
         "w": 8,
         "h": 8
       },
@@ -2882,7 +3082,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(jvm_gc_live_data_size_bytes{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(jvm_gc_live_data_size_bytes{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "live data (old gen)",
           "refId": "A"
         },
@@ -2891,20 +3091,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(jvm_gc_max_data_size_bytes{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(jvm_gc_max_data_size_bytes{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "old gen max",
           "refId": "B"
         }
       ]
     },
     {
-      "id": 43,
+      "id": 46,
       "title": "Log events by level",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 176,
+        "y": 193,
         "w": 12,
         "h": 8
       },
@@ -2952,20 +3152,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum by (level) (rate(logback_events_total{job=\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
+          "expr": "(sum by (level) (rate(logback_events_total{job=~\"$job\"}[1m] offset $run))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{level}}",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 44,
+      "id": 47,
       "title": "Spring Data repository invocations (top 10)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 176,
+        "y": 193,
         "w": 12,
         "h": 8
       },
@@ -3013,33 +3213,33 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(topk(10, sum by (repository, method) (rate(spring_data_repository_invocations_seconds_count{job=\"$job\"}[1m] offset $run)))) and on() (vector(time()) < vector($end))",
+          "expr": "(topk(10, sum by (repository, method) (rate(spring_data_repository_invocations_seconds_count{job=~\"$job\"}[1m] offset $run)))) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{repository}}.{{method}}",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 45,
+      "id": 48,
       "type": "row",
       "title": "Spring pools",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 184,
+        "y": 201,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 46,
+      "id": 49,
       "title": "HikariCP connections",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 185,
+        "y": 202,
         "w": 8,
         "h": 8
       },
@@ -3087,7 +3287,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(hikaricp_connections_active{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(hikaricp_connections_active{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "active",
           "refId": "A"
         },
@@ -3096,7 +3296,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(hikaricp_connections_pending{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(hikaricp_connections_pending{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "pending",
           "refId": "B"
         },
@@ -3105,20 +3305,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(hikaricp_connections_max{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(hikaricp_connections_max{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "max",
           "refId": "C"
         }
       ]
     },
     {
-      "id": 47,
+      "id": 50,
       "title": "HikariCP \u2014 acquire & usage time",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 185,
+        "y": 202,
         "w": 8,
         "h": 8
       },
@@ -3166,7 +3366,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(rate(hikaricp_connections_acquire_seconds_sum{job=\"$job\"}[1m] offset $run) / rate(hikaricp_connections_acquire_seconds_count{job=\"$job\"}[1m] offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(rate(hikaricp_connections_acquire_seconds_sum{job=~\"$job\"}[1m] offset $run) / rate(hikaricp_connections_acquire_seconds_count{job=~\"$job\"}[1m] offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "acquire avg",
           "refId": "A"
         },
@@ -3175,7 +3375,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(hikaricp_connections_acquire_seconds_max{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(hikaricp_connections_acquire_seconds_max{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "acquire max",
           "refId": "B"
         },
@@ -3184,7 +3384,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(rate(hikaricp_connections_usage_seconds_sum{job=\"$job\"}[1m] offset $run) / rate(hikaricp_connections_usage_seconds_count{job=\"$job\"}[1m] offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(rate(hikaricp_connections_usage_seconds_sum{job=~\"$job\"}[1m] offset $run) / rate(hikaricp_connections_usage_seconds_count{job=~\"$job\"}[1m] offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "usage avg",
           "refId": "C"
         },
@@ -3193,20 +3393,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(hikaricp_connections_usage_seconds_max{job=\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
+          "expr": "(hikaricp_connections_usage_seconds_max{job=~\"$job\"} offset $run) and on() (vector(time()) < vector($end))",
           "legendFormat": "usage max",
           "refId": "D"
         }
       ]
     },
     {
-      "id": 48,
+      "id": 51,
       "title": "HikariCP \u2014 connection timeouts",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 185,
+        "y": 202,
         "w": 8,
         "h": 8
       },
@@ -3254,20 +3454,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(rate(hikaricp_connections_timeout_total{job=\"$job\"}[1m] offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(rate(hikaricp_connections_timeout_total{job=~\"$job\"}[1m] offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "timeouts",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 49,
+      "id": 52,
       "title": "Busy threads by pool (TO & ES)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 193,
+        "y": 210,
         "w": 12,
         "h": 8
       },
@@ -3315,7 +3515,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum by (name) (executor_active_threads{job=\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(sum by (name) (executor_active_threads{job=~\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{name}}",
           "refId": "A"
         },
@@ -3324,7 +3524,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum(order_retry_pool_active{job=\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(sum(order_retry_pool_active{job=~\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "order-retry",
           "refId": "B"
         },
@@ -3333,20 +3533,20 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum by (pool) (saga_pool_active{job=\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(sum by (pool) (saga_pool_active{job=~\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "saga {{pool}}",
           "refId": "C"
         }
       ]
     },
     {
-      "id": 50,
+      "id": 53,
       "title": "Connections in use by pool (TO & ES)",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 193,
+        "y": 210,
         "w": 12,
         "h": 8
       },
@@ -3394,7 +3594,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum by (pool) (hikaricp_connections_active{job=\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(sum by (pool) (hikaricp_connections_active{job=~\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{pool}} active",
           "refId": "A"
         },
@@ -3403,7 +3603,7 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum by (pool) (hikaricp_connections_pending{job=\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(sum by (pool) (hikaricp_connections_pending{job=~\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{pool}} pending",
           "refId": "B"
         },
@@ -3412,33 +3612,33 @@
             "type": "prometheus",
             "uid": "prometheus-replay"
           },
-          "expr": "(sum by (pool) (hikaricp_connections_max{job=\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
+          "expr": "(sum by (pool) (hikaricp_connections_max{job=~\"$job\"} offset $run)) and on() (vector(time()) < vector($end))",
           "legendFormat": "{{pool}} max",
           "refId": "C"
         }
       ]
     },
     {
-      "id": 51,
+      "id": 54,
       "type": "row",
       "title": "PostgreSQL",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 201,
+        "y": 218,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 52,
+      "id": 55,
       "title": "Database size",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 202,
+        "y": 219,
         "w": 8,
         "h": 8
       },
@@ -3493,13 +3693,13 @@
       ]
     },
     {
-      "id": 53,
+      "id": 56,
       "title": "WAL size",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 202,
+        "y": 219,
         "w": 8,
         "h": 8
       },
@@ -3554,13 +3754,13 @@
       ]
     },
     {
-      "id": 54,
+      "id": 57,
       "title": "Active connections by state",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 202,
+        "y": 219,
         "w": 8,
         "h": 8
       },
@@ -3615,13 +3815,13 @@
       ]
     },
     {
-      "id": 55,
+      "id": 58,
       "title": "Transaction rate",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 210,
+        "y": 227,
         "w": 8,
         "h": 8
       },
@@ -3685,13 +3885,13 @@
       ]
     },
     {
-      "id": 56,
+      "id": 59,
       "title": "Tuple operations rate",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 210,
+        "y": 227,
         "w": 8,
         "h": 8
       },
@@ -3773,13 +3973,13 @@
       ]
     },
     {
-      "id": 57,
+      "id": 60,
       "title": "Buffer cache hit ratio",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 210,
+        "y": 227,
         "w": 8,
         "h": 8
       },
@@ -3835,13 +4035,13 @@
       ]
     },
     {
-      "id": 58,
+      "id": 61,
       "title": "Live rows by table",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 218,
+        "y": 235,
         "w": 8,
         "h": 8
       },
@@ -3896,13 +4096,13 @@
       ]
     },
     {
-      "id": 59,
+      "id": 62,
       "title": "Per-table write rate",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 218,
+        "y": 235,
         "w": 8,
         "h": 8
       },
@@ -3975,13 +4175,13 @@
       ]
     },
     {
-      "id": 60,
+      "id": 63,
       "title": "Locks by mode",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 218,
+        "y": 235,
         "w": 8,
         "h": 8
       },
@@ -4036,13 +4236,144 @@
       ]
     },
     {
-      "id": 61,
+      "id": 64,
+      "title": "NOTIFY commit-serialization lock",
+      "description": "",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 243,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-replay"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-replay"
+          },
+          "expr": "(pg_notify_commit_lock_waiting offset $run) and on() (vector(time()) < vector($end))",
+          "legendFormat": "waiting",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-replay"
+          },
+          "expr": "(pg_notify_commit_lock_held offset $run) and on() (vector(time()) < vector($end))",
+          "legendFormat": "held",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 65,
+      "title": "Backends by wait event",
+      "description": "",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 243,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-replay"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-replay"
+          },
+          "expr": "(pg_wait_backends offset $run) and on() (vector(time()) < vector($end))",
+          "legendFormat": "{{type}}/{{event}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 66,
       "title": "Checkpoint activity",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 226,
+        "y": 251,
         "w": 12,
         "h": 8
       },
@@ -4115,13 +4446,13 @@
       ]
     },
     {
-      "id": 62,
+      "id": 67,
       "title": "Container CPU",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 226,
+        "y": 251,
         "w": 6,
         "h": 8
       },
@@ -4176,13 +4507,13 @@
       ]
     },
     {
-      "id": 63,
+      "id": 68,
       "title": "Container memory",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 18,
-        "y": 226,
+        "y": 251,
         "w": 6,
         "h": 8
       },
@@ -4246,13 +4577,13 @@
       ]
     },
     {
-      "id": 64,
+      "id": 69,
       "title": "Container network I/O",
       "description": "",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 234,
+        "y": 259,
         "w": 24,
         "h": 8
       },

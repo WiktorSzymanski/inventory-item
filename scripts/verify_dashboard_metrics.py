@@ -44,10 +44,15 @@ DASHBOARDS = {
 # runs as a path script (`python3 scripts/verify_dashboard_metrics.py`), which puts scripts/ on
 # sys.path, not the repo root — `from scripts.dashboards import runs` would not resolve.
 # test_runs.AnchorsAgree fails if the two drift apart.
-ANCHOR_RUNS = 1788220800
+ANCHOR_RUNS = 1798761600
 
+# Fallbacks only. Anything the dashboard declares as a CONSTANT is read out of its JSON at
+# startup by dashboard_constants() and wins over these -- see the comment there. What is left
+# here is the Grafana built-ins, plus the values of the LIVE dashboard's two query variables
+# ($job, $db), which resolve from label_values() against a running stack and so have nothing in
+# the JSON to read.
 DEFAULT_VARS = {
-    "live": {"job": "inventory-to", "db": "inventory", "dbc": "postgres-to",
+    "live": {"job": "inventory", "db": "inventory", "dbc": "postgres",
              "apic": "api", "__rate_interval": "1m",
              "__interval": "15s", "__range": "1h"},
     # $run is not listed: its value is a per-run offset read out of the dashboard's own
@@ -121,6 +126,26 @@ def targets(dashboard_path):
                 yield panel["title"], target.get("legendFormat") or "-", target["expr"]
 
 
+def dashboard_constants(dashboard_path):
+    """Every `constant` template variable the dashboard declares, as {name: value}.
+
+    Read rather than duplicated, because a second copy of these values is a copy that goes
+    stale silently. This script's own DEFAULT_VARS held `job: inventory-to` and
+    `dbc: postgres-to` long after the stack dropped the family suffixes, so it was probing job
+    names nothing had emitted for months -- and its answer to "does this panel resolve?" was
+    "no" for reasons that had nothing to do with the panel.
+
+    The case that matters now is bench-runs' $job. It is the alternation of every `prom_job` in
+    the archived run set (`inventory|inventory-mgmt`, since TO-2-fix-A puts actuator on its own
+    connector), built from the runs by scripts/dashboards/runs.py. A hardcoded `inventory` here
+    reports 27/117 targets resolving on a TO-2-fix-A run when the dashboard itself renders 78 of
+    91 -- i.e. it reports the bug that was just fixed, against the file that fixes it.
+    """
+    with open(dashboard_path) as fh:
+        variables = json.load(fh).get("templating", {}).get("list", [])
+    return {v["name"]: v["query"] for v in variables if v.get("type") == "constant"}
+
+
 def pick_run(dashboard_path, wanted):
     """(label, offset) for one option of bench-runs' `run` variable."""
     with open(dashboard_path) as fh:
@@ -160,7 +185,10 @@ def main():
                          "dropdown label); default is the first option")
     args = ap.parse_args()
 
+    # Constants from the dashboard override the fallbacks; --var still overrides both, so a
+    # one-off probe against another job or container name stays a flag away.
     variables = dict(DEFAULT_VARS[args.dashboard])
+    variables.update(dashboard_constants(DASHBOARDS[args.dashboard]))
     for override in args.var:
         name, _, value = override.partition("=")
         variables[name.lstrip("$")] = value

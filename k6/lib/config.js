@@ -49,8 +49,10 @@ export const CONFIG = {
     stepRampS: int('STEP_RAMP_S', 15),
     stepPlateauS: int('STEP_PLATEAU_S', 120),
     stepTrim: num('STEP_TRIM', 0.4),
-    spikeBase: int('SPIKE_BASE', 25),
-    spikeFactor: num('SPIKE_FACTOR', 4),
+    // Spike is zero -> SPIKE_PEAK -> zero, so the burst rate is named outright. It used to
+    // be SPIKE_BASE x SPIKE_FACTOR, which only made sense while the shape had a base load
+    // to multiply; the campaign's 0.4xK base with factor 4 is simply SPIKE_PEAK=1.6xK now.
+    spikePeak: int('SPIKE_PEAK', 100),
     soakDuration: str('SOAK_DURATION', '60m'),
 
     // ---- warmup: fixed ITERATIONS, delivered at a fixed RATE ------------------

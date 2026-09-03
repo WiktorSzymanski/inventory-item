@@ -47,14 +47,52 @@ Each run does: build → reset DB + restart API → seed → warmup → settle �
 → snapshot Prometheus → verdict → PDF. Artifacts land in
 `bench-results/<variant>_<scenario>_<timestamp>/`.
 
+### Scenarios
+
+`SCENARIO` selects the load profile (`k6/lib/profiles.js`) and, with it, the verdict rules
+(`k6/bench/thresholds.json`). Everything *around* the measured window — build, reset, seed,
+warmup, settle, drain, snapshot — is identical for all of them; only the shape of the load
+phase and how it is judged change.
+
+| `SCENARIO` | Shape | Sized by | Judged |
+|---|---|---|---|
+| `steady` *(default)* | Constant arrival rate | `RATE`, `DURATION` | Full default SLO set. The run the thesis tables compare |
+| `capacity` | Staircase: `STEP_COUNT` plateaus at `STEP_START + i x STEP_INC`, each reached over `STEP_RAMP_S` and held `STEP_PLATEAU_S` | `STEP_*` | Latency, drain and rejection SLOs **off** — it exists to find the knee, so it fails only when there is no knee to find |
+| `stress` | Same shape as `steady`, run *above* the measured knee | `RATE`, `DURATION` | The only scenario where an undrained backlog is the measurement rather than `INVALID`. Latency and lag SLOs off; completion and no-restart still hard |
+| `spike` | Idle → burst → idle: `60s` at 0, `10s` ramp in, `60s` at peak, `10s` ramp out, `240s` at 0 (380s total) | `SPIKE_PEAK` | Recovery time after the burst (`max_recovery_seconds` 180). Latency and drain off |
+| `soak` | Constant rate, long | `RATE`, `SOAK_DURATION` | Drift, not absolutes: e2e p95 and heap in the last decile vs the first (1.3x / 1.5x), drain <= 300s |
+| `legacy` | Single ramp to a peak, the old `reserve-load-test.js` shape | `MAX_RPS_START`, `MAX_RPS`, `RAMP_DURATION` | SLOs disabled — back-compat only, not thesis-grade |
+| `legacy-vus` | Closed loop, fixed VU count | `VUS`, `DURATION` | No threshold block of its own, so the defaults apply and mostly do not fit. Back-compat only |
+
+`spike` sends **nothing** either side of the burst. The leading idle minute is the baseline
+recovery is measured against — and a second, uncapped chance for the warmup backlog to
+finish settling — while the trailing four minutes let the burst's backlog clear with nothing
+arriving on top of it, so `recovery_seconds` describes the variant rather than the base rate
+someone picked. Clearing it usually outlasts that tail, which is why `DRAIN_TIMEOUT` defaults
+to **1800s for `spike`** and 900s everywhere else: the drain is part of the measurement here,
+and a drain that times out reports `INVALID`. The recovery series is dumped over
+`[T0, T2]`, so the moment in-flight comes back down is found wherever it falls.
+
+`seed` and `warmup` are also valid profile names, but they are phases `bench.sh` runs itself
+around the load phase — never pass them as `SCENARIO`. An unknown name fails at k6 init and
+prints the list above.
+
+The staircase defaults (`20`/`+20`/`8` steps of `15s + 120s`) run ~18 minutes and peak at
+160 orders/s. `points.env` carries matched `STEP_*` for the workload points where that
+bracket is wrong — notably anything with `RESERVE_DELAY_MS`, which lowers the ceiling far
+enough that the default staircase saturates at step 0 and evaluates `INVALID`.
+
+`READ_RATE` adds a concurrent read scenario alongside *any* of the above; it is a separate
+k6 scenario rather than a ratio, so it does not perturb the write arrival rate.
+
 ### Knobs
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SCENARIO` | `steady` | `capacity` · `steady` · `spike` · `soak` (also `seed`/`warmup` internally) |
-| `RATE` | 50 | Arrival rate for `steady` / `soak` |
-| `DURATION` | `10m` | Load duration for `steady` |
-| `SOAK_DURATION` | `45m` | Load duration for `soak` |
+| `SCENARIO` | `steady` | Load profile — see [Scenarios](#scenarios) above |
+| `RATE` | 50 | Arrival rate for `steady` / `stress` / `soak` |
+| `DURATION` | `10m` | Load duration for `steady` / `stress` |
+| `SOAK_DURATION` | `60m` | Load duration for `soak` |
 | `DISTINCT_ITEMS` | 6 | Number of item aggregates — the contention axis |
 | `ITEMS_PER_ORDER` | 4 | Lines per order — each costs one *sequential* saga hop |
 | `PAYLOAD_BYTES` | 0 | Aggregate padding — copy-on-write and snapshot cost |
@@ -62,6 +100,8 @@ Each run does: build → reset DB + restart API → seed → warmup → settle �
 | `WARMUP_ITERATIONS` | 5000 | Orders submitted before the measured window opens |
 | `WARMUP_RATE` | **none** | Orders/s the warmup is delivered at. No default — a run without one aborts at k6 init. `points.env` sets it per point |
 | `READ_RATE` | 0 | Optional concurrent read load (separate scenario) |
+| `SPIKE_PEAK` | 100 | Burst arrival rate for `spike` (was `SPIKE_BASE` x `SPIKE_FACTOR`) |
+| `DRAIN_TIMEOUT` | 900 (`spike`: 1800) | Cap on the post-load drain. A timeout is `INVALID` |
 | `SEED` | 1337 | RNG seed; identical item sequence across variants |
 | `SKIP_BUILD` | 0 | Skip gradle+docker build (only if the image is already current) |
 | `ALLOW_DIRTY` | 0 | Permit uncommitted `src/` — still reports `INVALID` |

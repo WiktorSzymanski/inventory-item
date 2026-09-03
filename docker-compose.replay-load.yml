@@ -10,11 +10,17 @@
 #   python3 -m scripts.dashboards.build --runs <dirs>
 #
 # RUNS_DIR (default ./bench-results) is the "selected directory": it is bind-mounted at /runs
-# and scanned one AND two levels deep by scripts/dashboards/runs.py:scan_runs(), so both a
-# flat results directory and a campaign directory of per-phase subdirectories work as-is. A
-# dropdown is built from the runs that have both meta.json and prom-snapshot/ (scan_runs()'s
-# rule), while every prom-snapshot/ found is copied into the volume whether or not the run
-# finished — blocks the dropdown cannot reach are harmless, a missing block is not.
+# and walked to ANY depth by scripts/dashboards/runs.py:scan_runs(), so a flat results
+# directory, a campaign directory of per-phase subdirectories, and a directory of those all
+# work as-is. A dropdown is built from the runs that have both meta.json and prom-snapshot/
+# (scan_runs()'s rule), while every prom-snapshot/ found is copied into the volume whether or
+# not the run finished — blocks the dropdown cannot reach are harmless, a missing block is not.
+#
+# Each run is NAMED in the dropdown by its path under RUNS_DIR — `Final-Bench - 3-Cache -
+# ES-4_capacity_W-base_20260901T004957Z` — so the directories a campaign was organised into
+# are the grouping on screen. The first component is RUNS_DIR's own basename, which the
+# container cannot see (it is mounted at /runs, and `runs` is not what you called it): RUNS_DIR
+# is therefore passed in as a variable as well as a mount, and --root-label carries the name.
 #
 # Used STANDALONE, like docker-compose.replay.yml and for the same reason: docker-compose.yml
 # declares `image: ${IMAGE_TAG:?…}`, and Compose interpolates the whole merged file before it
@@ -55,11 +61,15 @@ services:
       # so anything it creates is handed back. Override if your uid is not 1000.
       HOST_UID: ${HOST_UID:-1000}
       HOST_GID: ${HOST_GID:-1000}
+      # The mount's name on the HOST, for --root-label. Only the basename is used; it is passed
+      # whole because Compose cannot take one and `sh` can.
+      RUNS_DIR: ${RUNS_DIR:-./bench-results}
     entrypoint: ["/bin/sh", "-euc"]
     command:
       - |
-        python3 scripts/run_markers.py /runs --dry-run > /staging/markers.om
-        python3 -m scripts.dashboards.build --runs /runs
+        root="$$(basename "$${RUNS_DIR%/}")"
+        python3 scripts/run_markers.py /runs --root-label "$$root" --dry-run > /staging/markers.om
+        python3 -m scripts.dashboards.build --runs /runs --root-label "$$root"
         chown "$$HOST_UID:$$HOST_GID" /repo/monitoring/grafana/provisioning/dashboards/*.json
 
   # Merges each run's snapshot blocks into the archive. `cp -rn` (no-clobber) is what makes
@@ -82,7 +92,13 @@ services:
     command:
       - |
         snaps=0; blocks=0
-        for snap in /runs/*/prom-snapshot /runs/*/*/prom-snapshot; do
+        # Any depth, matching scan_runs(): -prune keeps find out of the block directories
+        # underneath a snapshot, and find does not follow symlinks, so the self-referential
+        # bench-results/bench-results link does not make it copy everything twice. The list
+        # goes through a file rather than a pipe because `while read` in a pipeline runs in a
+        # subshell, and the counters below would be lost with it.
+        find /runs -type d -name prom-snapshot -prune > /tmp/snaps
+        while IFS= read -r snap; do
             [ -d "$$snap" ] || continue
             snaps=$$((snaps + 1))
             before=$$blocks
@@ -95,7 +111,7 @@ services:
             # the directory EXISTS, not that it holds blocks, so such a run still reaches the
             # dropdown -- and picking it draws 53 empty panels with nothing to say why.
             [ "$$blocks" -gt "$$before" ] || echo "WARNING: no blocks in $$snap" >&2
-        done
+        done < /tmp/snaps
         # replay-scan already exits non-zero when no run qualifies, so reaching here with
         # nothing to copy means the runs were found but their snapshots were not — a
         # different fault, and one that would otherwise surface as 53 empty panels.

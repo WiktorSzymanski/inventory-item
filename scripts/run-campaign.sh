@@ -23,11 +23,11 @@
 #
 # WHY DERIVED RATES ABORT RATHER THAN DEFAULT (see --help output and the runbook §4.3/§6.3):
 # `soak`, `stress` and `spike` are meant to run at a rate computed from a knee measured by
-# an earlier `capacity` step — 0.6xK for soak, 1.25xK for stress, 0.4xK as the spike base.
+# an earlier `capacity` step — 0.6xK for soak, 1.25xK for stress, 1.6xK as the spike peak.
 # Nothing downstream can tell that a soak ran at k6's default 50/s instead: the run
 # completes, the artifacts are well-formed, and the verdict may even be PASS. It is simply
 # not the measurement the campaign asked for. So a soak/stress step without RATE, or a
-# spike step without SPIKE_BASE, is refused BEFORE the first container starts rather than
+# spike step without SPIKE_PEAK, is refused BEFORE the first container starts rather than
 # discovered eight hours later.
 #
 # WHAT THIS DELIBERATELY DOES NOT DO: derive those rates itself. Reading a knee off
@@ -61,7 +61,7 @@ RATE_DERIVED="soak stress spike"
 
 rate_knob_for() {
     case "$1" in
-        spike) echo "SPIKE_BASE" ;;   # profiles.js spike() reads spikeBase, not rate
+        spike) echo "SPIKE_PEAK" ;;   # profiles.js spike() reads spikePeak, not rate
         *)     echo "RATE" ;;
     esac
 }

@@ -24,7 +24,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/common.sh"
 
 SCENARIO="${SCENARIO:-steady}"
-DRAIN_TIMEOUT="${DRAIN_TIMEOUT:-900}"
+# `spike` fires a burst into an idle system and then stops sending entirely, so the whole
+# backlog it built has to clear inside the drain phase — that IS the measurement, and 900s
+# is not enough for it at a peak worth calling a spike. A drain that times out reports
+# INVALID (require_backlog_drained holds for every scenario but `stress`), which would fail
+# the run for the exact behaviour it was asked to produce. Every other scenario keeps 900s.
+DRAIN_TIMEOUT="${DRAIN_TIMEOUT:-$([ "$SCENARIO" = "spike" ] && echo 1800 || echo 900)}"
 SETTLE_S="${SETTLE_S:-60}"
 SCRAPE_SETTLE_S="${SCRAPE_SETTLE_S:-15}"
 
@@ -276,7 +281,7 @@ KNOBS=(
     SEED DISTINCT_ITEMS ITEMS_PER_ORDER QTY_PER_LINE SEED_QTY PAYLOAD_BYTES
     RESERVE_DELAY_MS
     ITEM_PREFIX ALLOW_DUP_LINES RATE DURATION STEP_START STEP_INC STEP_COUNT
-    STEP_RAMP_S STEP_PLATEAU_S STEP_TRIM SPIKE_BASE SPIKE_FACTOR SOAK_DURATION
+    STEP_RAMP_S STEP_PLATEAU_S STEP_TRIM SPIKE_PEAK SOAK_DURATION
     WARMUP_ITERATIONS WARMUP_RATE WARMUP_MAX_DURATION READ_RATE READ_MODE
     READ_PAGE_SIZE VU_HEADROOM VU_CEILING
 )

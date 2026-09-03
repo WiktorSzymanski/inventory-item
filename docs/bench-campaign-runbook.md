@@ -339,7 +339,7 @@ winners' **W-base** knees in Table A. Record all four in Table C, then derive:
 | Test | Setting |
 |---|---|
 | soak | `RATE = round(0.6 x K)` |
-| spike | `SPIKE_BASE = round(0.4 x K)`, `SPIKE_FACTOR=4` → peak `1.6 x K` |
+| spike | `SPIKE_PEAK = round(1.6 x K)` — the burst rate itself; the shape is idle → peak → idle |
 | stress | `RATE = round(1.25 x K)` |
 
 One `K` per cell keeps the two winners comparable within it. If one collapses at C10 or C11,
@@ -347,7 +347,7 @@ the other soaks nearly idle there — the accepted price of a common rate.
 
 ### 6.3–6.6 The four cells (24 runs)
 
-Three tests per cell. `<Sxx>` = `round(0.6 x K)`, `<Bxx>` = `round(0.4 x K)`,
+Three tests per cell. `<Sxx>` = `round(0.6 x K)`, `<Bxx>` = `round(1.6 x K)`,
 `<Xxx>` = `round(1.25 x K)`. `POINT=W-base,<CELL>` supplies `DISTINCT_ITEMS`,
 `ITEMS_PER_ORDER`, `PAYLOAD_BYTES` and `RESERVE_DELAY_MS` together; `CELL_ARGS` is only what
 a point cannot carry:
@@ -368,7 +368,7 @@ env SCENARIO=soak POINT=W-base,<CELL> RATE=<Sxx> \
     scripts/run-suite.sh --only <TO-WIN>,<ES-WIN> --continue-on-fail
 
 # spike
-env SCENARIO=spike POINT=W-base,<CELL> SPIKE_BASE=<Bxx> SPIKE_FACTOR=4 \
+env SCENARIO=spike POINT=W-base,<CELL> SPIKE_PEAK=<Bxx> \
     <CELL_ARGS> DRAIN_TIMEOUT=1800 \
     scripts/run-suite.sh --only <TO-WIN>,<ES-WIN> --continue-on-fail
 
@@ -445,7 +445,7 @@ env SCENARIO=capacity POINT=W-fan,C11 \
 
 ### Table C — phase 2 per-cell rates
 
-| Cell | knee TO-WIN | knee ES-WIN | `K` | soak `0.6K` | spike base `0.4K` | stress `1.25K` |
+| Cell | knee TO-WIN | knee ES-WIN | `K` | soak `0.6K` | spike peak `1.6K` | stress `1.25K` |
 |---|---|---|---|---|---|---|
 | C00 | | | | | | |
 | C01 | | | | | | |

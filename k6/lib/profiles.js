@@ -117,31 +117,49 @@ function constantRate(name, rate, duration) {
 }
 
 // ---------------------------------------------------------------- spike & drain
+// Zero -> peak -> zero. Both idle segments carry weight:
+//
+//   * the leading one gives the burst a quiet baseline to be measured against, and hands
+//     the settle phase a second, uncapped chance to finish draining the warmup backlog —
+//     so `pre`'s in-flight level, which check_recovery uses as its floor, is the system
+//     at rest rather than whatever the 60s SETTLE_S cap left behind;
+//   * the trailing one lets the burst's backlog clear with nothing arriving on top of it,
+//     which is what makes recovery_seconds a property of the variant instead of a
+//     property of the base rate the operator happened to pick.
+//
+// It used to be base -> 4x base -> base, with the peak defined as SPIKE_BASE x
+// SPIKE_FACTOR. That made "recovery" a measurement taken while a load was still arriving,
+// and it sized the burst off a number that was itself a load level. SPIKE_PEAK names the
+// burst rate outright; the campaign's `SPIKE_BASE=0.4xK SPIKE_FACTOR=4` is `SPIKE_PEAK=1.6xK`.
+//
+// The backlog a burst leaves behind takes far longer to clear than the 240s tail, and it is
+// meant to: bench.sh drains past the load phase and defaults DRAIN_TIMEOUT to 30m for this
+// scenario. The recovery series is dumped over window_full = [T0, T2], so the moment
+// in-flight comes back down is found whether it lands inside the tail or inside the drain.
 function spike() {
-    const base = CONFIG.spikeBase;
-    const peak = Math.round(base * CONFIG.spikeFactor);
+    const peak = CONFIG.spikePeak;
     const stages = [
-        { target: base, duration: '2m' },
-        { target: peak, duration: '10s' },
-        { target: peak, duration: '60s' },
-        { target: base, duration: '10s' },
-        { target: base, duration: '4m' },
+        { target: 0, duration: '60s' },      // idle baseline
+        { target: peak, duration: '10s' },   // ramp in
+        { target: peak, duration: '60s' },   // burst
+        { target: 0, duration: '10s' },      // ramp out
+        { target: 0, duration: '240s' },     // recovery, nothing arriving
     ];
     const total = stages.reduce((a, s) => a + durationSeconds(s.duration), 0);
     return {
         name: 'spike',
         // Phase offsets let evaluate.py measure recovery: how long after the burst ends
-        // the in-flight backlog returns to its pre-spike level.
+        // the in-flight backlog returns to the idle level `pre` established.
         steps: [
-            { index: 0, label: 'pre', targetRate: base, stableFrom: 60, endsAt: 120 },
-            { index: 1, label: 'burst', targetRate: peak, stableFrom: 140, endsAt: 190 },
-            { index: 2, label: 'post', targetRate: base, stableFrom: 320, endsAt: total },
+            { index: 0, label: 'pre', targetRate: 0, stableFrom: 30, endsAt: 60 },
+            { index: 1, label: 'burst', targetRate: peak, stableFrom: 80, endsAt: 130 },
+            { index: 2, label: 'post', targetRate: 0, stableFrom: 260, endsAt: total },
         ],
         totalSeconds: total,
         scenarios: {
             order: orderScenario({
                 executor: 'ramping-arrival-rate',
-                startRate: base,
+                startRate: 0,
                 timeUnit: '1s',
                 stages,
                 ...vus(peak),

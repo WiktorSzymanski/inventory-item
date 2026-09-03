@@ -15,8 +15,8 @@ lengths and different days all land on the same axis, so flipping the dropdown r
 panel in place and the panels visually diff against each other.
 
     time range:  [ANCHOR, ANCHOR+span]  (never moves)
-    TO-1 run  ->  offset 1677219s  ->  reaches 2026-08-12T14:06Z
-    ES-4 run  ->  offset 1587200s  ->  reaches 2026-08-13T14:47Z
+    TO-1 run  ->  offset 12218040s  ->  reaches 2026-08-12T14:06Z
+    ES-4 run  ->  offset 12129180s  ->  reaches 2026-08-13T14:47Z
 
 The anchor sits AFTER the whole campaign, because reaching forward in time needs a negative offset and Prometheus rejects those unless started
 with --enable-feature=promql-negative-offset. scan_runs() refuses to build a dashboard for a
@@ -34,20 +34,33 @@ in the same place and redraw in place. For a side-by-side of the numbers rather 
 curves, use the per-run summary in bench-results/<run_id>/ instead.
 """
 import datetime
-import glob
 import os
 from dataclasses import dataclass
 
 from . import build, spec
 
-# 2026-09-01T00:00:00Z -- after every run of the campaign, so all offsets are positive.
-ANCHOR_EPOCH = 1788220800
-ANCHOR_ISO = "2026-09-01T00:00:00.000Z"
+# 2027-01-01T00:00:00Z -- after every run of the campaign, so all offsets are positive.
+#
+# It has to sit after the LAST run that will ever be loaded, and moving it costs nothing: the
+# archive is never re-ingested, and the offsets, the marker series and the dashboard's time
+# range are all derived from this constant and regenerated together on every load. It was
+# 2026-09-01 until the campaign reached that date and scan_runs() started refusing the whole
+# set (the "steady" runs of 2026-09-01 were the first past it); the months of headroom here are
+# so that does not happen again mid-campaign. Anything already archived keeps working -- only
+# a bench-runs.json generated under the OLD anchor goes stale, and rebuilding it is one load.
+ANCHOR_EPOCH = 1798761600
+ANCHOR_ISO = "2027-01-01T00:00:00.000Z"
 
-# The workload points, in the order the campaign walks them. Runs are grouped by point first
-# so the dropdown reads as "same workload, next variant" -- the comparison actually being made
-# -- rather than interleaving workloads under each variant.
-POINT_ORDER = ["W-base", "W-hot", "W-fan"]
+# The scrape job every run used before monitoring/prometheus/prometheus.yml grew a second one,
+# and the fallback for any meta.json written before bench.sh recorded `prom_job`.
+DEFAULT_PROM_JOB = "inventory"
+
+
+# What joins the components of a run's dropdown label -- the selected directory, every
+# subdirectory between it and the run, and the run's own directory name. Anything but `,` and
+# `:` would do (see Run.label); a spaced dash reads as a path without looking like one, so it
+# is not mistaken for something that can be pasted into a shell.
+RUN_PATH_SEPARATOR = " - "
 
 # Identifiers that are PromQL syntax rather than metric names. Anything here is emitted
 # untouched; the ones in LABEL_LIST additionally swallow the parenthesised label list that
@@ -214,6 +227,56 @@ POOLED = spec.Section("Publish lag, all event types", [
 ])
 
 
+# ---------------------------------------------------------------- orders completed, running total
+# How many orders the run actually finished, split by outcome. Every other orders panel on this
+# dashboard is a RATE -- orders/s at each instant -- and a rate curve does not answer "how many",
+# which is the first thing asked of a finished run. This is the same counter, undifferentiated:
+# the curve shows where in the run the work accrued (a flat stretch is a stall), and the legend
+# table's `Last *` column is the run's total for that outcome.
+#
+# THE RAW COUNTER, DELIBERATELY -- not `counter - counter @ start()`, which is the obvious way to
+# strip the warm-up out of the baseline and is wrong here. Prometheus carries a series' last
+# sample forward for 5 minutes, and run-suite.sh restarts the stack back-to-back, so a series
+# that has no sample yet in THIS run resolves to the PREVIOUS run's final value for the first
+# few minutes past t0. In the 12-run phase-1 archive that hits `rejected` on 2 of the 6 TO runs
+# (TO-3 0828-1652 opens at 238 140, TO-2-fix-A 0828-2206 at 43 400) because no order had been
+# rejected yet when measured load started. Subtracting that baseline makes the whole series
+# negative for the rest of the run -- and on a `min: 0` axis a negative series is simply not
+# drawn, so 101 767 rejections read as "no rejections" with nothing on screen to say otherwise.
+# The raw counter degrades the other way: the carry-over shows as a plateau-then-cliff in the
+# first minutes, which is visible and self-explanatory, and every point after the reset -- the
+# `Last *` total included -- is this run's own count.
+#
+# Two things the totals are therefore NOT:
+#   - warm-up is included. k6/bench/bench.sh's paced warm-up lands ~5 000 confirmed orders before
+#     t0, so `confirmed` starts at ~5 001 rather than 0. Against the 200 k - 1.7 M totals of a
+#     full run that is under 3%, and it is a constant, not a variant difference.
+#   - `rejected` on a carried-over run starts at the previous run's value. See above.
+#
+# TO family only: orders.completed is registered in InventoryService, which the ES branches do
+# not have (their terminal outcomes arrive through the projection). ES runs render this empty,
+# like every other TO-family panel here. The cross-family count is order_e2e_time_seconds_count,
+# which the "Offered vs accepted vs terminal" panel already draws as a rate.
+#
+# Replay-only, like POOLED: on the live dashboard the same expression would draw the counter
+# since JVM start, which is a different quantity and not one anyone watches climb.
+TOTALS = spec.Section("Orders completed, running total", [
+    spec.Panel(
+        title="Orders completed by outcome — running total",
+        unit="short", w=24,
+        description="Cumulative count of terminal orders, by outcome, over the selected run. "
+                    "The run's total per outcome is the legend table's `Last *` column. TO family "
+                    "only. Two caveats, both by design: the ~5 000 warm-up orders completed "
+                    "before t0 are included in `confirmed`, and on a run whose first rejection "
+                    "came minutes after t0 the `rejected` curve opens on the previous run's "
+                    "final value — Prometheus' 5-minute lookback — until this run's own series "
+                    "appears and the counter resets. Every point after that cliff, the total "
+                    "included, is this run's own.",
+        targets=[spec.Target("{{outcome}}",
+                             'sum by (outcome) (orders_completed_total{job=~"$job"})')]),
+])
+
+
 @dataclass
 class Run:
     run_id: str
@@ -222,6 +285,17 @@ class Run:
     point: str
     start: int
     end: int
+    # Which Prometheus scrape job carried this run's application metrics. Variants that give
+    # actuator its own connector (management.server.port) are scraped as `inventory-mgmt`
+    # instead of `inventory`; bench.sh records the choice in meta.json as `prom_job`. Defaulted,
+    # because runs archived before that field existed have no `prom_job` and were all scraped
+    # under `inventory`. See DEFAULT_PROM_JOB and _job_constant().
+    prom_job: str = "inventory"
+    # Where the run was found, as label components: the selected directory's name, then every
+    # directory between it and the run, then the run's own directory. This is the dropdown
+    # text (see label) -- scan_runs() fills it for every run it finds; a Run built by hand
+    # without one falls back to the descriptive label.
+    path: tuple = ()
 
     @property
     def offset(self):
@@ -233,38 +307,96 @@ class Run:
 
     @property
     def label(self):
-        """Dropdown text. Grafana splits a custom variable's option list on `,` and `:`, so
-        the timestamp is `MMDD-HHMM` rather than anything with a colon in it -- a label like
-        `TO-1 W-base 14:05` would silently become two broken options."""
+        """Dropdown text: the run's path under the selected directory, `dirA - dirB - run`.
+
+        A campaign tree's directory names are how the runs were grouped in the first place --
+        `2-ES-snapshot` vs `3-Cache` is the comparison being made -- and the same run_id can
+        sit in two of them, so the path is the only thing that tells the copies apart on
+        screen. The run's own directory name carries the variant, point and timestamp already
+        (`ES-2_capacity_W-base_20260831T233802Z`), which is why nothing else is appended.
+
+        Grafana splits a custom variable's option list on `,` and `:`, so a directory named
+        with either would silently become two broken options; both are replaced here rather
+        than trusted to stay out of directory names.
+        """
+        if self.path:
+            return RUN_PATH_SEPARATOR.join(_label_part(part) for part in self.path)
         when = datetime.datetime.fromtimestamp(self.start, datetime.timezone.utc)
         return f"{self.variant} · {self.point} · {when:%m%d-%H%M}"
 
 
-def scan_runs(roots):
+def _label_part(name):
+    """One path component, safe to put in a Grafana custom variable's option list.
+
+    Grafana parses that list as `label : value, label : value`, so a `:` or `,` anywhere in a
+    label silently splits it into a different -- and broken -- option. Directory names are the
+    user's, not this script's, so neither character is assumed absent.
+    """
+    return name.replace(":", "-").replace(",", "-").strip() or "?"
+
+
+def root_label(root):
+    """The display name for a scanned directory: its own basename.
+
+    This is the first component of every label under it, so `RUNS_DIR=~/Desktop/Final-Bench`
+    gives `Final-Bench - 2-ES-snapshot - ES-1_capacity_...`. It is derived rather than passed
+    because on the command line the name is right there in the argument -- but see
+    scan_runs()'s `root_labels`, which docker-compose.replay-load.yml needs: the selected
+    directory is bind-mounted at /runs there, and `runs` is not what the user called it.
+    """
+    return os.path.basename(os.path.abspath(root)) or os.path.abspath(root)
+
+
+def scan_runs(roots, root_labels=()):
     """Every completed run under `roots`, ordered as the dropdown should read.
 
     A run qualifies when it has both a meta.json (it finished) and a prom-snapshot/ (its TSDB
     was captured, so scripts/prom_archive.sh had something to merge into bench-replay-data).
     Runs missing either are skipped: an aborted run has nothing to show, and a run whose TSDB
     was never captured would fill every panel with "No data" and no indication that the
-    dashboard is fine and the data simply is not there. Roots are scanned one and two levels
-    deep, so both `bench-results/` and a campaign directory holding per-phase subdirectories
-    work as arguments.
+    dashboard is fine and the data simply is not there.
+
+    Roots are walked to any depth, so a flat `bench-results/`, a campaign directory of
+    per-phase subdirectories, and a directory of those all work as one argument. Each run
+    carries the path it was found at (see Run.label), whose first component is the root's own
+    name -- `root_labels` overrides that per root, positionally, for callers whose root is a
+    mount point rather than the directory the user named.
+
+    os.walk does NOT follow symlinks, which matters here: when MAIN_ROOT is not the repo root,
+    ensure_results_link() leaves a self-referential `bench-results/bench-results` symlink, and
+    a recursive glob walks through it forever. Directories are visited in sorted order so the
+    dropdown is reproducible, and the run_id keying still drops a run reached twice through
+    overlapping roots.
     """
     found = {}
-    for root in roots:
-        for depth in ("*", os.path.join("*", "*")):
-            for path in sorted(glob.glob(os.path.join(root, depth, "meta.json"))):
-                if not os.path.isdir(os.path.join(os.path.dirname(path), "prom-snapshot")):
-                    continue
-                meta = _read_json(path)
-                run_id = meta.get("run_id") or os.path.basename(os.path.dirname(path))
-                if run_id in found:
-                    continue
-                start, end = meta["windows"]["full"]
-                found[run_id] = Run(run_id, meta["variant"], meta.get("variant_family", ""),
-                                    meta.get("point") or meta.get("run_label") or "?",
-                                    int(start), int(end))
+    for i, root in enumerate(roots):
+        label = root_labels[i] if i < len(root_labels) and root_labels[i] else root_label(root)
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames.sort()
+            # Pruned unconditionally: prom-snapshot/ holds one directory per TSDB block, and
+            # every block carries a meta.json of its OWN -- a Prometheus block descriptor, not
+            # a run's. They are excluded by the prom-snapshot/ test below anyway, but there is
+            # nothing under there worth walking into, and there are thousands of files.
+            has_snapshot = "prom-snapshot" in dirnames
+            if has_snapshot:
+                dirnames.remove("prom-snapshot")
+            if "meta.json" not in filenames:
+                continue
+            dirnames[:] = []                    # nothing nests inside a run directory
+            if not has_snapshot:
+                continue
+            meta = _read_json(os.path.join(dirpath, "meta.json"))
+            run_id = meta.get("run_id") or os.path.basename(dirpath)
+            if run_id in found:
+                continue
+            rel = os.path.relpath(dirpath, root)
+            path = (label,) if rel == os.curdir else (label, *rel.split(os.sep))
+            start, end = meta["windows"]["full"]
+            found[run_id] = Run(run_id, meta["variant"], meta.get("variant_family", ""),
+                                meta.get("point") or meta.get("run_label") or "?",
+                                int(start), int(end),
+                                meta.get("prom_job") or DEFAULT_PROM_JOB,
+                                path)
     late = [r.run_id for r in found.values() if r.offset <= 0]
     if late:
         raise SystemExit(
@@ -272,9 +404,10 @@ def scan_runs(roots):
             f"would need a negative offset (Prometheus rejects those without "
             f"--enable-feature=promql-negative-offset). Move ANCHOR_EPOCH past them: "
             + ", ".join(sorted(late)))
-    return sorted(found.values(),
-                  key=lambda r: (POINT_ORDER.index(r.point) if r.point in POINT_ORDER
-                                 else len(POINT_ORDER), r.point, r.variant, r.start))
+    # By path, which is what the dropdown now READS: sorting by anything else would leave the
+    # options in an order the labels do not explain, and a directory's runs scattered through
+    # the list is exactly what naming them after their directory is meant to fix.
+    return sorted(found.values(), key=lambda r: r.path)
 
 
 def _read_json(path):
@@ -320,6 +453,33 @@ def _end_var():
             "hide": 2, "current": {}, "options": []}
 
 
+def _job_constant(found):
+    """$job's value: every scrape job the run set actually used, as a regex alternation.
+
+    One dashboard has to serve an archive that is not uniform. monitoring/prometheus/prometheus.yml
+    declares two application jobs -- `inventory` (actuator on the request connector) and
+    `inventory-mgmt` (actuator on its own `management.server.port`) -- and which one a run landed
+    under is a property of the VARIANT, recorded per run in meta.json as `prom_job`. In the phase-1
+    archive the two TO-2-fix-A runs are `inventory-mgmt` and the other ten are `inventory`.
+
+    $job cannot be a query variable here (they resolve against the anchor window, which holds no
+    data) and a constant holds one string, so the string is the alternation of every prom_job in
+    the set and spec.py matches it with `job=~` rather than `job=`. Building it from the run set
+    rather than hard-coding it means a third job name arrives with the run that uses it.
+
+    THIS IS THE BUG IT FIXES. With a flat `inventory` constant, selecting either TO-2-fix-A run
+    left 90 of 91 $job-filtered targets returning nothing -- the whole dashboard blank, which
+    reads as a missing TSDB snapshot rather than a one-word label mismatch. Those two runs are the
+    A/B evidence for the watermark cursor, so they are exactly the ones worth opening.
+
+    Over-matching would need two API jobs carrying the same metric at the same instant, i.e. two
+    API containers scraped at once; the stack runs one, and the non-selected job's target is down
+    (`up == 0`, no application series at all). Verified across all 12 phase-1 runs: no instant of
+    any run has both jobs present.
+    """
+    return "|".join(sorted({run.prom_job for run in found})) or DEFAULT_PROM_JOB
+
+
 def _header_panel(panel_id, span_minutes):
     return {
         "id": panel_id, "type": "text", "title": "Selected run",
@@ -353,7 +513,7 @@ def build_runs(found):
         "the time range alone. Requires the marker series from scripts/run_markers.py.",
         ANCHOR_ISO, end_iso,
         [_run_var(found), _end_var(),
-         build._const_var("job", "API job", "inventory"),
+         build._const_var("job", "API job", _job_constant(found)),
          build._const_var("db", "Database", "inventory"),
          build._const_var("dbc", "DB container", "postgres"),
          # An alternation, unlike the live dashboard's plain `api`: this dashboard queries
@@ -366,7 +526,7 @@ def build_runs(found):
             return None
         return [spec.Target(t.legend, clip_expr(offset_expr(t.expr))) for t in panel.targets]
 
-    panels, next_id, _, _ = build._layout([POOLED] + spec.SECTIONS, pick, build.DS_REPLAY)
+    panels, next_id, _, _ = build._layout([POOLED, TOTALS] + spec.SECTIONS, pick, build.DS_REPLAY)
     header = _header_panel(next_id, span_minutes)
     for panel in panels:
         panel["gridPos"]["y"] += header["gridPos"]["h"]

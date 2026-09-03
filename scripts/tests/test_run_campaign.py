@@ -19,7 +19,7 @@ def run(*args, env_extra=None):
     env = dict(os.environ)
     # Scrub knobs that would otherwise satisfy the derived-rate gate from the ambient
     # environment and make those tests pass for the wrong reason.
-    for k in ("RATE", "SPIKE_BASE", "POINT", "SCENARIO", "DISTINCT_ITEMS"):
+    for k in ("RATE", "SPIKE_PEAK", "POINT", "SCENARIO", "DISTINCT_ITEMS"):
         env.pop(k, None)
     if env_extra:
         env.update(env_extra)
@@ -87,18 +87,18 @@ class DerivedRateGate(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("needs an explicit RATE", r.stderr)
 
-    def test_spike_requires_spike_base_not_rate(self):
-        # profiles.js spike() reads spikeBase; RATE would be silently ignored.
+    def test_spike_requires_spike_peak_not_rate(self):
+        # profiles.js spike() reads spikePeak; RATE would be silently ignored.
         r = run("--dry-run", "spike:W-base:RATE=42")
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("needs an explicit SPIKE_BASE", r.stderr)
+        self.assertIn("needs an explicit SPIKE_PEAK", r.stderr)
 
     def test_soak_with_rate_passes(self):
         r = run("--dry-run", "soak:W-base:RATE=42,DRAIN_TIMEOUT=1800")
         self.assertEqual(r.returncode, 0, r.stderr)
 
-    def test_spike_with_spike_base_passes(self):
-        r = run("--dry-run", "spike:W-base:SPIKE_BASE=17")
+    def test_spike_with_spike_peak_passes(self):
+        r = run("--dry-run", "spike:W-base:SPIKE_PEAK=68")
         self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_an_inherited_rate_satisfies_the_gate(self):
@@ -114,11 +114,11 @@ class DerivedRateGate(unittest.TestCase):
     def test_the_suggested_fix_is_itself_valid_input(self):
         """The error prints a corrected step spec. If that spec is malformed, the message
         sends the operator into a second failure."""
-        r = run("--dry-run", "spike:W-base:SPIKE_FACTOR=4")
+        r = run("--dry-run", "spike:W-base:DRAIN_TIMEOUT=1800")
         self.assertNotEqual(r.returncode, 0)
         suggested = r.stderr.strip().splitlines()[-1].strip()
-        self.assertIn("SPIKE_BASE=<value>", suggested)
-        again = run("--dry-run", suggested.replace("<value>", "17"))
+        self.assertIn("SPIKE_PEAK=<value>", suggested)
+        again = run("--dry-run", suggested.replace("<value>", "68"))
         self.assertEqual(again.returncode, 0, again.stderr)
 
 

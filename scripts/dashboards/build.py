@@ -204,14 +204,20 @@ def main():
     # up as a shorter dropdown, which is not something anyone checks.
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs", nargs="+", metavar="DIR", default=None,
-                        help="directories of completed runs (scanned 1-2 levels deep for "
+                        help="directories of completed runs (walked to any depth for "
                              "meta.json); rebuilds bench-runs.json from them")
+    parser.add_argument("--root-label", nargs="+", metavar="NAME", default=[],
+                        help="display name for each --runs directory, positionally; each run "
+                             "is labelled by its path under it, so this is the first component "
+                             "of every label. Defaults to the directory's own basename — pass "
+                             "it only when the path is a mount point rather than the name the "
+                             "user knows (docker-compose.replay-load.yml mounts at /runs)")
     args = parser.parse_args()
 
     _write("the-dashboard", build_live())
     if args.runs:
         from . import runs as runs_mod
-        found = runs_mod.scan_runs(args.runs)
+        found = runs_mod.scan_runs(args.runs, args.root_label)
         if not found:
             raise SystemExit(f"no completed runs (meta.json) found under: {' '.join(args.runs)}")
         _write("bench-runs", runs_mod.build_runs(found))

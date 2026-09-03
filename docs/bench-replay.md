@@ -30,29 +30,35 @@ Start to finish on a machine with no archive, given a directory of finished runs
 
 ```bash
 python3 - ./bench-results <<'EOF'
-import glob, os, sys
+import os, sys
 root = sys.argv[1]
-runs = {}
-for depth in ("*", "*/*"):
-    for meta in glob.glob(os.path.join(root, depth, "meta.json")):
-        d = os.path.dirname(meta)
-        runs[os.path.realpath(d)] = d      # realpath: see the note below
-ok   = [d for d in runs.values() if os.path.isdir(os.path.join(d, "prom-snapshot"))]
-skip = [d for d in runs.values() if not os.path.isdir(os.path.join(d, "prom-snapshot"))]
+ok, skip = [], []
+for dirpath, dirnames, filenames in os.walk(root):     # os.walk: see the note below
+    dirnames.sort()
+    snap = "prom-snapshot" in dirnames
+    if snap:
+        dirnames.remove("prom-snapshot")
+    if "meta.json" not in filenames:
+        continue
+    dirnames[:] = []
+    (ok if snap else skip).append(dirpath)
 print(f"{len(ok)} loadable, {len(skip)} skipped")
-for d in sorted(skip):
+for d in skip:
     print("  SKIP (no prom-snapshot):", d)
 EOF
 ```
 
-The `realpath` de-duplication is not decoration. When `MAIN_ROOT` is not the repo root,
-`ensure_results_link()` drops a **self-referential symlink** in the results directory —
-`bench-results/bench-results -> <RESULTS_DIR>` — so the two-level glob walks through it and
-finds every run a second time. A naive shell loop over `*/ */*/` reports exactly twice the
-real count. `scan_runs()` is immune because it keys on `run_id` and drops repeats; anything
-you write yourself has to handle it.
+`os.walk` is not decoration, and neither is pruning `prom-snapshot/`. When `MAIN_ROOT` is not
+the repo root, `ensure_results_link()` drops a **self-referential symlink** in the results
+directory — `bench-results/bench-results -> <RESULTS_DIR>` — and a recursive glob (`**`)
+follows it, so it finds every run a second time, or forever. `os.walk` does not follow
+symlinks. Every TSDB block under `prom-snapshot/` also carries a `meta.json` of its own —
+Prometheus' block descriptor, nothing to do with a run — which is why the walk stops at the
+snapshot directory. `scan_runs()` does both, and additionally keys on `run_id`, so the SAME
+run copied into two directories reaches the dropdown once (under the first path in sorted
+order); anything you write yourself has to handle it.
 
-Runs must also start before the anchor, **2026-09-01** — see §4 if yours do not.
+Runs must also start before the anchor, **2027-01-01** — see §4 if yours do not.
 
 **1. Wipe any existing archive** (skip if you are adding to one):
 
@@ -72,8 +78,10 @@ RUNS_DIR=./bench-results \
   docker compose -f docker-compose.replay-load.yml up --abort-on-container-failure
 ```
 
-`RUNS_DIR` is bind-mounted read-only and scanned one **and** two levels deep, so a campaign
-directory of per-phase subdirectories is a valid single argument. Three one-shot services run
+`RUNS_DIR` is bind-mounted read-only and walked to **any** depth, so a campaign directory of
+per-phase subdirectories — or a directory of those — is a valid single argument. Every run is
+named in the dropdown by its path under `RUNS_DIR`, root directory first:
+`Final-Bench - 3-Cache - ES-4_capacity_W-base_20260901T004957Z`. Three one-shot services run
 in order: the dropdown rebuild, the block copy, the marker backfill (§5).
 `prometheus-replay` must not be running — step 1 took it down.
 
@@ -128,7 +136,7 @@ docker run --rm -v bench-replay-data:/p alpine:3.20 sh -c 'ls /p | wc -l; du -sh
 | symptom | cause |
 |---|---|
 | every panel is a parse error | markers missing, so `$end` resolved empty — re-run step 2 (§4) |
-| a run you expected is not in the dropdown | it has no `prom-snapshot/`, or it was loaded in a different pass than the last dropdown rebuild |
+| a run you expected is not in the dropdown | it has no `prom-snapshot/`; it was loaded in a different pass than the last dropdown rebuild; or a copy of it under an earlier path already claimed its `run_id` |
 | `external volume "bench-replay-data" not found` | step 3 was run before step 2 |
 | `WARNING: no blocks in …` during the load | that run's `prom-snapshot/` exists but is empty — a failed capture; it reaches the dropdown and draws empty panels |
 
@@ -299,6 +307,51 @@ Nothing in the expression is replay-specific — no `$run`, no `$end`. The panel
 finished run's publish lag gets read; moving it into `spec.py` would give the live dashboard the
 same curve.
 
+### The second panel — how many orders the run finished
+
+**"Orders completed by outcome — running total"** answers *how many*, which no other orders panel
+on this dashboard does. Everything else there is a rate — orders/s at each instant — and a rate
+curve does not carry a count. This is the same `orders_completed_total` the "Orders completed by
+outcome & reason" panel draws, undifferentiated and with `reason` collapsed:
+
+```promql
+sum by (outcome) (orders_completed_total{job="$job"})
+```
+
+Read the run's total off the **legend table's `Last *` column**, one row per outcome. The curve
+itself shows *where* in the run the orders accrued: a flat stretch is a stall, a knee is the point
+throughput changed.
+
+**Why the raw counter, and not `counter - counter @ start()`.** Subtracting the value at t0 is the
+obvious way to leave the warm-up out of the total, and it is wrong here. Prometheus carries a
+series' last sample forward for five minutes, and `run-suite.sh` restarts the stack back-to-back,
+so a series with no sample yet in *this* run resolves to the *previous* run's final value for the
+first minutes past t0. In the 12-run phase-1 archive that hits `rejected` on 2 of the 6 TO runs —
+`TO-3 · W-base · 0828-1652` opens at 238 140 and `TO-2-fix-A · W-base · 0828-2206` at 43 400,
+because no order had been rejected yet when measured load started. Subtract that baseline and the
+series is negative for the rest of the run; a negative series is not drawn on a `min: 0` axis, so
+101 767 rejections would read as "no rejections" with nothing on screen to say why. The raw counter
+fails the other way: the carry-over shows as a plateau-then-cliff in the first minutes, which is
+visible and self-explanatory, and every point after the reset — the `Last *` total included — is
+this run's own count.
+
+Two things the totals are therefore not:
+
+- **Warm-up is included.** `bench.sh`'s paced warm-up lands ~5 000 confirmed orders before t0, so
+  `confirmed` starts at ~5 001 rather than 0. Against a full run's 200 k – 1.7 M that is under 3 %,
+  and it is a constant rather than a variant difference.
+- **`rejected` may open on the previous run's value**, on a run whose first rejection came minutes
+  after t0. See above.
+
+**TO family only.** `orders.completed` is registered in `InventoryService`, which the ES branches
+do not have — their terminal outcomes arrive through the projection — so ES runs render this panel
+empty, like every other TO-family panel here. The cross-family count is
+`order_e2e_time_seconds_count`, which "Offered vs accepted vs terminal" already draws as a rate.
+
+Replay-only, like the pooled publish lag and for the same kind of reason: on the live dashboard the
+same expression would draw the counter since JVM start, which is a different quantity and not one
+anyone watches climb.
+
 ### Clipping: why `run_markers.py` is not optional
 
 The axis is sized for the *longest* archived run, and the campaign ran back-to-back — the smallest
@@ -338,23 +391,26 @@ run's data as though it belonged to this one. 870 samples for 30 runs; the cost 
 
 Nothing is re-ingested: every run stays exactly where `prom_archive.sh` put it, at its real
 wall-clock time. What moves is the query. The dashboard's time range is pinned to a fixed anchor
-window (**2026-09-01T00:00:00Z**, spanning the longest run rounded up to 10 minutes), every
+window (**2027-01-01T00:00:00Z**, spanning the longest run rounded up to 10 minutes), every
 selector is rewritten as `metric{...}[1m] offset $run`, and the `run` variable's *value* is that
-run's distance from the anchor — a PromQL duration such as `1677219s` — while its *label* is the
+run's distance from the anchor — a PromQL duration such as `12218040s` — while its *label* is the
 run's name. Selecting a run subtracts its own age and pulls its window into the anchor's:
 
 ```
-time range   [2026-09-01T00:00, +80m]        (never moves)
-TO-1 W-base  offset 1677219s  -> 2026-08-12T14:06Z
-ES-4 W-hot   offset 1588348s  -> 2026-08-13T14:47Z
+time range   [2027-01-01T00:00, +80m]        (never moves)
+TO-1 W-base  offset 12218040s -> 2026-08-12T14:06Z
+ES-4 W-hot   offset 12129180s -> 2026-08-13T14:47Z
 ```
 
 The anchor sits *after* the campaign because reaching forward in time needs a **negative** offset
 and Prometheus rejects those without `--enable-feature=promql-negative-offset`. `scan_runs()`
 refuses to build a dashboard containing a run that starts after the anchor rather than emit
-queries that 400; if the campaign ever runs past 2026-09-01, move `ANCHOR_EPOCH` in
+queries that 400; if the campaign ever runs past 2027-01-01, move `ANCHOR_EPOCH` in
 `scripts/dashboards/runs.py` (and `ANCHOR_RUNS` in `verify_dashboard_metrics.py`, which
-`test_runs.AnchorsAgree` keeps in step).
+`test_runs.AnchorsAgree` keeps in step). Moving it is cheap and safe — nothing on disk is
+re-ingested, and the offsets, the marker series and the time range are all derived from it and
+regenerated together by the next load. It was already moved once, from 2026-09-01, when the
+campaign's `steady` runs landed on that day.
 
 Three consequences worth knowing:
 
@@ -366,8 +422,22 @@ Three consequences worth knowing:
 - **`$job` / `$db` / `$dbc` / `$apic` are constants here, not query variables.** A query variable
   resolves against the dashboard's time range, and this range holds no data at all, so
   `label_values()` would come back empty and every panel would query `{job=""}` and render blank.
-  The unified stack emits one value for each on both families (verified against archived TO and ES
-  runs), so there is nothing to choose.
+- **`$job` is the alternation of every scrape job in the run set**, e.g.
+  `inventory|inventory-mgmt`, and every selector matches it with `job=~` rather than `job=`.
+  `monitoring/prometheus/prometheus.yml` declares two application jobs — `inventory`, and
+  `inventory-mgmt` for variants that give actuator its own `management.server.port` — and which
+  one a run landed under is a property of the *variant*, recorded per run in `meta.json` as
+  `prom_job`. `runs.py` builds the constant from the run set, so a third job name arrives with
+  the run that uses it.
+
+  This is not hypothetical tidiness. With `$job` pinned to the literal `inventory`, selecting
+  either `TO-2-fix-A` run left **90 of its 91** `$job`-filtered targets returning nothing — the
+  whole dashboard blank, which reads as a missing TSDB snapshot rather than a one-word label
+  mismatch, and those two runs are the A/B evidence for the watermark cursor. Over-matching would
+  need two API jobs carrying the same metric at the same instant, i.e. two API containers scraped
+  at once; the stack runs one, and the non-selected job's target is down (`up == 0`, no
+  application series at all). Verified across the 12-run phase-1 archive: 1 092 target/run pairs
+  return byte-identical results under the alternation and under each run's own job name.
 - **Runs shorter than the window leave empty space on the right.** The range spans the longest run,
   and clipping stops each panel at its own end, so a 26-minute run simply goes blank a third of the
   way across instead of continuing into the next run.
@@ -377,9 +447,24 @@ Three consequences worth knowing:
 `scan_runs()` lists a run only when it has **both** `meta.json` (it finished) and `prom-snapshot/`
 (its TSDB was captured). A run without a snapshot would otherwise fill every panel with "No data"
 and no indication that the dashboard is fine and the data is simply not there.
-Directories are scanned one and two levels deep, so a campaign directory of per-phase subdirectories
-works as a single argument. Options are grouped by workload point, then variant, then start time —
-"same workload, next variant" being the comparison actually being made.
+Directories are walked to any depth, so a campaign directory of per-phase subdirectories — or a
+directory of those — works as a single argument.
+
+Each option is labelled by the run's **path** under the scanned directory, that directory's own
+name first: `Final-Bench - 2-ES-snapshot - ES-1_capacity_W-base_20260831T221657Z`. The directory
+names are how the runs were grouped in the first place (`2-ES-snapshot` vs `3-Cache` is the
+comparison being made), the run's own directory name already carries variant, point and timestamp,
+and the same `run_id` can sit under two phases — the path is what tells those apart on screen.
+Options are therefore ordered by path, so the dropdown reads as the tree it came from. Both `,`
+and `:` are replaced with `-` in each component: Grafana parses a custom variable's option list as
+`label : value, label : value`, and either character in a directory name would silently split one
+option into two broken ones.
+
+`--root-label NAME` (on both `build.py --runs` and `run_markers.py`, positionally per directory)
+replaces the first component. It exists for `docker-compose.replay-load.yml`, which bind-mounts the
+selected directory at `/runs` — `runs` is not what you called it, so the compose file passes
+`RUNS_DIR` in as a variable as well as a mount and hands the basename over. On the command line the
+default (the directory's own basename) is already right.
 
 A bare `python3 -m scripts.dashboards.build` deliberately leaves `bench-runs.json` untouched: its
 dropdown is a list baked into the JSON, and regenerating it from a default location would quietly
@@ -430,9 +515,9 @@ RUNS_DIR=./bench-results-2/bench-results/breakpoint \
 COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml up -d
 ```
 
-`RUNS_DIR` defaults to `./bench-results`. It is bind-mounted read-only at `/runs` and scanned one
-**and** two levels deep, so a campaign directory of per-phase subdirectories is a valid single
-argument. Unlike §2, **the volume does not have to exist first**: this file declares
+`RUNS_DIR` defaults to `./bench-results`. It is bind-mounted read-only at `/runs` and walked to
+**any** depth, so a campaign directory of per-phase subdirectories — or a directory of those — is a
+valid single argument, and each run is named in the dropdown by its path under it. Unlike §2, **the volume does not have to exist first**: this file declares
 `bench-replay-data` non-external precisely so `up` creates it on a machine that has never had an
 archive — which is also the one hazard worth naming: `down -v` *with this file* would delete the
 archive. Nothing here needs tearing down; every service exits on its own.
@@ -530,6 +615,14 @@ Two things to keep in mind when reading the output:
   first increment, so a counter that has not fired yet is indistinguishable from one that does not
   exist. Run it under load, or point it at the archive, which holds a full TSDB snapshot of
   a completed run.
+- **Template constants come from the dashboard JSON, not from this script.** `dashboard_constants()`
+  reads every `constant` variable out of the file being checked, so `$job`, `$db`, `$dbc` and
+  `$apic` cannot drift from what Grafana interpolates; `--var NAME=VALUE` still overrides. A second
+  copy of those values had gone stale twice — `DEFAULT_VARS` held `job: inventory-to` and
+  `dbc: postgres-to` long after the stack dropped the family suffixes, and a hardcoded
+  `job: inventory` reported **27/117** targets resolving on a `TO-2-fix-A` run where the dashboard
+  itself renders **104/117**. A stale constant here reports a bug in the dashboard that is really
+  a bug in this script, which is the most expensive kind of wrong answer it can give.
 
 ### The 2026-08-06 sweep, and what it removed
 
