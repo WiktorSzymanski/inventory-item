@@ -23,6 +23,19 @@ import java.util.Date
 /**
  * The order read model, and the source of `order.e2e.time`.
  *
+ * **Every query below names `orderId`, never `id`, and that is not a style choice.** Spring Data
+ * maps a query field to `_id` only when it is the ENTITY PROPERTY carrying `@Id` -- which on
+ * [OrderProjection] is `orderId`. A filter written as `where("id")` is not an error and does not
+ * warn: it is passed through as a literal field name, so the upsert below matched nothing, MongoDB
+ * generated an ObjectId for `_id`, and the orderId was stored beside it in a stray `id` field.
+ *
+ * The damage was entirely in [readCreatedAt], which reads by `_id`: it found nothing, every
+ * `order.e2e.time` sample was skipped with a WARN, and because the harness derives in-flight orders
+ * as `accepted - order_e2e_time_seconds_count`, the drain never converged either. One field name
+ * cost the benchmark its headline latency metric AND its completion signal, while the status
+ * updates kept working (they matched the stray `id` field) and every integration test passed.
+ * `OrderDocumentIdTest` is the regression guard.
+ *
  * Same two departures from ES-2 as [InventoryProjectionUpdater]: the statements are Mongo
  * updates instead of SQL, and the per-handler transaction is gone because each handler writes
  * one document. Metric names, tags and the `outcome` values are untouched -- `order.e2e.time`
@@ -66,7 +79,7 @@ class OrderProjectionUpdater(
         // createdAt is the event's OWN timestamp rather than now(), so e2e is measured against
         // admission time and stays correct on replay.
         mongo.upsert(
-            Query(where("id").`is`(event.orderId)),
+            Query(where("orderId").`is`(event.orderId)),
             Update()
                 .setOnInsert("userId", event.userId)
                 .setOnInsert("status", "PENDING")
@@ -80,7 +93,7 @@ class OrderProjectionUpdater(
     @EventHandler
     fun on(event: OrderCompletedEvent, @Timestamp timestamp: Instant) {
         mongo.updateFirst(
-            Query(where("id").`is`(event.orderId)),
+            Query(where("orderId").`is`(event.orderId)),
             Update().set("status", "CONFIRMED"),
             OrderProjection::class.java,
         )
@@ -91,7 +104,7 @@ class OrderProjectionUpdater(
     @EventHandler
     fun on(event: OrderFailedEvent, @Timestamp timestamp: Instant) {
         mongo.updateFirst(
-            Query(where("id").`is`(event.orderId)),
+            Query(where("orderId").`is`(event.orderId)),
             Update()
                 .set("status", "REJECTED")
                 .set("failureReason", event.reason),
