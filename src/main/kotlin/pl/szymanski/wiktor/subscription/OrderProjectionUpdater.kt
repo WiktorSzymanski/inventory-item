@@ -5,22 +5,36 @@ import io.micrometer.core.instrument.Timer
 import org.axonframework.config.ProcessingGroup
 import org.axonframework.eventhandling.EventHandler
 import org.axonframework.eventhandling.Timestamp
+import org.bson.Document
 import org.slf4j.LoggerFactory
-import org.springframework.beans.factory.annotation.Qualifier
-import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
+import org.springframework.data.mongodb.core.MongoOperations
+import org.springframework.data.mongodb.core.query.Criteria.where
+import org.springframework.data.mongodb.core.query.Query
+import org.springframework.data.mongodb.core.query.Update
 import org.springframework.stereotype.Component
-import org.springframework.transaction.annotation.Transactional
 import pl.szymanski.wiktor.domain.OrderCompletedEvent
 import pl.szymanski.wiktor.domain.OrderCreatedEvent
 import pl.szymanski.wiktor.domain.OrderFailedEvent
-import java.sql.Timestamp as SqlTimestamp
+import pl.szymanski.wiktor.repository.OrderProjection
 import java.time.Duration
 import java.time.Instant
+import java.util.Date
 
+/**
+ * The order read model, and the source of `order.e2e.time`.
+ *
+ * Same two departures from ES-2 as [InventoryProjectionUpdater]: the statements are Mongo
+ * updates instead of SQL, and the per-handler transaction is gone because each handler writes
+ * one document. Metric names, tags and the `outcome` values are untouched -- `order.e2e.time`
+ * has to stay comparable with the TO branches as well as with ES-2.
+ *
+ * The `items` map needed a hand-built JSON string and a `::jsonb` cast on Postgres. It is just
+ * a nested document here, so both are gone along with `JdbcConvertersConfig`.
+ */
 @Component
 @ProcessingGroup("order-projection")
 class OrderProjectionUpdater(
-    @Qualifier("axonJdbcTemplate") private val jdbcTemplate: NamedParameterJdbcTemplate,
+    private val mongo: MongoOperations,
     private val meterRegistry: MeterRegistry,
 ) {
     companion object {
@@ -43,46 +57,68 @@ class OrderProjectionUpdater(
             .register(meterRegistry)
 
     @EventHandler
-    @Transactional("axonSpringTransactionManager")
     fun on(event: OrderCreatedEvent, @Timestamp timestamp: Instant) {
-        val itemsJson = event.items.joinToString(",", "{", "}") { "\"${it.itemId}\":${it.quantity}" }
-        // created_at is set from the event's own timestamp (not now()) so e2e is measured against
+        // `INSERT ... ON CONFLICT DO NOTHING`. Every field is $setOnInsert, so a re-delivery
+        // finds the document and changes nothing. Unlike the inventory create there is no
+        // revision predicate in the filter, so this upsert can never collide on _id and needs
+        // no duplicate-key arm.
+        //
+        // createdAt is the event's OWN timestamp rather than now(), so e2e is measured against
         // admission time and stays correct on replay.
-        jdbcTemplate.update(
-            "INSERT INTO orders (order_id, user_id, status, items, created_at) VALUES (:orderId, :userId, 'PENDING', :items::jsonb, :createdAt) ON CONFLICT DO NOTHING",
-            mapOf("orderId" to event.orderId, "userId" to event.userId, "items" to itemsJson, "createdAt" to SqlTimestamp.from(timestamp))
+        mongo.upsert(
+            Query(where("id").`is`(event.orderId)),
+            Update()
+                .setOnInsert("userId", event.userId)
+                .setOnInsert("status", "PENDING")
+                .setOnInsert("items", event.items.associate { it.itemId to it.quantity })
+                .setOnInsert("createdAt", timestamp),
+            OrderProjection::class.java,
         )
         recordLag(timestamp, "OrderCreatedEvent")
     }
 
     @EventHandler
-    @Transactional("axonSpringTransactionManager")
     fun on(event: OrderCompletedEvent, @Timestamp timestamp: Instant) {
-        jdbcTemplate.update(
-            "UPDATE orders SET status = 'CONFIRMED' WHERE order_id = :orderId",
-            mapOf("orderId" to event.orderId)
+        mongo.updateFirst(
+            Query(where("id").`is`(event.orderId)),
+            Update().set("status", "CONFIRMED"),
+            OrderProjection::class.java,
         )
         recordE2e("confirmed", readCreatedAt(event.orderId), timestamp, event.orderId)
         recordLag(timestamp, "OrderCompletedEvent")
     }
 
     @EventHandler
-    @Transactional("axonSpringTransactionManager")
     fun on(event: OrderFailedEvent, @Timestamp timestamp: Instant) {
-        jdbcTemplate.update(
-            "UPDATE orders SET status = 'REJECTED', failure_reason = :reason WHERE order_id = :orderId",
-            mapOf("orderId" to event.orderId, "reason" to event.reason)
+        mongo.updateFirst(
+            Query(where("id").`is`(event.orderId)),
+            Update()
+                .set("status", "REJECTED")
+                .set("failureReason", event.reason),
+            OrderProjection::class.java,
         )
         recordE2e("rejected", readCreatedAt(event.orderId), timestamp, event.orderId)
         recordLag(timestamp, "OrderFailedEvent")
     }
 
-    private fun readCreatedAt(orderId: String): Instant? =
-        jdbcTemplate.queryForList(
-            "SELECT created_at FROM orders WHERE order_id = :orderId",
-            mapOf("orderId" to orderId),
-            SqlTimestamp::class.java
-        ).firstOrNull()?.toInstant()
+    /**
+     * `SELECT created_at FROM orders WHERE order_id = :orderId`, and deliberately still a
+     * projection of that one field rather than a `findById`.
+     *
+     * It reads into a raw [Document] instead of [OrderProjection] for a reason that would
+     * otherwise be a runtime surprise: a field-limited query returns a partial document, and
+     * mapping that onto a Kotlin data class whose `userId` is non-nullable fails. The raw read
+     * also lets the value come back as either a BSON date or an Instant without caring which.
+     */
+    private fun readCreatedAt(orderId: String): Instant? {
+        val query = Query(where("_id").`is`(orderId))
+        query.fields().include("createdAt")
+        return when (val value = mongo.findOne(query, Document::class.java, "orders")?.get("createdAt")) {
+            is Date -> value.toInstant()
+            is Instant -> value
+            else -> null
+        }
+    }
 
     private fun recordE2e(outcome: String, createdAt: Instant?, terminalTs: Instant, orderId: String) {
         if (createdAt == null) {
@@ -97,7 +133,7 @@ class OrderProjectionUpdater(
     private fun recordLag(timestamp: Instant, eventType: String) {
         val lag = Duration.between(timestamp, Instant.now())
         projectionLagTimer.record(lag)
-        log.info("[PROJECTION] table=orders type={} lag={}ms", eventType, lag.toMillis())
+        log.info("[PROJECTION] collection=orders type={} lag={}ms", eventType, lag.toMillis())
         meterRegistry.counter("es.events.processed", "eventType", eventType).increment()
     }
 }

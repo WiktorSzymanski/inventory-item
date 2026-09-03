@@ -2,6 +2,47 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**This branch is `ES-4-mongo`: `ES-4` with every byte of state on MongoDB instead of
+PostgreSQL, and nothing else changed.** The aggregate, the saga, the processor topology, the
+thread widths (112 command / 60 saga / 3 projections / 99 Tomcat), the retry curve, the
+snapshot threshold, the confirmed-state cache (`PessimisticCachingRepository` +
+`CacheFedSnapshotter`) and every Micrometer name, tag and histogram bound are identical to
+`ES-4`. Run the two at the same workload point and the delta is the store. It runs from the
+`main-mongo` harness, not from `main`.
+
+**Why it exists.** Every ES arm of the campaign runs Axon's `JdbcEventStorageEngine` on the
+same PostgreSQL the TO arms use, so the ES numbers measure event sourcing *on a relational
+store* and nothing separates the pattern from the engine underneath it.
+
+**The delta, in full** (see `config/AxonConfig.kt`, which is most of it):
+
+| ES-4 | ES-4-mongo |
+|---|---|
+| `JdbcEventStorageEngine` + `EventSchema` | `MongoEventStorageEngine` + `DocumentPerEventStorageStrategy` |
+| `JdbcTokenStore` + `TokenSchema` | `MongoTokenStore` |
+| `JdbcSagaStore` + `PostgresSagaSqlSchema`, two tables | `MongoSagaStore`, one collection (associations live in the saga document) |
+| `SQLStateResolver()` maps `23505` | `MongoConflictResolver` maps duplicate key **and** WriteConflict |
+| Flyway `V1__init.sql` + `V2__token_entry_autovacuum.sql` | `MongoIndexInitializer` -- indexes only, no schema |
+| storage engine on its own non-UnitOfWorkAware connection | `axonTransactionManager` is `PROPAGATION_REQUIRES_NEW` |
+| Two Hikari pools (app 50 + axon 350) | One driver pool (400 = their sum) |
+| Spring Data JDBC read models, raw SQL upserts | Spring Data MongoDB read models, `$inc`/upsert with the same revision guard |
+| `JdbcConvertersConfig` (`PGobject`/`jsonb`) | deleted -- BSON holds a nested map |
+
+`ES-2-mongo` is the same substitution applied to `ES-2`, whose `AxonConfig` is structurally
+identical to this one. Keep the two in step.
+
+**MongoDB must be a replica set.** `MongoTransactionManager` cannot open a session against a
+standalone `mongod`, and an Axon append writes several documents. `main-mongo`'s compose runs
+`--replSet rs0` with a one-shot init container the api waits on; the Testcontainers tests use
+`MongoDBContainer`, which initiates one itself.
+
+**`V2__token_entry_autovacuum.sql` is gone with Flyway, and its problem may not be.** That
+migration existed because `GapAwareTrackingToken` rewrote a BYTEA token on every batch across
+63 processors and bloated the `token_entry` TOAST into double-digit GB. The Mongo shape of the
+same load is 63 token documents rewritten per batch -- a WiredTiger update storm on a tiny
+collection. Do not assume it went away; watch the `token_entry` collection's size and the
+checkpoint panels. Either answer is a result worth reporting.
+
 **On this branch a retried command does not execute on the retry pool.** Everywhere else in the ES
 family, Axon's `RetryingCallback.RetryDispatch.run()` calls `commandBus.dispatch()` inline and
 `SimpleCommandBus` handles on the calling thread, so the retry pool is a second execution lane whose
@@ -15,10 +56,11 @@ the other half of a topology-only A/B against this one; now that its topology *i
 a pair.
 
 The command pool is 112 = the previous 82 + the 30 the retry lane no longer executes on, so the
-connection budget is unchanged at `2 x (112 + 60 + 3) = 350`, where the two-lane shape spent the same
-350 as `2 x (82 + 30 + 60 + 3)`. Retry threads drop out of the sum because a thread that only calls
-`execute(...)` opens no transaction and takes no `axon-jdbc-pool` connection, and the backoff is
-served in the `DelayedWorkQueue` on no thread at all. The retry policy is unchanged (`maxRetries=5`,
+executing width is unchanged at 175 (`112 + 60 + 3`), where the two-lane shape spent the same 175 as
+`82 + 30 + 60 + 3`. Retry threads drop out of the sum because a thread that only calls
+`execute(...)` opens no transaction and takes no connection, and the backoff is served in the
+`DelayedWorkQueue` on no thread at all. The connection budget is `ES-4`'s
+unchanged, `2 x 175 = 350` -- see `CommandGatewayConfig.RETRY_POOL_SIZE`. The retry policy is unchanged (`maxRetries=5`,
 `initialDelayMs=25`, 500 ms cap), as is the 99-thread Tomcat cap. It is the ES analogue of TO's
 `ORDER_RETRY_EXECUTE_ON_RETRY_POOL=false`. Expect the behavioural difference only under contention
 (`DISTINCT_ITEMS=1`): a retry now rejoins an unbounded FIFO at the tail, behind first attempts
@@ -57,7 +99,7 @@ write path and are not comparable to later ones.
 ./gradlew bootRun          # Start on port 8080
 ./gradlew test             # JUnit 5
 ./gradlew bootJar          # -> build/libs/app.jar
-docker compose up -d       # postgres + nginx + api + prometheus + grafana + cadvisor
+docker compose up -d       # mongo + mongo-init + api + prometheus + grafana + cadvisor
 ```
 
 Single test class: `./gradlew test --tests "pl.szymanski.wiktor.ApplicationTest"`
@@ -123,7 +165,8 @@ Everything below about lost races applies to `ES-4` at **every** replica count, 
    reached, and the order stayed `PENDING` **forever**.
 
 Both are now fixed on all four ES branches — (2) on all four, (1) on the three that lacked it.
-`.persistenceExceptionResolver(SQLStateResolver())` turns a `23505` into a
+`.persistenceExceptionResolver(MongoConflictResolver)` turns a duplicate key **or a
+WriteConflict** into a
 `ConcurrencyException`, so `ConcurrencyRetryScheduler` retries it
 (5 attempts, `25ms * 2^n` capped at 500 ms); a command that still fails after that reaches
 `OrderReservationSaga.abandon()`, which releases the already-reserved lines and sends
@@ -177,7 +220,7 @@ all of them alongside the contention-vs-stock split.
 rejection rate is an artefact of lost write races rather than of stock. Read multi-replica
 runs as a contention study, not as a throughput result. On a single-node run of a
 *lock-holding* branch (`ES-1`/`ES-2`/`ES-3`) `saga_completed_total{outcome="command_failed"}`
-should be zero — the JVM-local `LockFactory` prevents the `23505` entirely there — and a
+should be zero — the JVM-local `LockFactory` prevents the conflict entirely there — and a
 non-zero value falsifies that assumption and means the baseline needs re-examining.
 `evaluate.py` enforces this as the `saga_command_failed_single_node` validity check, which is
 skipped whenever `EXPECTED_REPLICAS > 1` — above 1 the count is the contention signal itself.
@@ -185,7 +228,7 @@ The underlying series come from the `saga_completed` and `saga_cmd_failed` delta
 `saga_lifetime` histogram in `queries.promql`, so they land in `dump.json` on every run.
 
 **That check is wrong for `ES-4` and is knowingly left in place.** With `NullLockFactory`
-there is no lock to prevent a `23505`, so a single-node `ES-4` run in which any command
+there is no lock to prevent a conflict, so a single-node run in which any command
 exhausts its 5 retries reports `INVALID` on `saga_command_failed_single_node` alone. That is
 an artefact of a harness assumption, not a broken measurement: read the rest of the check
 list, and treat the run as valid if `saga_command_failed_single_node` is its only failure.
@@ -214,7 +257,8 @@ rejections are contention, and TO's multi-node path has never been load-tested a
 ## Architecture (ES-4)
 
 Kotlin 2.3 / Spring Boot 4.0.6, **Spring MVC on Tomcat** (blocking servlet stack — not
-WebFlux), **Axon Framework 4.11.2** with a **JDBC event store on PostgreSQL**. There is no
+WebFlux), **Axon Framework 4.11.2** with a **MongoDB event store**
+(`org.axonframework.extensions.mongo:axon-mongo:4.11.1`). There is no PostgreSQL, no Flyway, no
 KurrentDB and no R2DBC on any current branch.
 
 - **`controller/InventoryController.kt`** — `GET /inventory`, `GET /inventory/{itemId}`,
@@ -241,7 +285,8 @@ KurrentDB and no R2DBC on any current branch.
   and is kept because `k6/lib/config.js` and `k6/bench/reset.sh` name it and `k6/` must stay
   byte-identical across the eight branches. Nothing serialises commands on one aggregate, so
   concurrent commands all load at sequence N, all append N+1, one wins, and the losers take
-  `23505` → `SQLStateResolver` → `ConcurrencyException` → `ConcurrencyRetryScheduler`. A cache
+  duplicate key (or WriteConflict) → `MongoConflictResolver` → `ConcurrencyException` →
+  `ConcurrencyRetryScheduler`. A cache
   hit can therefore be stale; that is caught at append time, repaired by the rollback's
   incremental `catchUp`, and retried. The deep copy per load is what makes this safe — without
   a lock, concurrent commands would otherwise mutate one shared root.
@@ -381,28 +426,36 @@ exception thrown anywhere in the app is `ItemAlreadyExistsException`, from `POST
 `src/main/resources/application.yaml`: `snapshot.event-count` (30), `cache.enabled`,
 `cache.ttl` (10m, `CACHE_TTL`) and `cache.maximum-size` (10000, `CACHE_MAXIMUM_SIZE`),
 `axon.saga.total-segments` (`${AXON_SAGA_TOTAL_SEGMENTS:60}`), `axon.saga.replicas` (`${API_REPLICAS:1}`),
-`axon.jdbc.pool.size` (300), `axon.eventstore.*` (below), and the Micrometer
+`spring.mongodb.uri`, `axon.mongo.pool.size` (400), `axon.eventstore.mongo.look-back-time-ms`
+(1000, below), and the Micrometer
 `distribution` block.
 
-**`axon.eventstore.max-gap-offset` (500) is a correctness knob, not a tuning one.** It exists
-on `ES-3`/`ES-4` only; `ES-1`/`ES-2` run Axon's defaults (10000 / 60000).
-`GapAwareTrackingToken` discards every gap more than `max-gap-offset` indices behind the
-token, so an event whose row commits after the token has advanced that far past it is skipped
-by every tracking processor **permanently**. Rolled-back appends leave permanent gaps because
-`global_index` is a `BIGSERIAL` and appends autocommit on their own connection. On the
-lock-holding branches they are rare below `REPLICAS>1`; **on `ES-4` they are routine at every
-replica count**, because `NullLockFactory` means ordinary in-JVM contention produces them. For
-scale: the reference `ES-2` run at `REPLICAS=2` burnt ~8717 index values in 180 s, which makes
-500 indices a ~1.4 s window. The exposure is still small (index assignment and commit are in
-one autocommitted statement) and that run measured `completion_ratio_inverse=0.0`, so the
-value stands — but revisit it before any run appreciably faster, and treat a non-zero
-`completion_ratio_inverse` on any `ES-4` run as a reason to suspect it first.
+**It is `spring.mongodb.uri`, NOT `spring.data.mongodb.uri`.** Spring Boot 4.0 deprecated the
+old prefix at ERROR level, which means it is no longer bound at all: a URI written under it is
+read by nothing and the driver silently falls back to `mongodb://localhost:27017`. That
+presents as a connection timeout, i.e. as a network problem rather than a configuration one.
+
+**`axon.eventstore.max-gap-offset` and its two companions do not exist on this branch.** They
+exist on `ES-3`/`ES-4` because `global_index` is a non-transactional `BIGSERIAL`: a rolled-back
+append burns a value and leaves a permanent hole `GapAwareTrackingToken` has to carry, and
+`NullLockFactory` makes such rollbacks routine at every replica count. `MongoTrackingToken` is
+not indexed off a sequence at all, so there is nothing to configure and they are deleted rather
+than left dead.
+
+**`axon.eventstore.mongo.look-back-time-ms` (1000) is this branch's correctness knob of that
+class, and deserves the same suspicion.** A tracking processor advances its token to the
+timestamp of the last event it saw and re-reads this far back on the next poll, to catch events
+whose write landed after it had already passed their timestamp. An event that commits later
+than this window behind the token is skipped by that processor **permanently** — the same
+failure mode as an over-tight `max-gap-offset`, arrived at differently. 1000 ms is the
+extension's own default. Treat a non-zero `completion_ratio_inverse` on any run here as a
+reason to suspect it first.
 
 **`axon.saga.total-segments` defaults to 60 on every ES branch, and every archived run used
 that value.** It is the fixed segment pool that `ceil(total-segments / replicas)` divides,
 and 60 splits evenly for 2/3/4/5/6 replicas. ES-1/2/3 previously used `segments: 32`, so
 single-node results produced before that change are not comparable to later ones. Changing
-it requires resetting the `order-saga` tokens (`TRUNCATE token_entry`, which
+it requires resetting the `order-saga` tokens (dropping the `token_entry` collection, which
 `k6/bench/reset.sh` does on every run, so a bench run needs no manual step).
 
 **It is now a per-run knob**: `AXON_SAGA_TOTAL_SEGMENTS` (compose default 60) binds to it,
@@ -415,11 +468,22 @@ always SETS the variable: vary it across passes, e.g.
 Why it matters beyond tidiness: `order-saga` is a `TrackingEventProcessor`, so EACH segment
 opens its own tracking query over the whole event stream and discards the events it does not
 own. At 60 segments every appended event is read 63 times (60 saga + 3 projections), which
-the Phase-1 capacity runs measured as ~50-57 Postgres transactions per event — against ~1.2%
+the Phase-1 capacity runs measured as ~50-57 Postgres transactions per event on `ES-4` —
+against ~1.2%
 of transactions for the item appends themselves. Prefer a power of two: at 60 under a
 64-bucket hash mask, segments 29-32 carry exactly double the load of the other 56.
 
-**`axon.jdbc.pool.size` must exceed the saga per-node claim.** At the old 150 with a
+**This is the single biggest thing to watch on this branch.** Axon's own MongoDB extension
+documentation warns that Tracking Event Processors are inefficient against a Mongo event store,
+and 63 concurrent tracking queries over one stream is precisely that configuration. A large
+throughput gap against `ES-4` here is a FINDING to report, not a bug to fix — but confirm it is
+the store, not a missing index or a look-back misconfiguration, before writing it up.
+
+**The pool must exceed the saga per-node claim.** The knob is `AXON_MONGO_POOL_SIZE`; the
+driver blocks on `waitQueueTimeoutMS` rather than failing fast, and a `MongoTimeoutException`
+is not a `ConcurrencyException`, so `ConcurrencyRetryScheduler` will not retry it and the
+command fails terminally into the saga's `abandon()` path. On `ES-4` the same shape was
+`axon.jdbc.pool.size`: At the old 150 with a
 60-thread claim the pool ran dry (`active=150, waiting=97`) and sagas that failed to
 dispatch were never retried, stranding orders in `PENDING` forever. Measured on an
 identical 3m steady run: 60 segments at pool 150 stranded 48 orders and never drained;

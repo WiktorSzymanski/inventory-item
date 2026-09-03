@@ -9,12 +9,15 @@ import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.boot.test.context.SpringBootTest
-import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
+import org.springframework.data.mongodb.core.MongoOperations
+import org.springframework.data.mongodb.core.query.Criteria.where
+import org.springframework.data.mongodb.core.query.Query
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
-import org.testcontainers.containers.PostgreSQLContainer
+import org.testcontainers.containers.MongoDBContainer
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
+import pl.szymanski.wiktor.config.MongoCollections
 import pl.szymanski.wiktor.config.PessimisticCachingRepository
 import pl.szymanski.wiktor.domain.InventoryCreatedEvent
 import pl.szymanski.wiktor.domain.InventoryItem
@@ -44,7 +47,7 @@ class InventoryPessimisticConcurrencyTest {
     @Autowired lateinit var eventStore: EventStore
     @Autowired lateinit var meterRegistry: MeterRegistry
     @Autowired lateinit var inventoryItemRepository: PessimisticCachingRepository<InventoryItem>
-    @Autowired @Qualifier("axonJdbcTemplate") lateinit var jdbc: NamedParameterJdbcTemplate
+    @Autowired lateinit var mongo: MongoOperations
 
     @Test
     fun `concurrent reserves on one item stay consistent with no over-reservation`() {
@@ -316,10 +319,10 @@ class InventoryPessimisticConcurrencyTest {
     private fun awaitSnapshot(itemId: String, timeoutMs: Long = 15_000): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
-            val snapshots = jdbc.queryForObject(
-                "SELECT count(*) FROM snapshot_event_entry WHERE aggregate_identifier = :id",
-                mapOf("id" to itemId), Int::class.java,
-            ) ?: 0
+            val snapshots = mongo.count(
+                Query(where("aggregateIdentifier").`is`(itemId)),
+                MongoCollections.SNAPSHOT_EVENTS,
+            )
             if (snapshots > 0) return true
             Thread.sleep(250)
         }
@@ -327,19 +330,27 @@ class InventoryPessimisticConcurrencyTest {
     }
 
     companion object {
+        /**
+         * [MongoDBContainer] initiates a single-node replica set on startup, which is a
+         * requirement rather than a convenience: MongoTransactionManager cannot open a session
+         * against a standalone mongod, and this branch wires one because an Axon append spans
+         * several documents.
+         */
         @Container
         @JvmStatic
-        val postgres = PostgreSQLContainer("postgres:16-alpine")
+        val mongoDb = MongoDBContainer("mongo:7")
 
         @DynamicPropertySource
         @JvmStatic
         fun props(registry: DynamicPropertyRegistry) {
-            registry.add("spring.datasource.url", postgres::getJdbcUrl)
-            registry.add("spring.datasource.username", postgres::getUsername)
-            registry.add("spring.datasource.password", postgres::getPassword)
-            registry.add("spring.flyway.url", postgres::getJdbcUrl)
-            registry.add("spring.flyway.user", postgres::getUsername)
-            registry.add("spring.flyway.password", postgres::getPassword)
+            registry.add("spring.mongodb.uri") {
+                // directConnection=true, and it is required rather than tidy. MongoDBContainer
+                // initiates the replica set advertising the CONTAINER's hostname, which does not
+                // resolve from the host, so a discovering driver times out looking for a primary
+                // it can reach. A direct connection to that primary still supports transactions,
+                // which is what MongoTransactionManager needs.
+                "${mongoDb.getReplicaSetUrl("inventory")}?directConnection=true"
+            }
         }
     }
 }

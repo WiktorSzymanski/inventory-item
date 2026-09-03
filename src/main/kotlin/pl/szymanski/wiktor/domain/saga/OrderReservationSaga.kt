@@ -39,7 +39,7 @@ class OrderReservationSaga {
     private lateinit var commandGateway: CommandGateway
 
     // Commands are submitted here so the saga processor thread is never blocked waiting
-    // for per-aggregate locks or JDBC writes. The lock wait happens on a pool thread;
+    // for per-aggregate locks or event-store writes. The lock wait happens on a pool thread;
     // the result event arrives in the event store when the command succeeds.
     @Autowired @Transient
     @Qualifier("sagaCommandExecutor")

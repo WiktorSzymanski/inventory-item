@@ -48,38 +48,54 @@ class CommandGatewayConfig {
          * 1 that fallback now stalls every other retry's backoff, not one lane of thirty. It is
          * counted: `inventory_retry_handoff_rejected`.
          *
-         * THE CONNECTION BUDGET IS UNCHANGED, which is what makes the pair readable. One busy
-         * thread can hold TWO `axon-jdbc-pool` connections at the same time:
-         *   1. its command's Spring transaction — [AxonConfig] builds the only TransactionManager
-         *      as SpringTransactionManager over `axonDataSource`;
-         *   2. one more per event-store read/append, because the storage engine is wired with a
-         *      plain DataSourceConnectionProvider, NOT wrapped in
-         *      UnitOfWorkAwareConnectionProviderWrapper, so it calls getConnection() itself and
-         *      never joins the transaction from (1).
+         * THE THREAD WIDTHS AND THE CONNECTION BUDGET ARE BOTH UNCHANGED FROM ES-4, which is
+         * what makes the two branches comparable: they admit and execute at the same width and
+         * make the same demand of the database, and differ in the store.
+         *
+         * One busy thread holds TWO connections at the same time, for the same two reasons it
+         * does on ES-4:
+         *   1. its command's transaction — [AxonConfig] registers a SpringTransactionManager, so
+         *      Axon's TransactionManagingInterceptor opens one per command;
+         *   2. one more per event-store read/append, because [AxonConfig.axonTransactionManager]
+         *      is PROPAGATION_REQUIRES_NEW: a storage operation SUSPENDS (1) and runs in its own
+         *      session rather than joining it. On ES-4 the same separation comes from a plain
+         *      DataSourceConnectionProvider that is not UnitOfWorkAware. It is not a detail: read
+         *      that bean's doc for why joining silently breaks the cache repair path.
          * A thread that only submits opens no transaction and takes no connection, so the retry
          * lane drops out of the sum and the command lane absorbs its 30 threads:
          *
-         *     parent   2 x ( 82 command + 30 retry + 60 saga + 3 projections) = 350
-         *     here     2 x (112 command +  0 retry + 60 saga + 3 projections) = 350
+         *     two-lane  2 x ( 82 command + 30 retry + 60 saga + 3 projections) = 350
+         *     here      2 x (112 command +  0 retry + 60 saga + 3 projections) = 350
          *
-         * Same 350 that docker-compose's AXON_JDBC_POOL_SIZE default passes, same 175 executing
-         * threads, same retry policy. A run that exports a lower pool size silently breaks that.
+         * 60 is ceil(total-segments / replicas) at REPLICAS=1; the 3 are inventory-projection,
+         * order-projection and mock-kafka-publisher (reserve-metrics is SUBSCRIBING and runs on the
+         * appending thread, already counted).
          *
-         * **TOMCAT IS NOT IN THAT SUM, AND IT IS A REAL DEMANDER.** Inherited from the parent, not
-         * introduced here: `InventoryService` dispatches the accept command with `sendAndWait` on
-         * the Tomcat thread and `SimpleCommandBus` handles it THERE, so every in-flight POST holds
-         * the same two connections as any other command thread. `server.tomcat.threads.max` is 99,
-         * so true peak demand is 2 x (99 + 175) = 548 against a pool of 350; it holds only because
-         * offered load, not the thread cap, bounds how many POSTs are in flight.
+         * **The pool is 400, not ES-4's 350, and that is not extra headroom for Axon.** ES-4 runs
+         * TWO Hikari pools -- 350 for Axon and 50 for the Spring Data read models -- because a
+         * JDBC connection is pinned for a transaction and the two must not starve each other. One
+         * MongoClient serves both here, so its `maxPoolSize` is their SUM and the database-side
+         * resource the branches are given is the same number. `AXON_MONGO_POOL_SIZE` sets it, and
+         * docker-compose splices it into the connection URI; Spring reads maxPoolSize from the
+         * URI, so `axon.mongo.pool.size` in application.yaml informs the startup warning but
+         * sizes nothing.
          *
-         * Starvation does not fail cleanly, which is why the budget is written down rather than
-         * left to the run: `axonDataSource` sets connectionTimeout = 5000, and
-         * [ConcurrencyRetryScheduler] declines to retry anything without a ConcurrencyException in
-         * its cause chain — a SQLTransientConnectionException is not one. A starved command
-         * therefore stalls 5s and then fails TERMINALLY into the saga's abandon() path, whose own
-         * compensating commands need the same exhausted pool. It shows up as latency and a
-         * rejection rate, not as an obvious error. Watch
-         * `hikaricp_connections_timeout_total{pool="axon-jdbc-pool"}` on every run here.
+         * **TOMCAT IS NOT IN THAT SUM, AND IT IS A REAL DEMANDER.** `InventoryService` dispatches
+         * the accept command with `sendAndWait` on the Tomcat thread and `SimpleCommandBus` handles
+         * it THERE, so every in-flight POST holds the same two connections as any other command
+         * thread. `server.tomcat.threads.max` is 99, so true peak demand is 2 x (99 + 175) = 548
+         * against a pool of 400; it holds only because offered load, not the thread cap, bounds how
+         * many POSTs are in flight — the same way it holds on ES-4 against 350.
+         *
+         * Starvation still does not fail cleanly, which is why the budget is written down rather
+         * than left to the run: the driver blocks on `waitQueueTimeoutMS` rather than failing
+         * fast, and [ConcurrencyRetryScheduler] declines to retry anything without a
+         * ConcurrencyException in its cause chain — a MongoTimeoutException is not one. A starved
+         * command therefore stalls and then fails TERMINALLY into the saga's abandon() path, whose
+         * own compensating commands need the same exhausted pool. It shows up as latency and a
+         * rejection rate, not as an obvious error. `hikaricp_connections_timeout_total` has no
+         * counterpart; watch `mongodb_driver_pool_checkedout` against
+         * `mongodb_driver_pool_size` on every run here.
          */
         private const val RETRY_POOL_SIZE = 1
 
@@ -111,7 +127,7 @@ class CommandGatewayConfig {
          *  SUBSCRIBING and runs on the appending thread, so it is already counted. */
         internal const val SINGLE_THREADED_PROJECTIONS = 3
 
-        /** See the [RETRY_POOL_SIZE] doc: transaction + event-store connection. */
+        /** See the [RETRY_POOL_SIZE] doc: command transaction + event-store transaction. */
         internal const val CONNECTIONS_PER_BUSY_THREAD = 2
     }
 

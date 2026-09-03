@@ -39,7 +39,7 @@ class RetryDispatchTargetTest {
         meterRegistry = SimpleMeterRegistry(),
     )
 
-    private fun conflict() = ConcurrencyException("simulated 23505")
+    private fun conflict() = ConcurrencyException("simulated duplicate key")
 
     @Test
     fun `the retried command is executed by the command executor, not on the retry thread`() {
@@ -105,17 +105,30 @@ class RetryDispatchTargetTest {
      * headline property — same connection budget as its parent — drifting silently.
      */
     @Test
-    fun `the executing lanes consume exactly the Axon pool docker-compose passes`() {
+    fun `the executing lanes match ES-4 in width and fit inside the Mongo pool`() {
         val busyThreads = CommandGatewayConfig.COMMAND_POOL_SIZE +
             CommandGatewayConfig.SAGA_SEGMENT_THREADS +
             CommandGatewayConfig.SINGLE_THREADED_PROJECTIONS
-        val peakDemand = CommandGatewayConfig.CONNECTIONS_PER_BUSY_THREAD * busyThreads
 
+        // The THREAD widths are what has to match ES-4. They are the admission and execution
+        // shape, and holding them equal is what makes an ES-4 vs ES-4-mongo run a comparison of
+        // the store rather than of two differently-resourced applications.
+        assertEquals(
+            175, busyThreads,
+            "executing width changed; ES-4 runs 112 + 60 + 3 and the cross-store comparison " +
+                "stops isolating the store the moment this diverges",
+        )
+
+        // The CONNECTION demand matches ES-4 too, and for the same two reasons: the command's
+        // transaction plus the event store's own. AxonConfig.axonTransactionManager is
+        // PROPAGATION_REQUIRES_NEW so a storage operation suspends the command's transaction
+        // rather than joining it -- the Mongo counterpart of ES-4's non-UnitOfWorkAware
+        // DataSourceConnectionProvider, and load-bearing for the cache repair path.
+        val peakDemand = CommandGatewayConfig.CONNECTIONS_PER_BUSY_THREAD * busyThreads
         assertEquals(
             350, peakDemand,
-            "peak demand changed; either AXON_JDBC_POOL_SIZE must follow or the parity with " +
-                "ES-4-NullLock's 2 x (82 + 30 + 60 + 3) = 350 is broken and the pair stops being " +
-                "a topology-only A/B",
+            "peak connection demand changed; ES-4 spends the same 350 and AXON_MONGO_POOL_SIZE " +
+                "(400, which also serves the read models ES-4 gives a separate 50) must cover it",
         )
     }
 }

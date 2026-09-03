@@ -12,12 +12,17 @@ import java.util.Optional
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
-// ES-2: records state_load_time{phase} for aggregate load breakdown:
-//   snapshot — JDBC read of the snapshot row
-//   events   — JDBC fetch of all event rows (eager, before replay starts)
+// ES-2-mongo: records state_load_time{phase} for aggregate load breakdown. Identical in name,
+// tags and meaning to ES-2's -- the whole point of this branch is that the two are comparable --
+// only the I/O underneath each phase is a MongoDB query rather than a JDBC statement:
+//   snapshot — the snapshot_event_entry lookup
+//   events   — the domain_event_entry fetch of the whole stream (eager, before replay starts)
 //   replay   — in-memory @EventSourcingHandler application of buffered events
 //   total    — end-to-end from first I/O call to aggregate fully replayed
 //   load     — the whole write-path load for an aggregate with no repository envelope; see below
+//
+// `snapshot` and `events` are the two that move between the branches, and they are where an
+// ES-2 vs ES-2-mongo difference should show up first.
 //
 // Every sample also carries {aggregate}, the Axon aggregate type. Without it the four phases sum
 // two unrelated populations into one histogram: this application loads OrderAggregate from the
@@ -47,13 +52,13 @@ class TimedEventStorageEngine(
                 .register(meterRegistry)
         }
 
-    // ES write path: times the synchronous JDBC INSERT of appended event rows.
+    // ES write path: times the synchronous insert of the appended event documents.
     // Mirrors the TO branch's state_persist_time{source=db_write} for TO-vs-ES write-cost comparison.
     private val appendTimer = Timer.builder("state_persist_time").tag("source", "db_write").register(meterRegistry)
 
     /**
-     * One aggregate load, spanning readSnapshot → readEvents → stream exhaustion. JDBC aggregate
-     * loading is synchronous on a single IO thread, so a ThreadLocal is safe here.
+     * One aggregate load, spanning readSnapshot → readEvents → stream exhaustion. Aggregate
+     * loading is synchronous on a single thread on either store, so a ThreadLocal is safe here.
      *
      * [snapshotNanos] is a raw elapsed time rather than a [Timer.Sample] because the snapshot phase
      * cannot be RECORDED at its own call site: the aggregate type is unknown when `readSnapshot`
@@ -84,9 +89,10 @@ class TimedEventStorageEngine(
 
     // Kotlin `by` delegation does not forward Java `default` interface methods — it inherits
     // the default body instead of calling delegate.method(). These three methods are `default`
-    // in EventStorageEngine (all throw UnsupportedOperationException); AbstractEventStorageEngine
-    // overrides them with real implementations that JdbcEventStorageEngine inherits. Without
-    // these explicit overrides the TrackingEventProcessors fail to initialise their segments.
+    // in EventStorageEngine (all throw UnsupportedOperationException); MongoEventStorageEngine
+    // overrides all three with real implementations. Without these explicit overrides the
+    // TrackingEventProcessors fail to initialise their segments. The trap is identical on the
+    // JDBC engine ES-2 wraps, so do not remove them when porting either way.
     override fun createHeadToken(): TrackingToken? = delegate.createHeadToken()
     override fun createTailToken(): TrackingToken? = delegate.createTailToken()
     override fun createTokenAt(dateTime: Instant): TrackingToken? = delegate.createTokenAt(dateTime)
@@ -100,7 +106,7 @@ class TimedEventStorageEngine(
         val start = System.nanoTime()
         val snapshot = delegate.readSnapshot(aggregateIdentifier)
         // Recorded in readEvents, not here: an empty result carries no aggregate type. An empty
-        // lookup is still a full JDBC round trip and belongs in the phase.
+        // lookup is still a full round trip to the server and belongs in the phase.
         session.snapshotNanos = System.nanoTime() - start
         session.snapshotType = snapshot.orElse(null)?.type
         return snapshot
@@ -115,8 +121,8 @@ class TimedEventStorageEngine(
         val path = AggregateLoadPath.current
         val emitLoad = shouldEmitLoadPhase(path)
 
-        // Eagerly buffer all event rows so "events" captures only JDBC fetch time,
-        // while "replay" captures only the subsequent @EventSourcingHandler applications.
+        // Eagerly buffer the whole stream so "events" captures only fetch time, while "replay"
+        // captures only the subsequent @EventSourcingHandler applications.
         val eventsSample = Timer.start(meterRegistry)
         val inner = delegate.readEvents(aggregateIdentifier, firstSequenceNumber)
         val buffer = mutableListOf<DomainEventMessage<*>>()

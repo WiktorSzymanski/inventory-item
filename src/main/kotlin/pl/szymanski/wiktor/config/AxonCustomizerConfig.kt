@@ -16,7 +16,7 @@ class AxonCustomizerConfig {
     fun configureProcessors(
         configurer: EventProcessingConfigurer,
         sagaProps: SagaProcessorProperties,
-        @Value("\${axon.jdbc.pool.size:50}") axonPoolSize: Int,
+        @Value("\${axon.mongo.pool.size:100}") mongoPoolSize: Int,
     ) {
         configurer
             .registerTrackingEventProcessor("inventory-projection")
@@ -51,29 +51,30 @@ class AxonCustomizerConfig {
                 .andInitialTrackingToken { source -> source.createHeadToken() }
                 .andBatchSize(100)
         }
-        logPoolBudget(sagaProps, sagaThreadsPerNode, axonPoolSize)
+        logPoolBudget(sagaProps, sagaThreadsPerNode, mongoPoolSize)
     }
 
     /**
      * The connection budget for the configuration that is ACTUALLY running.
      *
      * [CommandGatewayConfig.SAGA_SEGMENT_THREADS] hardcodes the default 60 so
-     * RetryDispatchTargetTest can assert `2 x (112 + 60 + 3) = 350` without a Spring
+     * RetryDispatchTargetTest can assert `1 x (112 + 60 + 3) = 175` without a Spring
      * context. Once `AXON_SAGA_TOTAL_SEGMENTS` can move the real count, that assertion
      * no longer describes every run, and the failure mode it guards against is silent:
-     * CommandGatewayConfig documents that a starved command stalls on the 5s
-     * connectionTimeout and then fails TERMINALLY into the saga's abandon() path,
-     * because a SQLTransientConnectionException is not a ConcurrencyException and is
-     * therefore not retried. It surfaces as latency and a rejection rate, not an error.
+     * CommandGatewayConfig documents that a starved command blocks on the driver's
+     * waitQueueTimeoutMS and then fails TERMINALLY into the saga's abandon() path,
+     * because a MongoTimeoutException is not a ConcurrencyException and is therefore not
+     * retried. It surfaces as latency and a rejection rate, not an error.
      *
      * Only one direction is dangerous. FEWER segments shrink demand -- the pool is merely
-     * oversized. MORE than the default push demand past the 350 that docker-compose
-     * passes, so that case warns.
+     * oversized. MORE than the default push demand up, so that case warns. The headroom
+     * here is much larger than on ES-2 (175 against 400 rather than 350 against 350),
+     * because the Mongo driver holds one connection per busy thread instead of two.
      */
     private fun logPoolBudget(
         sagaProps: SagaProcessorProperties,
         sagaThreadsPerNode: Int,
-        axonPoolSize: Int,
+        mongoPoolSize: Int,
     ) {
         val busyThreads = CommandGatewayConfig.COMMAND_POOL_SIZE +
             sagaThreadsPerNode +
@@ -84,13 +85,13 @@ class AxonCustomizerConfig {
             "${CommandGatewayConfig.CONNECTIONS_PER_BUSY_THREAD} x " +
             "(${CommandGatewayConfig.COMMAND_POOL_SIZE} command + $sagaThreadsPerNode saga + " +
             "${CommandGatewayConfig.SINGLE_THREADED_PROJECTIONS} projections) = $peakDemand " +
-            "| axon pool = $axonPoolSize"
-        if (peakDemand > axonPoolSize) {
+            "| mongo pool = $mongoPoolSize"
+        if (peakDemand > mongoPoolSize) {
             log.warn(
-                "[POOLS] {} -- OVERSUBSCRIBED. Commands will stall 5s on connectionTimeout and " +
+                "[POOLS] {} -- OVERSUBSCRIBED. Commands will block on the driver's wait queue and " +
                 "fail terminally into the saga's abandon() path, showing up as latency and " +
                 "rejections rather than errors. Lower AXON_SAGA_TOTAL_SEGMENTS or raise " +
-                "AXON_JDBC_POOL_SIZE (and PG max_connections with it).",
+                "AXON_MONGO_POOL_SIZE.",
                 budget,
             )
         } else {

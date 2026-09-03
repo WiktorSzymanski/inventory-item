@@ -23,12 +23,15 @@ repositories {
 dependencies {
     implementation(platform(SpringBootPlugin.BOM_COORDINATES))
     implementation("org.springframework.boot:spring-boot-starter-web")
-    implementation("org.springframework.boot:spring-boot-starter-data-jdbc")
+    implementation("org.springframework.boot:spring-boot-starter-data-mongodb")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("io.micrometer:micrometer-registry-prometheus")
-    implementation("org.postgresql:postgresql")
-    implementation("org.springframework.boot:spring-boot-starter-flyway")
-    implementation("org.flywaydb:flyway-database-postgresql")
+    // The Axon MongoDB extension: MongoEventStorageEngine, MongoTokenStore, MongoSagaStore.
+    // 4.11.1 is the release that pairs with Axon 4.11.2 above. It depends on mongodb-driver-sync
+    // ONLY -- it drags in no Spring Data types -- which is what lets it coexist with whatever
+    // Spring Data MongoDB version the Boot BOM picks. See MongoStoreConfig for why the template
+    // is hand-written rather than taken from axon-mongo-spring-boot-starter.
+    implementation("org.axonframework.extensions.mongo:axon-mongo:4.11.1")
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:3.0.0")
     implementation("tools.jackson.module:jackson-module-kotlin:3.0.4")
     implementation("org.axonframework:axon-spring-boot-starter:4.11.2")
@@ -40,7 +43,7 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-starter-test") {
         exclude(group = "org.junit.vintage", module = "junit-vintage-engine")
     }
-    testImplementation("org.testcontainers:postgresql:1.20.4")
+    testImplementation("org.testcontainers:mongodb:1.20.4")
     testImplementation("org.testcontainers:junit-jupiter:1.20.4")
     testImplementation("io.mockk:mockk:1.13.13")
     testImplementation("com.ninja-squad:springmockk:4.0.2")

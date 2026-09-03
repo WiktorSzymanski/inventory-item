@@ -87,7 +87,7 @@ class ApplicationTest {
     @Test
     fun `GET order returns 200 with status and failureReason`() {
         every { orderRepository.findById("ORDER-1") } returns
-            Optional.of(OrderProjection("ORDER-1", "user-1", "REJECTED", mapOf("ITEM-001" to 5), "Insufficient stock"))
+            Optional.of(OrderProjection("ORDER-1", "user-1", "REJECTED", mapOf("ITEM-001" to 5), failureReason = "Insufficient stock"))
 
         mockMvc.get("/inventory/orders/ORDER-1")
             .andExpect {
