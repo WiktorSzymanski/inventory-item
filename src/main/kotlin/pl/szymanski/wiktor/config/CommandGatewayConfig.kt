@@ -73,8 +73,11 @@ class CommandGatewayConfig {
          * appending thread, already counted). The 350 comes from docker-compose's
          * `AXON_JDBC_POOL_SIZE` default, which OVERRIDES the 300 in application.yaml — the branch
          * cannot set this for itself, so a run that exports a lower value silently reopens the
-         * shortfall. Keep REPLICAS x (50 + AXON_JDBC_POOL_SIZE) <= PG_MAX_CONNECTIONS (default 600,
-         * so REPLICAS=1 fits; raise it above that).
+         * shortfall. So does a run that exports `COMMAND_POOL` above 112 without moving
+         * AXON_JDBC_POOL_SIZE with it: the command term in that sum is the knob, and it is the term
+         * with the largest coefficient. Watch the [POOLS] line, which recomputes the whole sum from
+         * what is actually configured. Keep REPLICAS x (50 + AXON_JDBC_POOL_SIZE) <=
+         * PG_MAX_CONNECTIONS (default 600, so REPLICAS=1 fits; raise it above that).
          *
          * **TOMCAT IS NOT IN THAT SUM, AND IT IS A REAL DEMANDER.** `InventoryService` dispatches
          * the accept command with `sendAndWait` on the Tomcat thread and `SimpleCommandBus` handles
@@ -95,14 +98,23 @@ class CommandGatewayConfig {
         private const val RETRY_POOL_SIZE = 1
 
         /**
-         * The ONLY execution width on this branch: first attempts, retries and the saga's terminal
-         * dispositions all run here. 112 = the 82 the two-lane shape used + the 30 the retry lane
-         * no longer executes on, which is what keeps the connection budget above identical to it.
+         * The DEFAULT width of the only execution lane on this branch: first attempts, retries and
+         * the saga's terminal dispositions all run here. 112 = the 82 the two-lane shape used + the
+         * 30 the retry lane no longer executes on, which is what keeps the connection budget above
+         * identical to it.
          *
-         * `internal` rather than `private` so [RetryDispatchTargetTest] can assert that arithmetic
-         * without standing up a context.
+         * A DEFAULT, not the width. [SagaProcessorProperties.commandPoolSize] is what actually
+         * sizes the pool and is overridable per run via `COMMAND_POOL`, exactly as
+         * `AXON_SAGA_TOTAL_SEGMENTS` moves the segment count. Both sides of the budget arithmetic
+         * are therefore per-run, and neither is knowable from this file — AxonCustomizerConfig
+         * logs the RESOLVED budget at startup and warns when it exceeds the pool. That warning is
+         * the check that covers a run with either override set; the assertion in
+         * [RetryDispatchTargetTest] only describes the default run.
+         *
+         * `internal` rather than `private` so that assertion can be made without standing up a
+         * context, and so [SagaProcessorProperties] can default to it.
          */
-        internal const val COMMAND_POOL_SIZE = 112
+        internal const val DEFAULT_COMMAND_POOL_SIZE = 112
 
         /**
          * ceil(total-segments / replicas) at REPLICAS=1 **for the DEFAULT configuration**;
@@ -169,13 +181,18 @@ class CommandGatewayConfig {
 
     @Bean(destroyMethod = "shutdown")
     @Qualifier("sagaCommandExecutor")
-    fun sagaCommandExecutor(meterRegistry: MeterRegistry): Executor {
+    fun sagaCommandExecutor(meterRegistry: MeterRegistry, sagaProps: SagaProcessorProperties): Executor {
+        // Fail loudly rather than let ThreadPoolExecutor's own IllegalArgumentException surface
+        // from deep inside context refresh: COMMAND_POOL is set per run from a shell, and a typo
+        // that lands on 0 would otherwise read as an unrelated startup failure.
+        val width = sagaProps.commandPoolSize
+        require(width >= 1) { "axon.saga.command-pool-size (COMMAND_POOL) must be >= 1, was $width" }
         // Equivalent to Executors.newFixedThreadPool(n), spelled out so the concrete
         // ThreadPoolExecutor stays visible to monitorPool below — Executors' wrapper hides
         // activeCount and the queue behind the ExecutorService interface.
         val pool = ThreadPoolExecutor(
-            COMMAND_POOL_SIZE,
-            COMMAND_POOL_SIZE,
+            width,
+            width,
             0L,
             TimeUnit.MILLISECONDS,
             LinkedBlockingQueue(),

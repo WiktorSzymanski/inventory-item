@@ -28,6 +28,13 @@ axon:
     # no manual reset; a hand-run stack on a pre-existing volume keeps the old count.
     total-segments: ${AXON_SAGA_TOTAL_SEGMENTS:60}   # per-run override; 60 divides 2/3/4/5/6 replicas
     replicas: ${API_REPLICAS:1}     # must equal REPLICAS in .env; claim = ceil(total/replicas)
+    # Width of the saga-command pool — the only execution lane here. Read at bean creation, so
+    # unlike total-segments a change needs no token reset. It is HALF the connection budget:
+    # peak demand is 2 x (command-pool-size + ceil(total-segments/replicas) + 3 projections), and
+    # 112 is what makes that 350 at the defaults, i.e. exactly the AXON_JDBC_POOL_SIZE
+    # docker-compose passes. Raise it and raise that pool with it, or the [POOLS] line logged at
+    # startup will warn and commands will start failing terminally on connectionTimeout.
+    command-pool-size: ${COMMAND_POOL:112}
   jdbc:
     pool:
       # Must comfortably exceed the saga per-node claim (ceil(total-segments/replicas) = 60

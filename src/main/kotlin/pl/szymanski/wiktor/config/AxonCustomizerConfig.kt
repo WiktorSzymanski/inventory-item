@@ -54,40 +54,46 @@ class AxonCustomizerConfig {
     /**
      * The connection budget for the configuration that is ACTUALLY running.
      *
-     * [CommandGatewayConfig.SAGA_SEGMENT_THREADS] hardcodes the default 60 so
+     * [CommandGatewayConfig.SAGA_SEGMENT_THREADS] and
+     * [CommandGatewayConfig.DEFAULT_COMMAND_POOL_SIZE] hardcode the defaults so
      * RetryDispatchTargetTest can assert `2 x (112 + 60 + 3) = 350` without a Spring
-     * context. Once `AXON_SAGA_TOTAL_SEGMENTS` can move the real count, that assertion
-     * no longer describes every run, and the failure mode it guards against is silent:
+     * context. `AXON_SAGA_TOTAL_SEGMENTS` and `COMMAND_POOL` both move the real numbers,
+     * so that assertion no longer describes every run, and the failure mode it guards
+     * against is silent:
      * CommandGatewayConfig documents that a starved command stalls on the 5s
      * connectionTimeout and then fails TERMINALLY into the saga's abandon() path,
      * because a SQLTransientConnectionException is not a ConcurrencyException and is
      * therefore not retried. It surfaces as latency and a rejection rate, not an error.
      *
-     * Only one direction is dangerous. FEWER segments shrink demand -- the pool is merely
-     * oversized. MORE than the default push demand past the 350 that docker-compose
-     * passes, so that case warns.
+     * Both terms are read from what is configured rather than from those constants, which
+     * is the whole point of logging this at startup instead of asserting it in a test.
+     *
+     * Only one direction is dangerous. FEWER segments or a NARROWER command pool shrink
+     * demand -- the pool is merely oversized. More of either pushes demand past the 350
+     * that docker-compose passes, so that case warns.
      */
     private fun logPoolBudget(
         sagaProps: SagaProcessorProperties,
         sagaThreadsPerNode: Int,
         axonPoolSize: Int,
     ) {
-        val busyThreads = CommandGatewayConfig.COMMAND_POOL_SIZE +
+        val commandPoolSize = sagaProps.commandPoolSize
+        val busyThreads = commandPoolSize +
             sagaThreadsPerNode +
             CommandGatewayConfig.SINGLE_THREADED_PROJECTIONS
         val peakDemand = CommandGatewayConfig.CONNECTIONS_PER_BUSY_THREAD * busyThreads
         val budget = "segments=${sagaProps.totalSegments} replicas=${sagaProps.replicas} " +
-            "threads=$sagaThreadsPerNode | peak demand = " +
+            "threads=$sagaThreadsPerNode commandPool=$commandPoolSize | peak demand = " +
             "${CommandGatewayConfig.CONNECTIONS_PER_BUSY_THREAD} x " +
-            "(${CommandGatewayConfig.COMMAND_POOL_SIZE} command + $sagaThreadsPerNode saga + " +
+            "($commandPoolSize command + $sagaThreadsPerNode saga + " +
             "${CommandGatewayConfig.SINGLE_THREADED_PROJECTIONS} projections) = $peakDemand " +
             "| axon pool = $axonPoolSize"
         if (peakDemand > axonPoolSize) {
             log.warn(
                 "[POOLS] {} -- OVERSUBSCRIBED. Commands will stall 5s on connectionTimeout and " +
                 "fail terminally into the saga's abandon() path, showing up as latency and " +
-                "rejections rather than errors. Lower AXON_SAGA_TOTAL_SEGMENTS or raise " +
-                "AXON_JDBC_POOL_SIZE (and PG max_connections with it).",
+                "rejections rather than errors. Lower COMMAND_POOL or AXON_SAGA_TOTAL_SEGMENTS, " +
+                "or raise AXON_JDBC_POOL_SIZE (and PG max_connections with it).",
                 budget,
             )
         } else {
