@@ -417,6 +417,11 @@ meta = {
     # runs of the same commit can differ here. Meaningless for every other variant, which binds
     # the property and never reads it.
     "saga_intake_capacity": int("${AXON_SAGA_INTAKE_CAPACITY:-112}"),
+    # The saga-command pool width, for the same reason, and it matters more than the other two:
+    # it sets the connection budget as 2 x (command_pool + saga threads + 3), so a run that moved
+    # it is not comparable to one that did not even at the same commit. Default here mirrors
+    # docker-compose's.
+    "command_pool": int("${COMMAND_POOL:-112}"),
     "k6_exit_code": int("$K6_EXIT"),
     "config": config,
     "steps": steps,

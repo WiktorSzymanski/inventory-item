@@ -60,6 +60,28 @@ services:
       # Recorded in meta.json as saga_intake_capacity, since two runs of the same commit differ by
       # it. Unlike AXON_SAGA_TOTAL_SEGMENTS it needs no token reset — it is read at bean creation.
       AXON_SAGA_INTAKE_CAPACITY: "${AXON_SAGA_INTAKE_CAPACITY:-70}"
+      # ES only (ES-2, ES-4 and the branches ported from them); every other variant binds it and
+      # ignores it. The width of the `saga-command` pool — the ONLY execution lane on those
+      # branches, since ConcurrencyRetryScheduler hands a retried command back to it instead of
+      # running it on the retry thread. First attempts, retries and the saga's terminal
+      # dispositions all execute here.
+      #
+      # IT MOVES THE CONNECTION BUDGET, which is why it is not a free knob. Each busy thread holds
+      # two `axon-jdbc-pool` connections (its Spring transaction + one unjoined event-store
+      # connection), so peak demand is 2 x (COMMAND_POOL + saga segment threads + 3 projections)
+      # and the default 112 is chosen to consume AXON_JDBC_POOL_SIZE=350 exactly at
+      # AXON_SAGA_TOTAL_SEGMENTS=60. Raising it without raising AXON_JDBC_POOL_SIZE (and
+      # PG_MAX_CONNECTIONS with it) starves commands, and starvation does NOT fail cleanly: a
+      # command stalls 5s on connectionTimeout and then fails TERMINALLY into the saga's abandon()
+      # path, showing up as latency and rejections rather than errors. AxonCustomizerConfig logs
+      # the resolved budget as [POOLS] at startup and warns when it exceeds the pool — read that
+      # line on any run that sets this.
+      #
+      #     COMMAND_POOL=64 scripts/run-suite.sh --only ES-4
+      #
+      # Recorded in meta.json as command_pool, since two runs of the same commit differ by it.
+      # Like AXON_SAGA_INTAKE_CAPACITY it needs no token reset — it is read at bean creation.
+      COMMAND_POOL: "${COMMAND_POOL:-112}"
       POOLING_INTERVAL:    "${POOLING_INTERVAL:-PT0.1S}"
       CACHE_TTL:           "${CACHE_TTL:-10m}"
       CACHE_MAXIMUM_SIZE:  "${CACHE_MAXIMUM_SIZE:-10000}"
