@@ -676,9 +676,27 @@ class VerifierReadsTheDashboardsConstants(unittest.TestCase):
 
     def test_the_committed_dashboards_declare_the_constants_it_needs(self):
         """bench-runs must carry $job as a constant, or the verifier silently falls back to the
-        DEFAULT_VARS literal and the drift this test exists to prevent is back."""
-        self.assertIn("job", self.constants("bench-runs"))
-        self.assertEqual(self.constants("bench-runs")["job"], "inventory|inventory-mgmt")
+        DEFAULT_VARS literal and the drift this test exists to prevent is back.
+
+        The VALUE is not pinned to a literal here, unlike on `main`, and deliberately: runs.py
+        builds it as the alternation of every prom_job in the archive it was generated from, so
+        pinning it would assert a property of one archive rather than of the generator. On this
+        branch that alternation is just `inventory` -- k6/bench/common.sh routes only
+        TO-2-fix-A/B to the `inventory-mgmt` job, and neither is registered here -- but it
+        would widen the moment a mongo variant gained a management connector, and this test
+        must not fail for that.
+
+        What still has to hold, and is what the `job=~` matcher in spec.py depends on, is that
+        every component of the constant is a job prometheus.yml actually scrapes. A constant
+        naming a job nothing emits renders every panel "No data", which reads as a missing
+        snapshot rather than a one-word label mismatch."""
+        constants = self.constants("bench-runs")
+        self.assertIn("job", constants)
+        scraped = {"inventory", "inventory-mgmt"}
+        self.assertTrue(constants["job"], "the $job constant is empty")
+        for job in constants["job"].split("|"):
+            with self.subTest(job=job):
+                self.assertIn(job, scraped)
 
     def test_no_default_carries_a_job_or_container_name_the_stack_dropped(self):
         """The `-to`/`-es` suffixes were removed from every job, database and container name."""
