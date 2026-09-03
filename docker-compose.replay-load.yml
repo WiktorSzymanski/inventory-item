@@ -87,7 +87,7 @@ services:
     image: alpine:3.20
     volumes:
       - ${RUNS_DIR:-./bench-results}:/runs:ro
-      - bench-replay-data:/prometheus
+      - bench-replay-mongo:/prometheus
     entrypoint: ["/bin/sh", "-euc"]
     command:
       - |
@@ -134,7 +134,7 @@ services:
     entrypoint: ["/bin/promtool"]
     command: ["tsdb", "create-blocks-from", "openmetrics", "/staging/markers.om", "/prometheus"]
     volumes:
-      - bench-replay-data:/prometheus
+      - bench-replay-mongo:/prometheus
       - replay-staging:/staging:ro
     depends_on:
       replay-archive:
@@ -152,8 +152,8 @@ volumes:
   #
   # REPLAY_VOLUME exists so a throwaway target can be named for testing this file, e.g.
   # REPLAY_VOLUME=bench-replay-test. Leave it unset for real use.
-  bench-replay-data:
-    name: ${REPLAY_VOLUME:-bench-replay-data}
+  bench-replay-mongo:
+    name: ${REPLAY_VOLUME:-bench-replay-mongo}
 
   # Hand-off between replay-scan and replay-markers, project-scoped and disposable: it holds
   # one OpenMetrics file that is rewritten from the runs on every load.

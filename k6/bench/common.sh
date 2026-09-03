@@ -12,7 +12,7 @@ export REPO_ROOT
 # Keeping these as overridable defaults rather than hardcoding them lets a one-off manual
 # run point at a differently-named stack without editing the harness.
 API_SVC="${API_SVC:-api}"
-DB_SVC="${DB_SVC:-postgres}"
+DB_SVC="${DB_SVC:-mongo}"
 # Which scrape job carries this variant's app metrics, and which port its /actuator lives on.
 #
 # Variants listed here give actuator its own connector via `management.server.port`, so that a
@@ -42,9 +42,12 @@ export MGMT_PORT
 # anchors regexes fully, so this matches the api container and no sibling.
 API_CONTAINER_RE="${API_CONTAINER_RE:-api}"
 DB_NAME="${DB_NAME:-inventory}"
-DB_USER="${DB_USER:-inventory}"
+# No DB_USER. mongod runs without authentication here, exactly as the Postgres stack runs
+# with a fixed throwaway password: the database is a per-run scratch container on a private
+# compose network, and a credential would be one more thing to keep in step between the
+# compose file, the branches' URIs and this harness.
 VARIANT_FAMILY="${VARIANT_FAMILY:-}"
-export API_SVC DB_SVC PROM_JOB API_CONTAINER_RE DB_NAME DB_USER VARIANT_FAMILY
+export API_SVC DB_SVC PROM_JOB API_CONTAINER_RE DB_NAME VARIANT_FAMILY
 
 : "${VARIANT:?VARIANT must be set (scripts/run-suite.sh sets it from variants.env)}"
 # Guarded here for the same reason VARIANT is, and just as loudly. docker-compose.yml
@@ -78,9 +81,37 @@ export PROM_URL REPORTER_URL HEALTH_URL BENCH_BASE_URL
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 die() { printf '[%s] FATAL: %s\n' "$(date +%H:%M:%S)" "$*" >&2; exit 1; }
 
-# Single-value SQL query against the app database.
-psql_q() {
-    dc exec -T "$DB_SVC" psql -U "$DB_USER" -d "$DB_NAME" -tAqc "$1" 2>/dev/null | tr -d '[:space:]'
+# Block until mongod is a writable PRIMARY, not merely reachable.
+#
+# THIS IS NOT BELT-AND-BRACES; without it the first reset of every fresh stack fails with
+# "MongoServerError: node is not in primary or recovering state". `docker compose up -d`
+# returns when containers have STARTED, not when the one-shot mongo-init has finished, and
+# the `service_completed_successfully` gate in docker-compose.yml only covers the `api`
+# service -- which bench.sh does not start at that point. So the harness's own first query
+# races rs.initiate(), and mongo's healthcheck cannot help: it is a ping, and a mongod with
+# no initiated replica set answers it happily.
+#
+# Polling hello() rather than waiting on the init container is deliberate: it is also correct
+# on a stack whose mongo-init exited minutes ago, which is what a hand-run reset.sh sees.
+wait_for_mongo_primary() {
+    local timeout="${1:-60}" deadline
+    deadline=$(( $(date +%s) + timeout ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if [ "$(dc exec -T "$DB_SVC" mongosh --quiet --eval \
+                 'db.hello().isWritablePrimary' 2>/dev/null | tr -d '[:space:]')" = "true" ]; then
+            return 0
+        fi
+        sleep 1
+    done
+    die "mongo did not become PRIMARY within ${timeout}s -- is mongo-init failing? (docker logs mongo-init)"
+}
+
+# Single-value query against the app database. The mongosh counterpart of the Postgres
+# harness's psql_q, and used the same way: pass an expression, get one bare value back.
+#
+# --quiet suppresses the shell banner; without it every caller would have to strip it.
+mongo_q() {
+    dc exec -T "$DB_SVC" mongosh --quiet --eval "$1" "$DB_NAME" 2>/dev/null | tr -d '[:space:]'
 }
 
 # Count of orders that have not yet reached a terminal state.
@@ -88,13 +119,18 @@ psql_q() {
 # but both schemas DEFAULT the status column to 'PENDING', so counting PENDING is the one
 # query that means the same thing on all 11 branches.
 #
-# NOTE this is a SEQUENTIAL SCAN: `orders` is indexed only on its order_id primary key.
-# It is therefore called exactly twice per run (once to size the backlog, once to confirm
-# it cleared) and never in the polling loop -- see drain_wait.
+# NOTE this is a COLLECTION SCAN: `orders` carries no index on `status`, only the _id one
+# Mongo creates for it. It is therefore called exactly twice per run (once to size the
+# backlog, once to confirm it cleared) and never in the polling loop -- see drain_wait.
 pending_orders() {
     local n
-    n=$(psql_q "SELECT count(*) FROM orders WHERE status = 'PENDING'")
-    [ -n "$n" ] && echo "$n" || echo "-1"
+    n=$(mongo_q 'db.orders.countDocuments({status: "PENDING"})')
+    # A count is all digits; anything else is mongosh reporting a problem on stdout, and
+    # must not be mistaken for a backlog of zero.
+    case "$n" in
+        ''|*[!0-9]*) echo "-1" ;;
+        *)           echo "$n" ;;
+    esac
 }
 
 # In-flight orders straight from Prometheus: admitted (202) minus terminal (e2e recorded).
@@ -119,12 +155,12 @@ except Exception:
 # Poll the order backlog to zero. Echoes the backlog observed at entry, then "drained"
 # or "timeout", then the elapsed seconds -- one field per line.
 #
-# The polling signal is Prometheus, NOT Postgres. Prometheus is already scraping the API
+# The polling signal is Prometheus, NOT the database. Prometheus is already scraping the API
 # every 5s, so reading the in-flight difference costs the system under test nothing. The
 # obvious alternative -- re-running the PENDING count every couple of seconds -- would
-# seq-scan the orders table against the very database whose drain rate is being measured,
-# and would get steadily more expensive as the table grows, biasing the tail of the drain
-# window. Postgres is still consulted twice, for the exact entry and exit counts.
+# collection-scan `orders` against the very database whose drain rate is being measured,
+# and would get steadily more expensive as the collection grows, biasing the tail of the
+# drain window. Mongo is still consulted twice, for the exact entry and exit counts.
 drain_wait() {
     local timeout="${1:-900}" start backlog now inflight tail
     start=$(date +%s)
@@ -165,7 +201,7 @@ drain_wait() {
 # at startup and no other artifact records the arm.
 #
 # WHICH containers: the service under test and its database. The monitoring sidecars
-# (prometheus, grafana, cadvisor, postgres-exporter) are harness, not subject; their output
+# (prometheus, grafana, cadvisor, mongodb-exporter) are harness, not subject; their output
 # says nothing about the variant and would be bulk in every run directory.
 #
 # WHY --since, and why it is not optional. reset.sh does `stop` + `up -d`, which RESTARTS

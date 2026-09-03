@@ -103,10 +103,63 @@ class MergeCoverage(unittest.TestCase):
         "r2dbc_pool_max_allocated_connections",
     }
 
+    # Names that exist on `main` and CANNOT exist here, because this branch's stack has no
+    # PostgreSQL in it and its variants hold no DataSource. They are not "lost in the merge" --
+    # there is nothing left that could emit them:
+    #
+    #   pg_*         supplied by postgres-exporter, which mongodb-exporter replaced. There is
+    #                no postgres service and monitoring/postgres-exporter/ is deleted.
+    #   hikaricp_*   Micrometer instruments a DataSource. The ES-*-mongo branches hold one
+    #                MongoClient and no DataSource, so the meters are never registered.
+    #
+    # Removing them from OLD_METRICS instead would have been the smaller edit and the wrong one:
+    # OLD_METRICS is the record of what the three pre-merge dashboards measured, and losing that
+    # record is how a signal quietly stops being watched. Listing them here says the coverage
+    # moved rather than disappeared, and REPLACED_BY below is what proves it moved.
+    STORE_SPECIFIC = {m for m in OLD_METRICS if m.startswith(("pg_", "hikaricp_"))}
+
+    # The other half of the claim, and the reason STORE_SPECIFIC is not just an exemption list:
+    # every question the Postgres panels answered must still be answerable here. Each entry is
+    # (what it answered, the metric that answers it now). Verified against a live
+    # percona/mongodb_exporter:0.53.0 -- see the Section("MongoDB", ...) header in spec.py for
+    # the two names whose documented spelling did not match the exporter's.
+    REPLACED_BY = {
+        "bytes on disk":            "mongodb_dbstats_storageSize",
+        "index bytes":              "mongodb_dbstats_indexSize",
+        "write-ahead log volume":   "mongodb_mongod_wiredtiger_log_bytes_total",
+        "server connections":       "mongodb_ss_connections",
+        "transaction rate":         "mongodb_ss_transactions_totalCommitted",
+        "rollback / conflict rate": "mongodb_ss_transactions_totalAborted",
+        "row/document operations":  "mongodb_ss_opcounters",
+        "buffer cache hit ratio":   "mongodb_ss_wt_cache_pages_requested_from_the_cache",
+        "rows per relation":        "mongodb_collstats_storageStats_count",
+        "writes per relation":      "mongodb_top_update_count",
+        "lock contention":          "mongodb_ss_globalLock_currentQueue",
+        "backends in flight":       "mongodb_ss_globalLock_activeClients_writers",
+        "checkpoint cost":          "mongodb_mongod_wiredtiger_transactions_checkpoint_milliseconds_total",
+        "pool in use vs capacity":  "mongodb_driver_pool_checkedout",
+        "pool exhaustion":          "mongodb_driver_pool_checkoutfailed_total",
+        "connection acquire time":  "mongodb_driver_commands_seconds_sum",
+    }
+
     def test_no_old_metric_was_dropped(self):
         blob = " ".join(t.expr for s in spec.SECTIONS for p in s.panels for t in p.targets)
-        missing = sorted(m for m in self.OLD_METRICS - self.NEVER_COLLECTED if m not in blob)
+        expected = self.OLD_METRICS - self.NEVER_COLLECTED - self.STORE_SPECIFIC
+        missing = sorted(m for m in expected if m not in blob)
         self.assertEqual(missing, [], f"metrics lost in the merge: {missing}")
+
+    def test_every_postgres_signal_has_a_mongo_panel(self):
+        """STORE_SPECIFIC is only legitimate if the coverage moved. This is that check."""
+        blob = " ".join(t.expr for s in spec.SECTIONS for p in s.panels for t in p.targets)
+        missing = sorted(f"{question} ({metric})"
+                         for question, metric in self.REPLACED_BY.items() if metric not in blob)
+        self.assertEqual(missing, [], f"Postgres signals with no Mongo replacement: {missing}")
+
+    def test_no_postgres_metric_survived(self):
+        """The stack cannot emit these, and a panel querying one renders empty, not broken."""
+        blob = " ".join(t.expr for s in spec.SECTIONS for p in s.panels for t in p.targets)
+        back = sorted(m for m in self.STORE_SPECIFIC if m in blob)
+        self.assertEqual(back, [], f"metrics no service on this branch emits are in the spec: {back}")
 
     def test_never_collected_metrics_are_not_reintroduced(self):
         blob = " ".join(t.expr for s in spec.SECTIONS for p in s.panels for t in p.targets)

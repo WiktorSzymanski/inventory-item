@@ -24,9 +24,14 @@ scrape_configs:
     static_configs:
       - targets: ['api:8090']
 
-  - job_name: postgres
+  # NOTE: the first scrape after mongodb-exporter starts returns `mongodb_up` and the FCV
+  # gauge ONLY -- every collector needs one request to warm up. At a 5s interval the second
+  # scrape is complete, and T0 is minutes after the stack comes up, so nothing a run reads is
+  # affected. It matters if you ever curl :9216 by hand to check the exporter: scrape twice
+  # before concluding a collector is missing.
+  - job_name: mongo
     static_configs:
-      - targets: ['postgres-exporter:9187']
+      - targets: ['mongodb-exporter:9216']
 
   - job_name: cadvisor
     static_configs:

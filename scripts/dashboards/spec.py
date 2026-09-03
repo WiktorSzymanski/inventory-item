@@ -328,21 +328,43 @@ SECTIONS = [
                               'topk(10, sum by (repository, method) (rate(spring_data_repository_invocations_seconds_count{job=~"$job"}[1m])))')]),
     ]),
     Section("Spring pools", [
-        Panel(title="HikariCP connections", unit="short", w=8,
-              targets=[Target("active", 'hikaricp_connections_active{job=~"$job"}'),
-                       Target("pending", 'hikaricp_connections_pending{job=~"$job"}'),
-                       Target("max", 'hikaricp_connections_max{job=~"$job"}')]),
-        # Absorbed from TO-2's jvm-dashboard.json and ES-1's inventory-es-dashboard.json
-        # (Task 9 deleted both; Task 10 merges their signals).
-        Panel(title="HikariCP — acquire & usage time", unit="s", w=8,
-              targets=[Target("acquire avg",
-                              'rate(hikaricp_connections_acquire_seconds_sum{job=~"$job"}[1m]) / rate(hikaricp_connections_acquire_seconds_count{job=~"$job"}[1m])'),
-                       Target("acquire max", 'hikaricp_connections_acquire_seconds_max{job=~"$job"}'),
-                       Target("usage avg",
-                              'rate(hikaricp_connections_usage_seconds_sum{job=~"$job"}[1m]) / rate(hikaricp_connections_usage_seconds_count{job=~"$job"}[1m])'),
-                       Target("usage max", 'hikaricp_connections_usage_seconds_max{job=~"$job"}')]),
-        Panel(title="HikariCP — connection timeouts", unit="ops", w=8,
-              targets=[Target("timeouts", 'rate(hikaricp_connections_timeout_total{job=~"$job"}[1m])')]),
+        # There is no HikariCP here. The three panels this replaces read hikaricp_connections_*,
+        # which the ES-*-mongo branches do not publish -- they hold one MongoClient and no
+        # DataSource. Micrometer's MongoMetricsConnectionPoolListener is the counterpart and
+        # Spring Boot auto-configures it, so these come for free with spring-boot-starter-actuator.
+        #
+        # checkedout against size is the pool-exhaustion picture, and the one to read against
+        # CommandGatewayConfig's budget: peak demand is 2 x (112 command + 60 saga + 3
+        # projections) = 350 against an AXON_MONGO_POOL_SIZE of 400, so a checkedout that pins at
+        # size means the arithmetic there no longer describes the run.
+        Panel(title="Mongo driver pool", unit="short", w=8,
+              targets=[Target("checked out", 'mongodb_driver_pool_checkedout{job=~"$job"}'),
+                       Target("size", 'mongodb_driver_pool_size{job=~"$job"}'),
+                       Target("wait queue", 'mongodb_driver_pool_waitqueuesize{job=~"$job"}')]),
+        # The direct replacement for "HikariCP — connection timeouts", and it carries the same
+        # warning. A starved command blocks on the driver's wait queue and then fails; a
+        # MongoTimeoutException is not a ConcurrencyException, so ConcurrencyRetryScheduler
+        # declines to retry it and the command dies terminally into the saga's abandon() path.
+        # That shows up as latency and a rejection rate, never as an error -- so a non-zero line
+        # here invalidates the run's throughput reading even when the verdict says PASS.
+        Panel(title="Mongo driver pool — checkout failures", unit="ops", w=8,
+              targets=[Target("checkout failed", 'rate(mongodb_driver_pool_checkoutfailed_total{job=~"$job"}[1m])')]),
+        # Command latency as the DRIVER sees it, which is the closest thing to Hikari's
+        # acquire/usage timers. It is also the one place the client-side and server-side views
+        # of the same work can be compared: against mongodb_ss_opcounters in the MongoDB
+        # section, a gap is time spent in the driver rather than in the server.
+        # avg and max, NOT quantiles -- and for the same reason the Hikari panel this replaces
+        # used avg and max: Micrometer publishes buckets for a Timer only when the meter is on
+        # management.metrics.distribution.percentiles-histogram, and mongodb.driver.commands is
+        # on no branch's list. A p95 target here returned 0 series against a live stack while
+        # every other target on the panel resolved -- an empty line on a working panel, which is
+        # the exact failure mode scripts/verify_dashboard_metrics.py exists to catch. Adding the
+        # histogram would mean changing the application under measurement to satisfy a panel.
+        Panel(title="Mongo driver command time — avg / max", unit="s", w=8,
+              targets=[Target("{{command}} avg",
+                              'rate(mongodb_driver_commands_seconds_sum{job=~"$job"}[1m]) / '
+                              'clamp_min(rate(mongodb_driver_commands_seconds_count{job=~"$job"}[1m]), 1)'),
+                       Target("{{command}} max", 'mongodb_driver_commands_seconds_max{job=~"$job"}')]),
         # The two halves of the same question, for both families: a lane is capped either by its
         # THREADS or by the CONNECTIONS those threads borrow, and reading one without the other
         # is how a saturated pool gets mistaken for a slow database.
@@ -380,72 +402,99 @@ SECTIONS = [
               targets=[Target("{{name}}", 'sum by (name) (executor_active_threads{job=~"$job"})'),
                        Target("order-retry", 'sum(order_retry_pool_active{job=~"$job"})'),
                        Target("saga {{pool}}", 'sum by (pool) (saga_pool_active{job=~"$job"})')]),
-        Panel(title="Connections in use by pool (TO & ES)", unit="short", w=12,
-              targets=[Target("{{pool}} active", 'sum by (pool) (hikaricp_connections_active{job=~"$job"})'),
-                       Target("{{pool}} pending", 'sum by (pool) (hikaricp_connections_pending{job=~"$job"})'),
-                       Target("{{pool}} max", 'sum by (pool) (hikaricp_connections_max{job=~"$job"})')]),
+        # The `by (pool)` split this panel exists for has no counterpart here and is not being
+        # silently dropped: it exists on `main` because ES runs TWO Hikari pools (the primary
+        # one and axon-jdbc-pool) and two anonymous series are unreadable. The ES-*-mongo
+        # branches deliberately hold ONE MongoClient -- a Mongo connection is checked out per
+        # operation rather than pinned for a transaction, so a second pool protects nothing --
+        # and the driver's meters carry no pool label to split on. The single-pool view is the
+        # "Mongo driver pool" panel above.
+        #
+        # What IS still split is the thread side, which is where the two families' lanes
+        # actually differ; that is the panel immediately above and it is unchanged.
+        Panel(title="Connections in use, server side", unit="short", w=12,
+              targets=[Target("current", 'mongodb_ss_connections{conn_type="current"}'),
+                       Target("active", 'mongodb_ss_connections{conn_type="active"}')]),
     ]),
-    Section("PostgreSQL", [
+    # Every panel below was a pg_* panel on `main`, re-pointed at its closest MongoDB
+    # counterpart and VERIFIED against a live percona/mongodb_exporter:0.53.0 rather than taken
+    # from its documentation. Two names in the obvious place did not exist -- WiredTiger log
+    # bytes and checkpoint time live under mongodb_mongod_wiredtiger_*, a --compatible-mode
+    # name, not under mongodb_ss_wt_* -- which is exactly the failure this file's own history
+    # warns about: a metric that does not exist renders as an empty panel, not as an error.
+    # Re-run scripts/verify_dashboard_metrics.py after any exporter bump.
+    #
+    # The exporter needs --collect-all: without it only serverStatus is published and every
+    # per-collection panel here is silently empty.
+    Section("MongoDB", [
+        # storageSize + indexSize, not dataSize: the Postgres panel this replaces is
+        # pg_database_size_bytes, which is bytes ON DISK including indexes. dataSize is the
+        # logical size of the documents and would read far smaller for the same run, breaking
+        # any comparison with an archived Postgres run. reset.sh DROPS collections rather than
+        # emptying them precisely so this resets to near-zero between runs.
         Panel(title="Database size", unit="bytes", w=8,
-              targets=[Target("size", 'pg_database_size_bytes{datname="$db"}')]),
-        Panel(title="WAL size", unit="bytes", w=8,
-              targets=[Target("wal", "pg_wal_size_bytes")]),
-        Panel(title="Active connections by state", unit="short", w=8,
-              targets=[Target("{{state}}", 'pg_stat_activity_count{datname="$db"}')]),
-        Panel(title="Transaction rate", unit="ops", w=8,
-              targets=[Target("commits", 'rate(pg_stat_database_xact_commit{datname="$db"}[1m])'),
-                       Target("rollbacks", 'rate(pg_stat_database_xact_rollback{datname="$db"}[1m])')]),
-        Panel(title="Tuple operations rate", unit="ops", w=8,
-              targets=[Target("inserted", 'rate(pg_stat_database_tup_inserted{datname="$db"}[1m])'),
-                       Target("updated", 'rate(pg_stat_database_tup_updated{datname="$db"}[1m])'),
-                       Target("deleted", 'rate(pg_stat_database_tup_deleted{datname="$db"}[1m])'),
-                       Target("fetched", 'rate(pg_stat_database_tup_fetched{datname="$db"}[1m])')]),
-        Panel(title="Buffer cache hit ratio", unit="percentunit", w=8, max=1,
+              targets=[Target("storage", 'mongodb_dbstats_storageSize{database="$db"}'),
+                       Target("indexes", 'mongodb_dbstats_indexSize{database="$db"}')]),
+        # The WAL panel's counterpart. type="payload" is the bytes actually written to the
+        # journal; type="unwritten" is the buffer still pending and is NOT a write rate.
+        Panel(title="Journal write rate", unit="Bps", w=8,
+              targets=[Target("journal", 'rate(mongodb_mongod_wiredtiger_log_bytes_total{type="payload"}[1m])')]),
+        # No $db filter: connections are per SERVER, not per database. `current` is the one to
+        # read against the driver pool panel in Spring pools -- they are the two ends of the
+        # same connections, and a gap between them means the driver is holding sockets the
+        # server has already dropped.
+        Panel(title="Server connections", unit="short", w=8,
+              targets=[Target("{{conn_type}}", 'mongodb_ss_connections{conn_type=~"current|active|available"}')]),
+        # THE PANEL THAT HAS NO POSTGRES EQUIVALENT WORTH THE NAME, and the most informative one
+        # here. Every Axon storage operation on the ES-*-mongo branches runs in its own
+        # transaction, so `started` is the store's own view of the write rate -- and `aborted`
+        # is the WriteConflict rate, i.e. the optimistic conflicts the unique index and
+        # MongoConflictResolver turn into ConcurrencyExceptions. Read it against
+        # inventory_optimistic_retry_total on the app side: the two should track, and aborted
+        # rising while retries do not means conflicts are being lost rather than retried.
+        Panel(title="Transaction rate", unit="ops", w=12,
+              targets=[Target("started", "rate(mongodb_ss_transactions_totalStarted[1m])"),
+                       Target("committed", "rate(mongodb_ss_transactions_totalCommitted[1m])"),
+                       Target("aborted (write conflicts)", "rate(mongodb_ss_transactions_totalAborted[1m])")]),
+        Panel(title="Operation rate", unit="ops", w=12,
+              targets=[Target("{{legacy_op_type}}", "rate(mongodb_ss_opcounters[1m])")]),
+        # The WiredTiger cache is the analogue of Postgres' shared buffers, and this is the same
+        # ratio: served from cache over requested. Server-wide, so it has no $db filter.
+        Panel(title="Cache hit ratio", unit="percentunit", w=8, max=1,
               targets=[Target("hit ratio",
-                              'rate(pg_stat_database_blks_hit{datname="$db"}[1m]) / '
-                              '(rate(pg_stat_database_blks_hit{datname="$db"}[1m]) + '
-                              'rate(pg_stat_database_blks_read{datname="$db"}[1m]))')]),
-        Panel(title="Live rows by table", unit="short", w=8,
-              targets=[Target("{{relname}}", 'pg_stat_user_tables_n_live_tup{schemaname="public"}')]),
-        Panel(title="Per-table write rate", unit="ops", w=8,
-              targets=[Target("{{relname}} ins", 'rate(pg_stat_user_tables_n_tup_ins{schemaname="public"}[1m])'),
-                       Target("{{relname}} upd", 'rate(pg_stat_user_tables_n_tup_upd{schemaname="public"}[1m])'),
-                       Target("{{relname}} del", 'rate(pg_stat_user_tables_n_tup_del{schemaname="public"}[1m])')]),
-        Panel(title="Locks by mode", unit="short", w=8,
-              targets=[Target("{{mode}}", 'pg_locks_count{datname="$db"}')]),
-        # THE PANEL ABOVE CANNOT SHOW THE NOTIFY COMMIT LOCK, and the two below exist because of
-        # it. NOTIFY-in-transaction serialises commits on a SHARED object lock
-        # (locktype=object, classid=1262, objid=0, AccessExclusiveLock) held from pre-commit until
-        # after the commit's WAL fsync. Being shared, its pg_locks.database is 0, so the stock
-        # collector's `LEFT JOIN ON pg_database.oid = tmp2.database` drops it: measured, 39
-        # backends blocked while accessexclusivelock above read 0. Both series come from
-        # monitoring/postgres-exporter/queries.yaml -- see that file for the mechanism.
-        #
-        # No $db filter on either, deliberately: the lock is one per CLUSTER, not per database.
-        #
-        # These are gauges sampled at the 5s scrape, i.e. instantaneous queue depth. That is the
-        # right shape (during the TO-2-fix-A collapse the queue stood for 24 minutes), but never
-        # derive a rate from them and do not expect sub-scrape bursts to appear.
-        Panel(title="NOTIFY commit-serialization lock", unit="short", w=12,
-              targets=[Target("waiting", 'pg_notify_commit_lock_waiting'),
-                       Target("held", 'pg_notify_commit_lock_held')]),
-        # Corroborates the panel above without having to trust the classid: a backend blocked on
-        # that lock reports Lock/object. Unlike the pair above this query IS grouped, so its
-        # series legitimately VANISH when nothing waits -- read a gap here as zero, not as broken.
-        Panel(title="Backends by wait event", unit="short", w=12,
-              targets=[Target("{{type}}/{{event}}", 'pg_wait_backends')]),
-        Panel(title="Checkpoint activity", unit="ops", w=12,
-              targets=[Target("timed", "rate(pg_stat_bgwriter_checkpoints_timed_total[1m])"),
-                       Target("requested", "rate(pg_stat_bgwriter_checkpoints_req_total[1m])"),
-                       Target("write time", "rate(pg_stat_bgwriter_checkpoint_write_time_total[1m])")]),
-        # name!="" on all three: cadvisor writes that label EXPLICITLY on every cgroup it
-        # cannot attribute to a container, so an unresolved $dbc/$apic collapses the matcher
-        # to name=~"|" and selects the host -- the machine root, every systemd unit, the
-        # desktop session -- rather than selecting nothing. That is how the 2026-08-22
-        # campaign's reports came out full of whole-machine CPU and RSS while looking
-        # perfectly reasonable. Both variables are constants now, so this cannot arise from
-        # variable resolution any more; the guard stays because being wrong here is silent
-        # and being empty here is not.
+                              "1 - (rate(mongodb_ss_wt_cache_pages_read_into_cache[1m]) / "
+                              "clamp_min(rate(mongodb_ss_wt_cache_pages_requested_from_the_cache[1m]), 1))")]),
+        # The counterpart of "Live rows by table". The collection names on the ES-*-mongo
+        # branches deliberately match the Postgres table names (see MongoCollections.kt), so
+        # this panel and its pg_stat_user_tables_n_live_tup original carry the same legend.
+        Panel(title="Documents by collection", unit="short", w=12,
+              targets=[Target("{{collection}}", 'mongodb_collstats_storageStats_count{database="$db"}')]),
+        # $top, not $collStats: collStats reports a document COUNT, whose derivative is a net
+        # change and therefore hides an update-heavy workload entirely (token_entry rewrites its
+        # ~63 documents on every batch and its count never moves). mongodb_top_* counts
+        # operations per collection, which is what the pg_stat_user_tables_n_tup_* panel showed.
+        Panel(title="Per-collection operation rate", unit="ops", w=12,
+              targets=[Target("{{collection}} ins", 'rate(mongodb_top_insert_count{database="$db"}[1m])'),
+                       Target("{{collection}} upd", 'rate(mongodb_top_update_count{database="$db"}[1m])'),
+                       Target("{{collection}} del", 'rate(mongodb_top_remove_count{database="$db"}[1m])'),
+                       Target("{{collection}} qry", 'rate(mongodb_top_queries_count{database="$db"}[1m])')]),
+        # Replaces "Locks by mode". A non-zero queue is readers or writers waiting on the
+        # global lock -- the saturation signal the pg_locks_count panel carried.
+        Panel(title="Global lock queue", unit="short", w=8,
+              targets=[Target("{{count_type}}", "mongodb_ss_globalLock_currentQueue")]),
+        # Replaces "Backends by wait event": how many operations are actually executing, as
+        # opposed to queued above.
+        Panel(title="Active clients", unit="short", w=8,
+              targets=[Target("readers", "mongodb_ss_globalLock_activeClients_readers"),
+                       Target("writers", "mongodb_ss_globalLock_activeClients_writers")]),
+        # The bgwriter panel's counterpart. WiredTiger checkpoints every 60s by default, so
+        # expect a sawtooth rather than a level -- and read a rising floor as the checkpoint
+        # failing to keep up, which on this stack is the token_entry rewrite storm's most
+        # likely symptom (see the ES-4-mongo branch's CLAUDE.md).
+        Panel(title="Checkpoint activity", unit="short", w=12,
+              targets=[Target("ms/s in checkpoint",
+                              "rate(mongodb_mongod_wiredtiger_transactions_checkpoint_milliseconds_total[1m])"),
+                       Target("running", "mongodb_mongod_wiredtiger_transactions_running_checkpoints")]),
         Panel(title="Container CPU", unit="percentunit", w=6,
               targets=[Target("{{name}}", 'rate(container_cpu_usage_seconds_total{name=~"$dbc|$apic",name!=""}[1m])')]),
         Panel(title="Container memory", unit="bytes", w=6,

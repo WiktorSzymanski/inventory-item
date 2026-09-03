@@ -9,7 +9,7 @@ datasources:
     isDefault: true
     editable: false
 
-  # Archive of completed benchmark runs (the bench-replay-data volume). Only the Bench Runs
+  # Archive of completed benchmark runs (the bench-replay-mongo volume). Only the Bench Runs
   # dashboard reads it; it is empty (and its panels error) unless docker-compose.replay.yml is up.
   # The live dashboard is pinned to `prometheus` above and never reaches this one.
   - name: Prometheus Replay

@@ -1,13 +1,33 @@
-# inventory-item — variant benchmark suite
+# inventory-item — variant benchmark suite (**MongoDB arm**)
+
+> ### This is `main-mongo`, not `main`.
+>
+> It is `main`'s harness with **PostgreSQL replaced by MongoDB throughout** — the compose
+> stack, the reset path, the exporter and every database panel. It registers exactly two
+> variants, `ES-2-mongo` and `ES-4-mongo`, which are `ES-2` and `ES-4` with their store
+> swapped and nothing else changed.
+>
+> **What it is for.** Every ES arm on `main` runs Axon's `JdbcEventStorageEngine` on the same
+> PostgreSQL the TO arms use, so those numbers measure event sourcing *on a relational store*
+> and nothing separates the pattern from the engine underneath it. Running `ES-2` on `main`
+> and `ES-2-mongo` here at the same workload point isolates the store, because the aggregate,
+> the saga, the processor topology, the thread widths, the retry curve and every app-side
+> metric name, tag and histogram bound are identical.
+>
+> **Two things do not carry across the two harnesses.** Runs share every app-side series but
+> not a single `pg_*` or `hikaricp_*` one, so a `bench-runs` dashboard cannot render both
+> archives at once — keep them in separate replay volumes. And a Postgres variant registered
+> here would not fail loudly: it would start, find no database it understands, and time out on
+> health with nothing naming the cause.
 
 A Master's thesis benchmark comparing **Traditional Ownership** (`TO-1`..`TO-4`) against
 **Event Sourcing** (`ES-1`, `ES-2`, `ES-4`) for the same inventory reservation domain. Each
 variant lives on its own branch and implements the same HTTP API.
 
-**`main` holds the only harness and no application code at all.** There is no `src/`, no
-Gradle build and no `Dockerfile` here — those live on the seven variant branches. What `main`
-provides is the entry point for building and running the seven variants as a set, plus the
-one shared `k6/` harness they are all measured with.
+**This branch holds the only harness and no application code at all.** There is no `src/`, no
+Gradle build and no `Dockerfile` here — those live on the variant branches. What it provides is
+the entry point for building and running the registered variants as a set, plus the one shared
+`k6/` harness they are all measured with.
 
 `variants.env` is the registry and the only place the set is defined; every script reads it and
 nothing else. Branches that used to be variants and are not any more — `ES-3`, `TO-2-opt` and
@@ -17,17 +37,17 @@ re-adding each one would take.
 ## Quick start
 
 ```bash
-scripts/build-images.sh                                   # one image per branch
-SCENARIO=steady RATE=60 DURATION=10m scripts/run-suite.sh  # benchmark all seven
-python3 k6/bench/compare.py bench-results/*_steady_*       # the thesis table
+scripts/build-images.sh                                    # one image per registered variant
+SCENARIO=steady RATE=60 DURATION=10m scripts/run-suite.sh  # benchmark both mongo variants
+python3 k6/bench/compare.py bench-results/*_steady_*        # the thesis table
 ```
 
 Narrow it down while iterating:
 
 ```bash
-scripts/build-images.sh --only ES-4,TO-1
+scripts/build-images.sh --only ES-2-mongo
 SCENARIO=steady RATE=30 DURATION=3m WARMUP_ITERATIONS=2000 WARMUP_RATE=30 \
-  scripts/run-suite.sh --only ES-4,TO-1
+  scripts/run-suite.sh --only ES-2-mongo
 ```
 
 `WARMUP_RATE` has no default and a run without one aborts at k6 init. A named `POINT`
@@ -50,7 +70,7 @@ when iterating, not the workload.
 | `points.env` | Named workload points (`W-base`, `C11`, …) binding a label to its knobs. |
 | `workload.env` | Optional sticky knobs for a campaign. Ships fully commented out. |
 | `k6/` | **The harness.** One copy, shared by every variant. |
-| `docker-compose.yml` | The unified stack: services `api` and `postgres`, no family names. |
+| `docker-compose.yml` | The unified stack: services `api`, `mongo` and `mongo-init`, no family names. |
 | `scripts/build-images.sh` | Builds `inventory-reservation-<variant>:latest` from each branch's worktree. **The only script that touches branches.** |
 | `scripts/run-suite.sh` | Runs `main`'s harness against each variant's image, in turn. |
 | `scripts/run-campaign.sh` | Runs several (scenario, point) steps in turn, each across every variant. Resumable. |
@@ -64,9 +84,9 @@ when iterating, not the workload.
 > **One harness, on `main`.** Every variant is measured by the same `k6/`, the same
 > `docker-compose.yml` and the same `queries.promql`. This used to be eight copies kept in
 > step by hand; the families were thought to differ irreconcilably, but `queries.promql` is
-> identical across TO and ES, `reset.sh` discovers its tables from `pg_tables`, and both
+> identical across TO and ES, `reset.sh` discovers its collections from the database itself, and both
 > families read the datasource from `${DB_JDBC_URL}`. Everything genuinely family-specific
-> was a *name*, and `main` now chooses those names: services are `api` and `postgres`.
+> was a *name*, and `main` now chooses those names: services are `api` and `mongo`.
 >
 > The variant branches keep their own `k6/` and `bench.env`. They are **no longer used** —
 > running `./k6/bench/bench.sh` on a branch produces a different stack than `main` does.
@@ -112,7 +132,8 @@ clocks, and one docs-only commit here reported all eight variants `INVALID`.
 same host ports, so they cannot overlap. `run-suite.sh` pins one Compose project name (`iir`)
 for every variant and runs `down -v --remove-orphans` before each. The `-v` matters more than
 it looks: `reset.sh` only truncates tables, so without it a `TO`↔`ES` switch would inherit
-the previous run's Postgres volume under a schema that does not match, and the bind-mounted
+the previous run's Mongo volume, complete with the collections and indexes its branch
+created, and the bind-mounted
 Prometheus config is never re-read by a running container either. `--remove-orphans` catches
 anything left by the pre-unification layout, where TO and ES used different service names.
 
@@ -229,14 +250,14 @@ Grafana lives in `docker-compose.yml`, which `run-suite.sh` tears down with `dow
 every run, so after a benchmark there is nothing on `:3000` to look at.
 
 ```bash
-docker volume create bench-replay-data   # first time on this machine only
+docker volume create bench-replay-mongo   # first time on this machine only
 COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml up -d
 ```
 
 That starts both halves: `prometheus-replay` (`:9091`) and `grafana-replay` (**`:3001`**).
 The archive volume is `external`, which is what keeps `docker compose down -v` from
 destroying it — the flip side being that Compose will not create it either, so a first `up`
-without that `volume create` fails with `external volume "bench-replay-data" not found`. Any
+without that `volume create` fails with `external volume "bench-replay-mongo" not found`. Any
 machine that has archived a run already has the volume: `run-suite.sh`, `prom_archive.sh` and
 `docker-compose.replay-load.yml` each create it on the way past.
 
@@ -302,7 +323,7 @@ magnitude below the truth. Real latency is `order_e2e_time`, which reaches you t
 series and `report.pdf` would survive a run. TSDB preservation guards against exactly that,
 and it is **on by default** (`SNAPSHOT_TSDB=1`, `ARCHIVE_TSDB=1`) — every run copies its full
 TSDB into `bench-results/<run_id>/prom-snapshot/` before teardown, and also merges it into
-the external `bench-replay-data` volume the `bench-runs` dashboard reads. Pass
+the external `bench-replay-mongo` volume the `bench-runs` dashboard reads. Pass
 `--no-snapshot-tsdb` to skip both, or `--no-archive-tsdb` to keep the host-side snapshot but
 skip the archive merge. A run with no `prom-snapshot/` never reaches the `bench-runs`
 dropdown — `dump.json` still feeds the comparison tables, but nothing rebuilds a dashboard

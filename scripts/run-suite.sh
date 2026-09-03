@@ -29,11 +29,11 @@
 # TSDB preservation is on by default, and it has to be: `down -v` between variants destroys
 # the prometheus-data volume, and dump.json only extracts ~20 of the merged dashboard's 56
 # panels. Two copies are made, both immune to `down -v` — bench-results/<run_id>/prom-snapshot/
-# (an ordinary host directory) and the external `bench-replay-data` volume (for Grafana
+# (an ordinary host directory) and the external `bench-replay-mongo` volume (for Grafana
 # replay). SNAPSHOT_TSDB=0 / ARCHIVE_TSDB=0 work too, matching bench_run.sh's knob names.
 #
 # WHY SEQUENTIAL. Every variant publishes the same host ports (8080 api, 9090
-# prometheus, 3000 grafana, 5432 postgres), so they physically cannot overlap — and even if
+# prometheus, 3000 grafana, 27017 mongo), so they physically cannot overlap — and even if
 # they could, sharing a machine would make every number a measure of contention with the
 # neighbour rather than of the variant.
 set -euo pipefail
@@ -80,7 +80,7 @@ ensure_results_link
 # The archive volume is declared `external: true`, so Compose will not create it and the
 # merge would fail on a fresh machine. Creating it is a no-op when it already exists.
 if [ "$SNAPSHOT_TSDB" = "1" ] && [ "$ARCHIVE_TSDB" = "1" ]; then
-    docker volume create bench-replay-data >/dev/null 2>&1 || true
+    docker volume create bench-replay-mongo >/dev/null 2>&1 || true
 fi
 
 # Sticky knobs. Every assignment in that file is written `VAR="${VAR:-value}"`, so anything

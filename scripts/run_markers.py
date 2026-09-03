@@ -51,7 +51,7 @@ from scripts.dashboards import runs as runs_mod  # noqa: E402
 
 PROM_IMAGE = "prom/prometheus:v2.52.0"
 REPLAY_CONTAINER = "prometheus-replay"
-REPLAY_VOLUME = "bench-replay-data"
+REPLAY_VOLUME = "bench-replay-mongo"
 METRIC = "bench_run_marker"
 
 # One sample every 5 minutes, padded on both sides of the anchor window. Grafana resolves

@@ -5,7 +5,7 @@ every *script* referenced by docs/bench-replay.md existed; nothing verified the 
 files those scripts invoke, and `docker-compose.replay.yml` was simply never imported. The
 symptom was silent by construction: `ARCHIVE_TSDB=1` is the default, so `run-suite.sh` called
 `prom_archive.sh` after every variant, it failed on the missing file, and the failure is
-non-fatal — the suite logged one line, carried on, and `bench-replay-data` was never
+non-fatal — the suite logged one line, carried on, and `bench-replay-mongo` was never
 populated. The remedy that line suggests (re-run it later) failed identically.
 """
 import glob

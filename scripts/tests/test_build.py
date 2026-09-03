@@ -8,25 +8,26 @@ from scripts.dashboards import build
 # What the unified stack actually emits, per label the live dashboard filters on.
 #
 # job     monitoring/prometheus/prometheus.yml declares exactly these three scrape jobs.
-# datname pg_database_size_bytes reports every database in the cluster.
+# database mongodb_dbstats_* reports every database on the server, admin/config/local
+#          included, which is why the $db variable carries a /^inventory$/ regex.
 # name    cadvisor's container name label. Every service in docker-compose.yml pins a
 #         container_name, the single un-scaled `api` included, so COMPOSE_PROJECT_NAME
 #         never appears here.
 STACK_LABEL_VALUES = {
-    "job": ["cadvisor", "inventory", "postgres"],
-    "datname": ["inventory", "postgres", "template0", "template1"],
+    "job": ["cadvisor", "inventory", "mongo"],
+    "database": ["admin", "config", "inventory", "local"],
     "name": ["api", "cadvisor", "grafana", "grafana-renderer", "grafana-reporter",
-             "k6", "postgres", "postgres-exporter", "prometheus"],
+             "k6", "mongo", "mongo-init", "mongodb-exporter", "prometheus"],
 }
 
 # Which label each query variable draws its options from.
-VAR_LABEL = {"job": "job", "db": "datname"}
+VAR_LABEL = {"job": "job", "db": "database"}
 
 # The option Grafana must land on for `current: {}` to resolve usefully.
 VAR_EXPECTED = {"job": ["inventory"], "db": ["inventory"]}
 
 # $dbc and $apic are NOT here: they are constants now. See ContainerVariablesAreConstants.
-VAR_CONST_EXPECTED = {"dbc": "postgres", "apic": "api"}
+VAR_CONST_EXPECTED = {"dbc": "mongo", "apic": "api"}
 
 
 def prometheus_selects(pattern, values):
@@ -122,11 +123,13 @@ class ContainerVariablesAreConstants(unittest.TestCase):
             with self.subTest(var=name):
                 self.assertEqual(self.vars[name]["current"].get("value"), value)
 
-    def test_the_db_container_selects_postgres_and_not_the_exporter(self):
-        """`postgres-exporter` also carries a `name` label, and Prometheus anchors name=~
-        fully -- so the value must be the whole container name, not a prefix of it."""
+    def test_the_db_container_selects_mongo_and_not_the_exporter_or_init(self):
+        """`mongodb-exporter` and `mongo-init` also carry a `name` label, and `mongo` is a
+        prefix of both. Prometheus anchors name=~ fully, which is the only reason the bare
+        name is safe -- this pins that, because over-matching here would silently fold the
+        exporter's and the init container's CPU and RSS into the database's."""
         selected = prometheus_selects(VAR_CONST_EXPECTED["dbc"], STACK_LABEL_VALUES["name"])
-        self.assertEqual(selected, ["postgres"])
+        self.assertEqual(selected, ["mongo"])
 
     def test_the_api_container_is_an_exact_match(self):
         """The api pins `container_name: api`, so this must select that and only that --

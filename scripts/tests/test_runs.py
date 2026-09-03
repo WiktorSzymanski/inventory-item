@@ -122,7 +122,7 @@ class ScanRuns(unittest.TestCase):
                 json.dump(_meta(run_id, variant, point, start, end), fh)
 
     def test_run_without_a_tsdb_snapshot_is_skipped(self):
-        """A run with no prom-snapshot/ was never archived into bench-replay-data (or was made
+        """A run with no prom-snapshot/ was never archived into bench-replay-mongo (or was made
         with --no-snapshot-tsdb), so selecting it would render 53 empty panels with nothing to
         say why. Only dump.json survives for those, which is what bench-replay is for."""
         self.write("TO-1_capacity_W-base_20260812T140542Z", "TO-1", "W-base", 1786543581, 1786547987)
@@ -267,7 +267,7 @@ class BuildRunsDashboard(unittest.TestCase):
         """Query variables resolve against the dashboard's time range. Here that range is the
         anchor window, which holds no data at all -- label_values() would come back empty and
         every panel filtering on $job would query {job=""} and render blank."""
-        for name, value in (("job", "inventory"), ("db", "inventory"), ("dbc", "postgres")):
+        for name, value in (("job", "inventory"), ("db", "inventory"), ("dbc", "mongo")):
             with self.subTest(name=name):
                 self.assertEqual(self.vars[name]["type"], "constant")
                 # Both sample runs default to prom_job="inventory", so the alternation
@@ -683,7 +683,7 @@ class VerifierReadsTheDashboardsConstants(unittest.TestCase):
     def test_no_default_carries_a_job_or_container_name_the_stack_dropped(self):
         """The `-to`/`-es` suffixes were removed from every job, database and container name."""
         head = self.source[:self.source.index("def ")]
-        for stale in ("inventory-to", "inventory-es", "postgres-to", "postgres-es"):
+        for stale in ("inventory-to", "inventory-es", "postgres-to", "postgres-es", "postgres"):
             with self.subTest(stale=stale):
                 self.assertNotIn(f'"{stale}"', head)
 

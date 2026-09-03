@@ -150,8 +150,11 @@ IMAGE_FRESH=$([ "$IMAGE_EPOCH" -ge "$HEAD_EPOCH" ] && echo true || echo false)
 
 # ---------------------------------------------------------------- stack up + reset
 log "stack: bringing up supporting services"
-dc up -d "$DB_SVC" prometheus grafana grafana-renderer grafana-reporter \
-    postgres-exporter cadvisor >/dev/null
+# mongo-init is named explicitly, not left to depends_on: nothing here starts the api, so
+# without it the replica set is never initiated and reset.sh's first mongosh call hits a
+# server that answers but cannot transact.
+dc up -d "$DB_SVC" mongo-init prometheus grafana grafana-renderer grafana-reporter \
+    mongodb-exporter cadvisor >/dev/null
 
 T_RESET="$(date +%s)"
 
@@ -191,7 +194,7 @@ trap 'capture_service_logs "$RUN_DIR/logs" "$T_RESET"' EXIT
 # hour of machine time is worth less than a run whose container panels are unusable. What
 # that actually bought was bench-results-10: three capacity runs killed 161 s in — 60 s
 # wait, one cadvisor restart, 90 s wait, die — against a daemon that had been blind since
-# the previous day. The API, Postgres, JVM and k6 numbers would all have been sound; only
+# the previous day. The API, MongoDB, JVM and k6 numbers would all have been sound; only
 # the container CPU/memory/network panels were ever at risk. The rest of the run is worth
 # having, so it proceeds and the operator is told loudly instead.
 #
@@ -209,8 +212,9 @@ CADVISOR_URL="${CADVISOR_URL:-http://localhost:8082}"
 # Reads a cadvisor /metrics body on stdin; succeeds only when both containers are named.
 #
 # The name label is extracted and then matched with `grep -x`, rather than grepped for
-# inside the raw line, for two reasons. Prometheus anchors `name=~` fully, so `postgres`
-# must not be satisfied by `postgres-exporter` — a guard looser than the queries it protects
+# inside the raw line, for two reasons. Prometheus anchors `name=~` fully, so `mongo`
+# must not be satisfied by `mongodb-exporter` or `mongo-init` — a guard looser than the
+# queries it protects
 # would pass runs whose panels still render nothing. And cadvisor decorates every series
 # with container_label_* labels carrying arbitrary values, including the `name` label that
 # many images ship (exposed as container_label_name), so a substring search for name="api"

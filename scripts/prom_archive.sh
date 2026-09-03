@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Merge a Prometheus TSDB snapshot's blocks into the replay archive (bench-replay-data),
+# Merge a Prometheus TSDB snapshot's blocks into the replay archive (bench-replay-mongo),
 # so a run keeps its full metric surface -- not just what dump.json extracted -- and can be
 # opened in Grafana's "bench-runs" dashboard at any time in the future. A run whose blocks
 # never reach this volume cannot be viewed at all; dump.json feeds the tables, not a dashboard.
@@ -71,13 +71,13 @@ restart_replay() {
 }
 trap restart_replay EXIT
 
-echo "==> Copying blocks from ${SNAPSHOT_DIR} into bench-replay-data (no-clobber)..."
+echo "==> Copying blocks from ${SNAPSHOT_DIR} into bench-replay-mongo (no-clobber)..."
 # A Prometheus snapshot contains ALL blocks currently in the TSDB at the moment it was
 # taken, not only the run that just finished -- so consecutive per-run snapshots overlap
 # heavily (e.g. run 2's snapshot re-contains every block already copied in from run 1's).
 # `cp -rn` is what makes that harmless: once a block is written its directory (a ULID) is
 # immutable and keeps that same name in every later snapshot, so a block already present
-# in bench-replay-data is skipped rather than re-copied or corrupted, and only genuinely
+# in bench-replay-mongo is skipped rather than re-copied or corrupted, and only genuinely
 # new blocks (chiefly the still-open head block) actually land. Do not swap this for a
 # plain `cp -r`, which would overwrite an already-archived block with a same-named but
 # differently-compacted copy.
@@ -94,12 +94,12 @@ echo "==> Copying blocks from ${SNAPSHOT_DIR} into bench-replay-data (no-clobber
 # is chowned, not just the new blocks, so an archive written before this fix is repaired
 # the next time anything is archived into it.
 docker run --rm \
-    -v bench-replay-data:/prometheus \
+    -v bench-replay-mongo:/prometheus \
     -v "${SNAPSHOT_DIR}:/snapshot:ro" \
     alpine sh -c 'cp -rn /snapshot/*/ /prometheus/ && chown -R 65534:65534 /prometheus'
 
 echo ""
-echo "Archived: ${SNAPSHOT_DIR} -> bench-replay-data"
+echo "Archived: ${SNAPSHOT_DIR} -> bench-replay-mongo"
 echo ""
 echo "View at:  http://localhost:3000 (datasource uid: prometheus-replay, port 9091)"
 if [ "$WAS_RUNNING" = "0" ]; then

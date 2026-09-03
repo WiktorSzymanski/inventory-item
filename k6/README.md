@@ -27,7 +27,7 @@ harness refuses to start as root.
 **There is no `bench.env`, and no replica knob.** `main` owns the only harness now, and the
 stack is single-node by construction: `docker-compose.yml` runs exactly one `api` container,
 pinned with `container_name: api` and publishing `:8080` to the host itself. There is no
-nginx in front of it and nothing to scale. `.env` holds only the Postgres and Hikari
+nginx in front of it and nothing to scale. `.env` holds only the Mongo driver-pool
 connection sizes, which Compose reads directly.
 
 ---
@@ -40,7 +40,7 @@ SCENARIO=steady RATE=60 DURATION=10m ./k6/bench/bench.sh
 SCENARIO=steady DISTINCT_ITEMS=1 ITEMS_PER_ORDER=1 ./k6/bench/bench.sh
 ```
 
-Everything that touches the measurement runs in a container — k6, the API, Postgres,
+Everything that touches the measurement runs in a container — k6, the API, MongoDB,
 Prometheus. `bench.sh` is the conductor and does nothing inside the measured window.
 
 Each run does: build → reset DB + restart API → seed → warmup → settle → **load** → drain

@@ -52,12 +52,12 @@ ANCHOR_RUNS = 1798761600
 # ($job, $db), which resolve from label_values() against a running stack and so have nothing in
 # the JSON to read.
 DEFAULT_VARS = {
-    "live": {"job": "inventory", "db": "inventory", "dbc": "postgres",
+    "live": {"job": "inventory", "db": "inventory", "dbc": "mongo",
              "apic": "api", "__rate_interval": "1m",
              "__interval": "15s", "__range": "1h"},
     # $run is not listed: its value is a per-run offset read out of the dashboard's own
     # variable options, so --run picks a run rather than a raw duration.
-    "runs": {"job": "inventory", "db": "inventory", "dbc": "postgres",
+    "runs": {"job": "inventory", "db": "inventory", "dbc": "mongo",
              "apic": "api|.*-api-[0-9]+", "__rate_interval": "1m", "__interval": "15s",
              "__range": "1h"},
 }

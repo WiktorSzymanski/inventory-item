@@ -1,11 +1,17 @@
 # Archive Prometheus + Grafana for completed benchmark runs. Serves the `bench-runs` dashboard.
 #
-#   docker volume create bench-replay-data      # first time on this machine only
+#   docker volume create bench-replay-mongo      # first time on this machine only
+#
+# THE VOLUME NAME DIFFERS FROM `main`'s ON PURPOSE. `main` archives into bench-replay-data;
+# this branch archives into bench-replay-mongo, and the two must not be merged. A Mongo run
+# and a Postgres run share every app-side series but not one `pg_*` or `mongodb_*` series, so
+# a single bench-runs dashboard over both would render half its panels empty for every run --
+# which reads as a missing snapshot, not as two archives that should never have been mixed.
 #   COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml up -d
 #
-# That `volume create` is not optional and not tidiness: bench-replay-data is declared
+# That `volume create` is not optional and not tidiness: bench-replay-mongo is declared
 # `external: true` below, so Compose will NOT create it and `up` fails outright with
-# `external volume "bench-replay-data" not found`. External is what makes it immune to
+# `external volume "bench-replay-mongo" not found`. External is what makes it immune to
 # `docker compose down -v` — the previous archive was destroyed by exactly that command — so
 # the volume having to pre-exist is the price of that protection, not an oversight.
 #
@@ -32,7 +38,7 @@ services:
       - "9091:9090"
     volumes:
       - ./monitoring/prometheus/prometheus-replay.yml:/etc/prometheus/prometheus.yml:ro
-      - bench-replay-data:/prometheus
+      - bench-replay-mongo:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -72,8 +78,8 @@ services:
 volumes:
   # external: Compose neither creates nor deletes it. The second half is the point — `down -v`
   # cannot touch an external volume — and the first half is why `docker volume create
-  # bench-replay-data` has to have happened before the first `up` on a machine. See the header.
-  bench-replay-data:
+  # bench-replay-mongo` has to have happened before the first `up` on a machine. See the header.
+  bench-replay-mongo:
     external: true
   # Not external: this is only Grafana's own state (preferences, starred dashboards). The
   # dashboards and datasources come from provisioning on every start, so losing it costs

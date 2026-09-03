@@ -44,7 +44,7 @@ It replaces the checkout-and-teardown ritual, and preserves the Prometheus TSDB 
 `bench.sh` keeps no TSDB of its own. The raw series live in the `prometheus-data` volume, and
 the `down -v` between variants destroys them. What survives unaided is `dump.json`'s ~20
 extracted series, which feed the comparison tables — but nothing rebuilds a dashboard from
-them. Every `pg_stat_*` metric, WAL size, locks, checkpoints, GC pause, HikariCP, Tomcat, and
+them. Every `mongodb_*` metric, journal volume, lock queue, checkpoints, GC pause, driver pool, Tomcat, and
 on the TO family the outbox and order-timing panels exist only in the snapshot, so a run whose
 snapshot was skipped cannot be looked at afterwards at all.
 
@@ -53,7 +53,7 @@ Two copies are made, both immune to `down -v`:
 | Destination | What it is |
 |---|---|
 | `bench-results/<run_id>/prom-snapshot/` | an ordinary host directory, beside `dump.json` and `report.pdf` |
-| `bench-replay-data` | a docker volume declared `external: true` |
+| `bench-replay-mongo` | a docker volume declared `external: true` |
 
 `--no-archive-tsdb` skips the volume merge; `--no-snapshot-tsdb` skips both. `SNAPSHOT_TSDB=0`
 and `ARCHIVE_TSDB=0` also work, matching `bench_run.sh`'s names.
@@ -90,7 +90,7 @@ scripts/build-images.sh                # one image per branch; ~8 gradle builds 
 ```
 
 No `JAVA_HOME` is needed anywhere: the `Dockerfile` runs gradle inside the build, and
-`run-suite.sh` passes `SKIP_BUILD=1`. `docker volume create bench-replay-data` is no longer
+`run-suite.sh` passes `SKIP_BUILD=1`. `docker volume create bench-replay-mongo` is no longer
 needed either — `run-suite.sh` does it.
 
 `run-suite.sh` rebuilds any variant whose image is behind its branch head, so the explicit

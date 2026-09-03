@@ -4,7 +4,7 @@ The benchmark harness (`k6/bench/bench.sh`, see [`k6/README.md`](../k6/README.md
 Prometheus TSDB by itself: every run's raw metrics die with the `docker-compose.bench.yml` volume
 unless something copies them out before the next run resets it. Keeping a run means snapshotting
 the live Prometheus's TSDB right after the run and merging its blocks into a long-lived archive
-(`bench-replay-data`), which a second Prometheus (`prometheus-replay`, port **9091**) serves.
+(`bench-replay-mongo`), which a second Prometheus (`prometheus-replay`, port **9091**) serves.
 
 There is exactly one dashboard for looking at what is in there: **`bench-runs`**, a Run dropdown
 over the archive, every run drawn on one axis starting at its own t0. The live dashboard
@@ -64,7 +64,7 @@ Runs must also start before the anchor, **2027-01-01** — see §4 if yours do n
 
 ```bash
 COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml down
-docker volume rm bench-replay-data
+docker volume rm bench-replay-mongo
 ```
 
 The `down` comes first because Docker will not remove a volume still attached to a container.
@@ -130,14 +130,14 @@ host-side rebuild. Grafana picks the new JSON up within 30s — no restart.
 python3 -c "import json;d=json.load(open('monitoring/grafana/provisioning/dashboards/bench-runs.json'));v=[x for x in d['templating']['list'] if x['name']=='run'][0];print(len(v['options']),'options')"
 
 # blocks in the archive
-docker run --rm -v bench-replay-data:/p alpine:3.20 sh -c 'ls /p | wc -l; du -sh /p'
+docker run --rm -v bench-replay-mongo:/p alpine:3.20 sh -c 'ls /p | wc -l; du -sh /p'
 ```
 
 | symptom | cause |
 |---|---|
 | every panel is a parse error | markers missing, so `$end` resolved empty — re-run step 2 (§4) |
 | a run you expected is not in the dropdown | it has no `prom-snapshot/`; it was loaded in a different pass than the last dropdown rebuild; or a copy of it under an earlier path already claimed its `run_id` |
-| `external volume "bench-replay-data" not found` | step 3 was run before step 2 |
+| `external volume "bench-replay-mongo" not found` | step 3 was run before step 2 |
 | `WARNING: no blocks in …` during the load | that run's `prom-snapshot/` exists but is empty — a failed capture; it reaches the dropdown and draws empty panels |
 
 **On axis length:** the window is sized to the *longest* run in the set and each panel is
@@ -157,7 +157,7 @@ External volumes are not auto-created by Compose, so on a machine that has never
 create it first or `up` fails outright:
 
 ```bash
-docker volume create bench-replay-data
+docker volume create bench-replay-mongo
 COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml up -d
 ```
 
@@ -218,7 +218,7 @@ it out of the `prometheus` container. When its argument names an existing
 `dump.json` and `report.pdf`; otherwise it falls back to its original label-based behaviour under
 `reports/prom-snapshot-<timestamp>[-label]/`.
 
-`prom_archive.sh` then copies that snapshot's block directories into the `bench-replay-data`
+`prom_archive.sh` then copies that snapshot's block directories into the `bench-replay-mongo`
 volume with `cp -rn` (no-clobber) — never `rm -rf`, unlike `prom_restore.sh`. Benchmark runs never
 overlap in time, so blocks from many runs coexist in one Prometheus and a run is selected in
 Grafana purely by its time range; `prometheus-replay` is stopped for the copy (backfilled blocks
@@ -244,12 +244,12 @@ measurement the two blocks covered 2026-08-05T20:28Z through 2026-08-06T00:23Z, 
 the live `prometheus` container had retained since it was last started, roughly 4 hours, of which
 the actual measured run was 2 minutes. That is also why re-archiving after each run in a same-day
 session is cheap even though each snapshot is "full": `cp -rn` skips every block byte-identical to
-one already in `bench-replay-data`, so only the still-open head block (which changed since the
+one already in `bench-replay-mongo`, so only the still-open head block (which changed since the
 last archive) actually gets copied each time — the older, already-archived 2-hour blocks are a
 no-op.
 
 The practical budget, then, is roughly **per hour of live-Prometheus uptime between restarts**,
-not per run: ~30M / ~4h ≈ 7-8 MB/hour at this scrape configuration, dominated by `postgres`,
+not per run: ~30M / ~4h ≈ 7-8 MB/hour at this scrape configuration, dominated by `mongo`,
 `cadvisor`, and API JVM metrics at their default scrape intervals. Restarting `prometheus` before
 a benchmarking session (fresh head block) and archiving right after each run keeps each
 incremental archive step small; letting many runs accumulate in one long-lived `prometheus`
@@ -262,8 +262,8 @@ larger, one-time only.
 
 `monitoring/grafana/provisioning/dashboards/bench-runs.json` (uid `bench-runs`) carries a **"Run"
 dropdown**, and picking a run redraws every panel over an axis that starts at that run's own t0.
-Full fidelity: the real scraped TSDB, so the `pg_stat_*`, WAL, locks, checkpoint, GC-pause,
-HikariCP, outbox and container panels all work, exactly as they did live.
+Full fidelity: the real scraped TSDB, so the `mongodb_*`, journal, lock-queue, checkpoint,
+GC-pause, driver-pool and container panels all work, exactly as they did live.
 
 ```bash
 python3 scripts/run_markers.py bench-results <other-results-dirs>          # once per new run
@@ -518,7 +518,7 @@ COMPOSE_PROJECT_NAME=iir docker compose -f docker-compose.replay.yml up -d
 `RUNS_DIR` defaults to `./bench-results`. It is bind-mounted read-only at `/runs` and walked to
 **any** depth, so a campaign directory of per-phase subdirectories — or a directory of those — is a
 valid single argument, and each run is named in the dropdown by its path under it. Unlike §2, **the volume does not have to exist first**: this file declares
-`bench-replay-data` non-external precisely so `up` creates it on a machine that has never had an
+`bench-replay-mongo` non-external precisely so `up` creates it on a machine that has never had an
 archive — which is also the one hazard worth naming: `down -v` *with this file* would delete the
 archive. Nothing here needs tearing down; every service exits on its own.
 

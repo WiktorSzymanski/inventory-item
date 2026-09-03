@@ -20,13 +20,25 @@ def source_common(env_overrides, want):
 
 
 class DerivedConfig(unittest.TestCase):
-    BASE = {"VARIANT": "ES-4", "VARIANT_FAMILY": "ES", "IMAGE_TAG": "x:latest"}
+    BASE = {"VARIANT": "ES-4-mongo", "VARIANT_FAMILY": "ES", "IMAGE_TAG": "x:latest"}
 
     def test_api_service_is_family_neutral(self):
         self.assertEqual(source_common(self.BASE, "API_SVC").stdout, "api")
 
     def test_db_service_is_family_neutral(self):
-        self.assertEqual(source_common(self.BASE, "DB_SVC").stdout, "postgres")
+        self.assertEqual(source_common(self.BASE, "DB_SVC").stdout, "mongo")
+
+    def test_db_service_does_not_collide_with_the_exporter_or_the_init_container(self):
+        """DB_SVC is applied as an ANCHORED cadvisor matcher (bench.sh's container guard and
+        queries.promql both use name=~), so `mongo` must not be a prefix that also selects
+        `mongodb-exporter` or `mongo-init`. Prometheus anchors regexes fully, which is what
+        makes the bare name safe -- this pins that the name stays bare."""
+        self.assertEqual(source_common(self.BASE, "DB_SVC").stdout, "mongo")
+
+    def test_no_db_user_is_exported(self):
+        """mongod runs unauthenticated here; a DB_USER left over from the Postgres harness
+        would be dead configuration that looks live."""
+        self.assertEqual(source_common(self.BASE, "DB_USER").stdout, "")
 
     def test_prom_job_is_family_neutral(self):
         self.assertEqual(source_common(self.BASE, "PROM_JOB").stdout, "inventory")

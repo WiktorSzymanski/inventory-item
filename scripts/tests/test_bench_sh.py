@@ -351,13 +351,13 @@ DOCKER_ONLY_BLIND = cadvisor_line("/", "")
 
 WORKING = "\n".join([
     cadvisor_line("/", ""),
-    cadvisor_line("/system.slice/docker-aaa.scope", "postgres", "postgres:16-alpine"),
+    cadvisor_line("/system.slice/docker-aaa.scope", "mongo", "mongo:7"),
     cadvisor_line("/system.slice/docker-bbb.scope", "api", "inventory-reservation-to-3:latest"),
     cadvisor_line("/system.slice/docker-ccc.scope", "cadvisor", "gcr.io/cadvisor/cadvisor:v0.49.1"),
 ])
 
 
-def cadvisor_probe(body, db_svc="postgres", api_re="api"):
+def cadvisor_probe(body, db_svc="mongo", api_re="api"):
     """Run bench.sh's real probe over a /metrics body; True when it reports containers seen."""
     env = dict(os.environ)
     env["DB_SVC"] = db_svc
@@ -390,7 +390,7 @@ class CadvisorProbe(unittest.TestCase):
 
     def test_missing_api_container_fails(self):
         body = "\n".join([cadvisor_line("/", ""),
-                          cadvisor_line("/system.slice/docker-aaa.scope", "postgres")])
+                          cadvisor_line("/system.slice/docker-aaa.scope", "mongo")])
         self.assertFalse(cadvisor_probe(body))
 
     def test_missing_db_container_fails(self):
@@ -409,27 +409,30 @@ class CadvisorProbe(unittest.TestCase):
         guard exists to catch."""
         body = cadvisor_line("/system.slice", "",
                              extra_labels=['container_label_name="api"',
-                                           'container_label_name="postgres"'])
+                                           'container_label_name="mongo"'])
         self.assertFalse(cadvisor_probe(body))
 
     def test_the_api_regex_is_applied_as_a_regex(self):
         """API_CONTAINER_RE is a regex in every other consumer (Prometheus name=~), so the
         guard must not degrade to a literal comparison for a multi-container variant."""
-        body = "\n".join([cadvisor_line("/system.slice/docker-aaa.scope", "postgres"),
+        body = "\n".join([cadvisor_line("/system.slice/docker-aaa.scope", "mongo"),
                           cadvisor_line("/system.slice/docker-bbb.scope", "iir-api-1")])
         self.assertTrue(cadvisor_probe(body, api_re="api|.*-api-[0-9]+"))
 
     def test_a_partial_name_match_does_not_pass(self):
-        """postgres-exporter must not stand in for postgres: Prometheus anchors name=~ fully,
+        """mongodb-exporter must not stand in for mongo, and the trap is sharper here than on
+        the Postgres stack: `mongo` is a strict PREFIX of both `mongodb-exporter` and
+        `mongo-init`, so an unanchored match would find two impostors rather than one.
+        Prometheus anchors name=~ fully,
         so a guard that accepted a prefix would pass runs whose panels then render nothing."""
-        body = "\n".join([cadvisor_line("/system.slice/docker-aaa.scope", "postgres-exporter"),
+        body = "\n".join([cadvisor_line("/system.slice/docker-aaa.scope", "mongodb-exporter"),
                           cadvisor_line("/system.slice/docker-bbb.scope", "api")])
         self.assertFalse(cadvisor_probe(body))
 
 
 SERVICE_LOG_HARNESS = """
 API_SVC=api
-DB_SVC=postgres
+DB_SVC=mongo
 log() {{ printf '%s\n' "$*" >&2; }}
 # Stub compose. Records its argv one line per service, then emits a body so the archive is
 # not merely present but correct.
@@ -485,7 +488,7 @@ class ServiceLogCapture(unittest.TestCase):
 
     def test_one_gzipped_archive_per_service(self):
         _, _, archives = capture_service_logs(self.tmp, since="100")
-        self.assertEqual(sorted(archives), ["api.log.gz", "postgres.log.gz"])
+        self.assertEqual(sorted(archives), ["api.log.gz", "mongo.log.gz"])
 
     def test_the_archive_holds_what_the_container_emitted(self):
         _, _, archives = capture_service_logs(self.tmp, since="100")
@@ -519,7 +522,7 @@ class ServiceLogCapture(unittest.TestCase):
         """2>&1 into the archive on purpose: compose's complaint is what the file should
         hold rather than nothing at all."""
         _, _, archives = capture_service_logs(self.tmp, since="100", rc=1)
-        self.assertEqual(sorted(archives), ["api.log.gz", "postgres.log.gz"])
+        self.assertEqual(sorted(archives), ["api.log.gz", "mongo.log.gz"])
 
 
 class ServiceLogTrap(unittest.TestCase):

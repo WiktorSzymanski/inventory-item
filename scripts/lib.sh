@@ -9,7 +9,7 @@
 # image that step produced, from `main`'s own working tree. The families' schemas and saga
 # queries still differ; what turned out to be reconcilable was everything the harness
 # itself touches — service names, job labels, the datasource URL — which `main` now names
-# uniformly (`api`, `postgres`) instead of keeping eight copies of `k6/` in step by hand.
+# uniformly (`api`, `mongo`) instead of keeping a copy of `k6/` per branch in step by hand.
 
 # Two different roots, and conflating them nests worktrees inside worktrees.
 #
@@ -30,8 +30,8 @@ RESULTS_DIR="$REPO_ROOT/bench-results"
 #
 # Without this each worktree gets its own project name from its directory basename, so
 # `down` in one project cannot remove containers left by another — and since every
-# variant publishes the same host ports (8080 api, 9090 prometheus, 3000 grafana, 5432
-# postgres), a leftover stack from the previous variant fails the next one with nothing but
+# variant publishes the same host ports (8080 api, 9090 prometheus, 3000 grafana, 27017
+# mongo), a leftover stack from the previous variant fails the next one with nothing but
 # a port conflict or a health timeout to go on. With a single project name, one
 # `down -v --remove-orphans` provably clears whatever ran last, including across a TO->ES
 # switch where even the service names differ (--remove-orphans is what catches those).
@@ -201,8 +201,8 @@ dc_main() {
 }
 
 # Full stop between variants. -v is required, not tidiness: reset.sh only truncates tables,
-# so without it a TO run would inherit the previous ES run's postgres volume under a schema
-# that does not match. --remove-orphans clears anything left by an older layout whose
+# so without it one variant would inherit the previous one's mongo volume, complete with the
+# collections and indexes its branch created. --remove-orphans clears anything left by an older layout whose
 # service names differed.
 teardown() {
     dc_main down -v --remove-orphans --timeout 30 >/dev/null 2>&1 || true
@@ -217,7 +217,7 @@ assert_ports_free() {
     local foreign
     foreign="$(docker ps --format '{{.Names}}\t{{.Label "com.docker.compose.project"}}\t{{.Ports}}' \
         | awk -F'\t' -v proj="$COMPOSE_PROJECT_NAME" \
-              '$2 != proj && $3 ~ /0\.0\.0\.0:(8080|9090|3000|5432)->/ {print "    " $1 " (project: " ($2 == "" ? "none" : $2) ")"}')"
+              '$2 != proj && $3 ~ /0\.0\.0\.0:(8080|9090|3000|27017)->/ {print "    " $1 " (project: " ($2 == "" ? "none" : $2) ")"}')"
     [ -z "$foreign" ] && return 0
     printf 'FATAL: containers outside the "%s" compose project are holding the ports the suite needs:\n%s\n' \
         "$COMPOSE_PROJECT_NAME" "$foreign" >&2

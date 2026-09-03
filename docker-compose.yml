@@ -1,31 +1,74 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: postgres
-    environment:
-      POSTGRES_DB:       inventory
-      POSTGRES_USER:     inventory
-      POSTGRES_PASSWORD: inventory
+  mongo:
+    image: mongo:7
+    container_name: mongo
+    # --replSet is not optional and is not about replication. A MongoDB transaction can only be
+    # started against a replica set, and the ES-*-mongo branches wire a MongoTransactionManager
+    # because an Axon append writes several documents and has to be atomic across them. Against a
+    # standalone mongod every command would fail at startTransaction. One member is enough for
+    # that; this is a single-node stack throughout, exactly as the Postgres one is.
+    #
+    # --bind_ip_all because the replica set config below names the container by its compose
+    # hostname, which is how the api reaches it.
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     ports:
-      - "5432:5432"
+      - "27017:27017"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U inventory -d inventory"]
+      # Liveness only: this says mongod answers, NOT that the replica set is initiated. The
+      # api waits on mongo-init below for that, because a healthy-but-uninitiated mongod
+      # accepts a connection and then fails every transaction.
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
       interval: 5s
       timeout: 3s
       retries: 10
-    # 600 for EVERY variant, not per family. ES needs ~350 per replica (Hikari 50 +
-    # Axon 300); TO needs ~50. max_connections sizes Postgres' shared memory, so a value
-    # that differed between the families being compared was itself a confound — which the
-    # old ES compose file warned about while the TO one used 300 anyway.
-    #
-    # track_io_timing is the only source of real DB I/O wait in this stack. With it off,
-    # pg_stat_database_blk_read_time and blk_write_time increase by exactly 0 in every run —
-    # which reads as "the database never waited on I/O", not as "not measured". It costs two
-    # clock reads per block access; on a benchmark whose subject is storage-path cost, not
-    # measuring the wait is the more expensive choice.
-    command: postgres -c max_connections=${PG_MAX_CONNECTIONS:-600} -c track_io_timing=on
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - mongo-data:/data/db
+
+  mongo-init:
+    # One-shot, and idempotent: rs.status() throws only while the set is uninitiated, so a
+    # restart against an existing mongo-data volume is a no-op rather than a reconfiguration.
+    # It then blocks until a PRIMARY has actually been elected -- rs.initiate() returns before
+    # the election completes, and an api that connects in that window sees no writable server.
+    image: mongo:7
+    container_name: mongo-init
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: "no"
+    entrypoint:
+      - bash
+      - -c
+      - |
+        mongosh --host mongo --quiet --eval '
+          try { rs.status() }
+          catch (e) { rs.initiate({_id: "rs0", members: [{_id: 0, host: "mongo:27017"}]}) }
+          while (!db.hello().isWritablePrimary) { sleep(200) }
+          print("rs0 primary ready")
+        '
+
+  mongodb-exporter:
+    # The counterpart of postgres-exporter. --collect-all turns on the dbstats, collstats,
+    # topmetrics and indexstats collectors; without it the exporter publishes serverStatus
+    # alone and every per-collection panel is empty.
+    #
+    # --compatible-mode also emits the older mongodb_* names alongside the current ones. Left
+    # ON deliberately: the metric names this exporter publishes are the one part of this stack
+    # not pinned by anything in the repo, and a name that silently disappears reads as "the
+    # database did nothing" rather than as an error -- the same hazard the postgres-exporter
+    # pin documents. Re-verify with scripts/verify_dashboard_metrics.py before trusting a run
+    # after any bump.
+    image: percona/mongodb_exporter:0.53.0
+    container_name: mongodb-exporter
+    command:
+      - --mongodb.uri=mongodb://mongo:27017/admin?directConnection=true
+      - --collect-all
+      - --compatible-mode
+      - --discovering-mode
+    ports:
+      - "9216:9216"
+    depends_on:
+      mongo:
+        condition: service_healthy
 
   api:
     # No default tag. IMAGE_TAG is always set by the harness from variants.env; a default
@@ -40,18 +83,48 @@ services:
     # Compose refuses to start a service that pins one at more than one replica.
     container_name: api
     environment:
-      DB_JDBC_URL:         "jdbc:postgresql://postgres:5432/inventory"
-      DB_R2DBC_URL:        "r2dbc:postgresql://postgres:5432/inventory"
-      DB_USER:             inventory
-      DB_PASSWORD:         inventory
-      AXON_JDBC_POOL_SIZE: "${AXON_JDBC_POOL_SIZE:-350}"
+      # The whole datasource, in one string. maxPoolSize is spliced in rather than set
+      # separately because Spring Boot 4 reads the pool size from the URI -- and note the
+      # property the branches bind is `spring.mongodb.uri`, NOT `spring.data.mongodb.uri`,
+      # which Boot 4 deprecated at ERROR level so that it binds nothing and the driver falls
+      # back to localhost:27017.
+      #
+      # replicaSet=rs0 is required: MongoTransactionManager cannot start a session without it.
+      #
+      # 400 = the SUM of what the Postgres branches give their two Hikari pools (350 Axon +
+      # 50 app), so the database-side resource the two families are handed is the same number.
+      # One MongoClient serves both here because a Mongo connection is checked out per
+      # operation rather than pinned for a transaction. Peak demand is unchanged at
+      # 2 x (112 command + 60 saga + 3 projections) = 350 -- see CommandGatewayConfig on the
+      # ES-*-mongo branches for why a busy thread still holds two.
+      MONGO_URI:           "mongodb://mongo:27017/inventory?replicaSet=rs0&maxPoolSize=${AXON_MONGO_POOL_SIZE:-400}"
       API_REPLICAS:        "1"
       # ES only (order-saga TrackingEventProcessor); ignored by the TO branches. Suite-wide
       # by necessity -- run-suite.sh has no per-variant env hook and a compose default always
       # SETS the variable, so vary it across passes:
       #     AXON_SAGA_TOTAL_SEGMENTS=8 scripts/run-suite.sh --only ES-4
       # Recorded in meta.json as saga_total_segments so runs stay distinguishable.
-      AXON_SAGA_TOTAL_SEGMENTS: "${AXON_SAGA_TOTAL_SEGMENTS:-60}"
+      #
+      # **32 HERE, 60 ON `main` -- AND THAT DIFFERENCE IS A CONFOUND UNTIL ONE SIDE MOVES.**
+      # An ES-2 vs ES-2-mongo comparison is only a comparison of the STORE while everything
+      # else is equal, and the segment count is not a small dial: `order-saga` is a
+      # TrackingEventProcessor, so each segment opens its own tracking query over the whole
+      # event stream. At 60 segments every appended event is read 63 times; at 32 it is read
+      # 35 times. Measured on this branch at 60 (W-fast, 30 orders/s offered): the saga
+      # association lookup ran at ~1753 queries/s against ~75 event-store reads/s and
+      # dominated the run, while conflicts (~0.3/s) and the driver pool (65 of 400) were both
+      # idle -- so this is the lever that moves throughput here, which is exactly why it must
+      # not silently differ between the two harnesses.
+      #
+      # Before publishing any cross-store table, either run `main`'s ES-2/ES-4 with
+      # AXON_SAGA_TOTAL_SEGMENTS=32 too, or set this back to 60. 32 is also the better value
+      # on its own terms -- a power of two, so the 64-bucket hash mask spreads evenly, where
+      # 60 gives segments 29-32 exactly double the load of the other 56.
+      #
+      # AxonCustomizerConfig logs the RESOLVED budget as [POOLS] at startup, so the run itself
+      # always states what it used: 2 x (112 command + 32 saga + 3 projections) = 294 against
+      # a 400 pool here, against 350/350 on `main`.
+      AXON_SAGA_TOTAL_SEGMENTS: "${AXON_SAGA_TOTAL_SEGMENTS:-32}"
       # ES-4-bounded ONLY; every other variant binds it and ignores it. The size of the queue of
       # INCOMING sagas — how many not-yet-started orders may sit in front of an in-flight saga's
       # next step. Default 112 = that branch's command-pool width, i.e. one pool turn of new work;
@@ -59,77 +132,22 @@ services:
       #     AXON_SAGA_INTAKE_CAPACITY=8 scripts/run-suite.sh --only ES-4,ES-4-bounded
       # Recorded in meta.json as saga_intake_capacity, since two runs of the same commit differ by
       # it. Unlike AXON_SAGA_TOTAL_SEGMENTS it needs no token reset — it is read at bean creation.
-      AXON_SAGA_INTAKE_CAPACITY: "${AXON_SAGA_INTAKE_CAPACITY:-112}"
+      #
+      # INERT ON THIS BRANCH: variants.env registers only ES-2-mongo and ES-4-mongo, and
+      # neither carries SagaIntakeGate — that bean lives on ES-4-bounded, which is registered
+      # on `main`. The variable is still passed so the two compose files stay comparable, and
+      # so an ES-4-bounded-mongo arm would need no harness change.
+      AXON_SAGA_INTAKE_CAPACITY: "${AXON_SAGA_INTAKE_CAPACITY:-70}"
       POOLING_INTERVAL:    "${POOLING_INTERVAL:-PT0.1S}"
       CACHE_TTL:           "${CACHE_TTL:-10m}"
       CACHE_MAXIMUM_SIZE:  "${CACHE_MAXIMUM_SIZE:-10000}"
-      DB_MAX_CONNECTIONS:  "${DB_MAX_CONNECTIONS:-350}"
-      # 50 for every TO branch (TO-1, TO-2, TO-2-fix-A, TO-2-push, TO-3, TO-4), down from 200.
-      #
-      # It has to be set HERE and cannot be expressed per branch: a compose default always SETS
-      # the variable, so this line overrides whatever each branch's application.yaml says. Every
-      # TO branch still ships `${ORDER_WORKER_THREADS:200}` and every one of those defaults is
-      # dead text under the harness — the DANGER comments there naming 150 are stale on both the
-      # number and the mechanism.
-      #
-      # Inert on ES: no ES branch references order-worker or ORDER_WORKER at all, so this does
-      # not resource the two families differently and is not a TO-vs-ES confound.
-      ORDER_WORKER_THREADS: "${ORDER_WORKER_THREADS:-50}"
       HTTP_THREADS: "${HTTP_THREADS:-99}"
-      # TO-1 and TO-2, and inert everywhere else (Spring ignores unknown properties). Selects how
-      # the outbox drain finds its next page: CURSOR reads `seq > cursor`, SCAN proves absence over
-      # the whole `completion_date IS NULL` region. It has to be listed HERE — compose passes only
-      # the variables it names, so an unlisted one never reaches the container and the A/B would
-      # silently not happen. The default matches BOTH branches' application.yaml, so the usual
-      # compose-default trap (a default always SETS the variable, overriding the branch's own yaml)
-      # costs nothing here.
-      #
-      #   OUTBOX_CURSOR_ENABLED=false ./scripts/run-suite.sh --only TO-1   # pre-V8 baseline
-      #   ./scripts/run-suite.sh --only TO-1                              # cursor
-      #
-      # Same commit, same image, both runs — which is the only way the comparison isolates the
-      # drain topology instead of everything else that differs between two builds.
-      #
-      # The two branches differ in what SCAN means for the second delivery process: TO-2 falls back
-      # to an unbounded republishing scan, TO-1's fallback poll switches off entirely, because
-      # TO-1's scan drain already selects every incomplete row every tick. Both reproduce the
-      # pre-V8 branch, which is the point.
-      OUTBOX_CURSOR_ENABLED: "${OUTBOX_CURSOR_ENABLED:-true}"
-      # Cadence of the fallback poll / republisher, on TO-1 and TO-2. NO `:-default` on purpose:
-      # a compose default always SETS the variable and would override whatever the branch's own
-      # application.yaml says. Written bare, compose forwards these only when the host has them
-      # set, so an unset run keeps each branch's shipped default (PT1M/PT1M on both today) and a
-      # run that wants to tune the sweep can still do it without a rebuild.
-      OUTBOX_SWEEP_INTERVAL:
-      OUTBOX_SWEEP_MIN_AGE:
-      # Delivery pool width: 100 on TO-2, TO-2-fix-A and TO-2-push, up from the 20 each of them
-      # ships. NOT bare any more — a compose default overwrites the branch's own application.yaml,
-      # and here that is the point: the three arms are meant to differ in HOW the drain finds its
-      # next page, not in how wide it delivers, so the width belongs to the comparison rather than
-      # to any one branch.
-      #
-      # Inert on TO-3 and TO-4, which have no drain pool at all (their @ApplicationModuleListener
-      # deliveries run on SimpleAsyncTaskExecutor, one unbounded thread per task), and on ES.
-      #
-      # TO-1's equivalent pool is a DIFFERENT knob — see OUTBOX_POLLER_THREADS below.
-      #
-      # EVENT_DELIVERY_QUEUE_CAPACITY exists only on TO-2-push and is inert elsewhere. There the
-      # NOTIFY carries the event, so the listener submits one delivery per notification and cannot
-      # collapse a burst the way a wake-up does; that queue is the only thing bounding deliveries in
-      # flight. Filling it blocks the listener, which backs up PostgreSQL's async-notify queue and
-      # slows writers at pg_notify — so this knob sets where backpressure starts, and lowering it
-      # moves the limit onto the producers sooner. Watch outbox_notify_queue_depth against it, and
-      # outbox_notify_queue_usage for the server side.
-      EVENT_DELIVERY_THREADS: "${EVENT_DELIVERY_THREADS:-100}"
-      EVENT_DELIVERY_QUEUE_CAPACITY:
-      # TO-1's delivery pool, and the counterpart to EVENT_DELIVERY_THREADS above: TO-1 polls
-      # rather than listens, so its workers live under app.outbox-poller instead of
-      # app.event-delivery and answer to this name. 100 for parity with the TO-2 arms — the
-      # branch ships 10, which was never reachable from the harness because this variable was
-      # not listed here at all, and compose forwards only the variables it names.
-      #
-      # Inert on every other branch.
-      OUTBOX_POLLER_THREADS: "${OUTBOX_POLLER_THREADS:-100}"
+      # Every TO-only knob the Postgres harness carries -- ORDER_WORKER_THREADS,
+      # OUTBOX_CURSOR_ENABLED, OUTBOX_SWEEP_*, EVENT_DELIVERY_*, OUTBOX_POLLER_THREADS -- is
+      # deleted rather than left inert. variants.env on this branch registers the two
+      # ES-*-mongo variants and nothing else, so there is no branch here that could honour one,
+      # and a knob that silently does nothing is the thing this file's comments most often warn
+      # about. Restore them from `main` if a TO-on-Mongo arm is ever added.
     ports:
       - "8080:8080"
       # The management connector, on variants that give actuator its own port
@@ -140,8 +158,12 @@ services:
       # connects. 8090 rather than the conventional 8081, which is commonly taken.
       - "8090:8090"
     depends_on:
-      postgres:
-        condition: service_healthy
+      # service_completed_successfully, not service_healthy on mongo. A mongod that answers
+      # ping but has no initiated replica set accepts the api's connection and then fails
+      # every transaction, which surfaces as a health-check timeout with nothing in the logs
+      # pointing at the cause.
+      mongo-init:
+        condition: service_completed_successfully
 
   k6:
     image: grafana/k6:latest
@@ -162,27 +184,6 @@ services:
       - grafana-reporter
       - api
 
-
-  postgres-exporter:
-    # Pin v0.15.0. PG_EXPORTER_EXTEND_QUERY_PATH is marked DEPRECATED by this build -- it works
-    # here (verified: the custom gauges track pg_locks exactly at 10/30/60 concurrent notifiers,
-    # and all 320 default metric lines still emit alongside them), but a later image could drop
-    # it silently. If this pin is ever bumped, re-verify pg_notify_commit_lock_waiting appears
-    # BEFORE trusting a run: its absence looks identical to "no contention".
-    image: prometheuscommunity/postgres-exporter:v0.15.0
-    container_name: postgres-exporter
-    environment:
-      DATA_SOURCE_NAME: "postgresql://inventory:inventory@postgres:5432/inventory?sslmode=disable"
-      PG_EXPORTER_EXTEND_QUERY_PATH: /queries.yaml
-    # Read once at exporter startup. Editing queries.yaml and reloading does NOTHING -- same trap
-    # as prometheus.yml. After any edit: docker compose up -d --force-recreate postgres-exporter.
-    volumes:
-      - ./monitoring/postgres-exporter/queries.yaml:/queries.yaml:ro
-    ports:
-      - "9187:9187"
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
@@ -264,6 +265,6 @@ services:
       - grafana-renderer
 
 volumes:
-  postgres-data:
+  mongo-data:
   prometheus-data:
   grafana-data:
