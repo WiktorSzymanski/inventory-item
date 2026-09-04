@@ -185,6 +185,76 @@ services:
       - api
 
 
+  # ---------------------------------------------------------------- network delay
+  # Datacenter RTT on the api -> postgres link, for runs that ask for one. OFF by default and
+  # inert unless DB_NET_DELAY is set: the service sits behind a compose profile, so neither a
+  # bare `docker compose up` nor bench.sh's `up -d postgres prometheus ...` starts it, and a run
+  # that does not set the knob is byte-for-byte the stack that existed before this service did.
+  #
+  # WHY A SIDECAR rather than tc inside postgres: postgres:16-alpine ships no iproute2, and
+  # baking one in would change the image under test. This container holds NET_ADMIN and joins
+  # postgres' network namespace, so the qdisc it installs on eth0 IS postgres' egress qdisc. It
+  # then sleeps, which is what lets bench.sh ask `exec netem tc qdisc show` what is actually in
+  # force rather than assume the knob took.
+  #
+  # ONE-WAY, AND THAT IS THE POINT. netem shapes EGRESS only, so this delays postgres -> api and
+  # leaves api -> postgres alone. A query round trip crosses it exactly once, which makes
+  # DB_NET_DELAY the added RTT rather than one leg of it. Shaping the api side too would double
+  # the figure and would also delay k6 -> api and Prometheus' scrapes -- neither of which is the
+  # link being modelled.
+  #
+  # Reference RTTs: same rack 0.1-0.3ms, cross-AZ within a region 0.5-2ms, cross-region 10-100ms.
+  # The compose bridge measures ~0.05-0.1ms before anything is added.
+  #
+  #     DB_NET_DELAY=500us scripts/run-suite.sh --only TO-1
+  #     DB_NET_DELAY=2ms   scripts/run-suite.sh --only TO-1,ES-4
+  #
+  # Values are tc syntax (500us, 2ms, 10ms). Recorded in meta.json as db_net_delay, alongside the
+  # qdisc read back from the namespace and the RTT measured either side of installing it.
+  #
+  # DB_NET_JITTER is empty by default and should usually stay that way. netem queues a jittered
+  # packet by its computed send time, so a non-zero jitter REORDERS packets; TCP reads the
+  # duplicate ACKs that follow as loss, halves cwnd and may fast-retransmit. That is a second
+  # uncontrolled variable sitting on top of the latency being studied -- set it only when the
+  # reordering is itself the subject.
+  netem:
+    # Pinned for the reason grafana/k6 is: `latest` drifting mid-campaign would change the
+    # shaping between variants. Any image carrying iproute2 would do; this is simply one that is
+    # guaranteed to.
+    image: nicolaka/netshoot:v0.13
+    container_name: netem
+    profiles:
+      - netem
+    # Shares postgres' netns, so `eth0` in the command below is postgres' interface and not this
+    # container's own. A service in this mode can declare no ports and no networks of its own.
+    network_mode: "service:postgres"
+    cap_add:
+      - NET_ADMIN
+    environment:
+      DB_NET_DELAY:  "${DB_NET_DELAY:-}"
+      DB_NET_JITTER: "${DB_NET_JITTER:-}"
+    # `$$` escapes compose interpolation, so the inner shell expands these and not compose.
+    #
+    # The `del` first makes a restart idempotent. With DB_NET_DELAY empty NO qdisc is installed
+    # at all, rather than a netem carrying `delay 0`: netem replaces the interface's default
+    # qdisc with a 1000-packet queue of its own, so a "zero delay" arm would not be the unshaped
+    # system and the A/B would be comparing two shaped ones.
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        tc qdisc del dev eth0 root 2>/dev/null || true
+        if [ -n "$$DB_NET_DELAY" ]; then
+          tc qdisc add dev eth0 root netem delay "$$DB_NET_DELAY" \
+             $${DB_NET_JITTER:+$$DB_NET_JITTER distribution normal}
+        fi
+        tc qdisc show dev eth0
+        exec sleep infinity
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   postgres-exporter:
     # Pin v0.15.0. PG_EXPORTER_EXTEND_QUERY_PATH is marked DEPRECATED by this build -- it works
     # here (verified: the custom gauges track pg_locks exactly at 10/30/60 concurrent notifiers,

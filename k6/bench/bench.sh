@@ -174,6 +174,145 @@ trap 'capture_service_logs "$RUN_DIR/logs" "$T_RESET"' EXIT
 
 "$HERE/reset.sh"
 
+# ---------------------------------------------------------------- network delay (optional)
+# >>> netem
+# Datacenter RTT on the api -> postgres hop, when DB_NET_DELAY asks for one. Unset is the
+# default and installs nothing at all: no qdisc, no sidecar, a stack identical to the one that
+# existed before the netem service did. See docker-compose.yml for the mechanism, and for why
+# the knob is the whole added RTT rather than one leg of it.
+#
+#     DB_NET_DELAY=500us scripts/run-suite.sh --only TO-1
+#
+# AFTER reset.sh, deliberately. Flyway's migrations and the whole Spring context start up
+# unshaped, so a 50ms setting cannot push a cold start past reset.sh's 180s HEALTH_TIMEOUT and
+# fail the run for a reason that has nothing to do with the measurement. Everything that IS
+# measured -- seed, warmup, settle, load, drain -- runs behind the delay. Installing it here also
+# means it survives reset.sh's api restart, which never touches the postgres netns the qdisc
+# lives in.
+#
+# The guards below exist because every failure mode here is SILENT:
+#
+#   * A bare number is NANOSECONDS to tc. DB_NET_DELAY=100 installs `delay 100ns` -- a no-op
+#     that a run would record as "100" and that nothing downstream would question. So the unit
+#     is required, and its absence is refused.
+#   * `docker compose up -d netem` reports "Started" even when tc rejects the value and the
+#     container dies a moment later; the exit status says nothing. So the qdisc is read back out
+#     of the namespace and the RTT is measured either side of installing it. What reaches
+#     meta.json is what was observed, not what was asked for.
+DB_NET_DELAY="${DB_NET_DELAY:-}"
+DB_NET_JITTER="${DB_NET_JITTER:-}"
+NETEM_QDISC=""
+NETEM_RTT_BEFORE=""
+NETEM_RTT_AFTER=""
+
+# A tc time string -> milliseconds; non-zero exit when it carries no unit or is malformed.
+netem_ms() {
+    python3 - "$1" <<'PYNETEM'
+import re, sys
+m = re.fullmatch(r'\s*([0-9]+(?:\.[0-9]+)?)\s*(us|usec|ms|msec|s|sec|secs)\s*', sys.argv[1])
+if not m:
+    sys.exit(1)
+v, u = float(m.group(1)), m.group(2)
+print(v / 1000.0 if u.startswith('us') else v if u.startswith('ms') else v * 1000.0)
+PYNETEM
+}
+
+# Median TCP-connect time to postgres from the HOST, in ms. Not the api -> postgres path itself
+# -- the api's traffic never leaves the bridge -- but it crosses the very same egress qdisc, so
+# it witnesses that the shaping is in force and roughly the right size. Addressed by container
+# IP rather than through the published port, which would put docker-proxy's userland hop into
+# every sample.
+db_rtt_ms() {
+    python3 - "$1" <<'PYNETEM' 2>/dev/null || true
+import socket, statistics, sys, time
+host, xs = sys.argv[1], []
+for _ in range(21):
+    s = socket.socket(); s.settimeout(5)
+    t = time.perf_counter()
+    try:
+        s.connect((host, 5432))
+    except OSError:
+        sys.exit(1)
+    xs.append((time.perf_counter() - t) * 1000)
+    s.close()
+print("%.3f" % statistics.median(xs))
+PYNETEM
+}
+
+# Recreate the sidecar with the knob empty -- which deletes the qdisc and installs nothing --
+# prove the namespace is unshaped, then remove the container. Echoes what tc reported.
+netem_clear() {
+    local q
+    DB_NET_DELAY="" DB_NET_JITTER="" dc up -d --force-recreate netem >/dev/null \
+        || die "netem: could not recreate the sidecar to clear its qdisc"
+    q="$(dc exec -T netem tc qdisc show dev eth0 2>/dev/null | tr -d '\r' | head -1)"
+    case "$q" in
+        *netem*) die "netem: a stale qdisc is STILL in force on $DB_SVC ($q). This run would be shaped without recording it. Clear it with: docker compose down -v" ;;
+    esac
+    dc rm -sf netem >/dev/null 2>&1 || true
+    printf '%s' "$q"
+}
+
+# A sidecar left behind by an earlier run, cleared before anything else happens. teardown()
+# removes it between variants, so this can only be a repeated direct bench.sh -- but there it is
+# load-bearing twice over. An unshaped run would otherwise inherit the previous run's delay and
+# record nothing about it: `up -d postgres prometheus ...` names the services it wants and so
+# never touches this one. And a run LOWERING the delay would measure its "before" RTT against
+# the old shaping, see the number fall, and abort on the delta guard below.
+if docker inspect netem >/dev/null 2>&1; then
+    log "netem: a netem container is left over from an earlier run — clearing its qdisc first"
+    # Assigned, not inlined into the log argument. netem_clear can die, and a `die` inside a
+    # command substitution exits only the SUBSHELL: as an argument to `log` its non-zero status
+    # is discarded by the simple command that expanded it, and the run would carry on shaped.
+    # As the right-hand side of an assignment the status is the assignment's own, so set -e sees
+    # it.
+    STALE_QDISC="$(netem_clear)"
+    log "netem: cleared — $DB_SVC egress is unshaped ($STALE_QDISC)"
+fi
+
+if [ -n "$DB_NET_DELAY" ]; then
+    DB_NET_DELAY_MS="$(netem_ms "$DB_NET_DELAY")" || die \
+"DB_NET_DELAY='$DB_NET_DELAY' is not a tc time with a unit (500us, 2ms, 50ms). The unit is required rather than defaulted because a bare number is NANOSECONDS to tc: DB_NET_DELAY=2 installs 'delay 2ns' and shapes nothing at all."
+    if [ -n "$DB_NET_JITTER" ]; then
+        netem_ms "$DB_NET_JITTER" >/dev/null || die \
+"DB_NET_JITTER='$DB_NET_JITTER' is not a tc time with a unit (500us, 2ms, ...). Same nanosecond trap as DB_NET_DELAY."
+    fi
+
+    DB_IP="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+             "$DB_SVC" 2>/dev/null || true)"
+    [ -n "$DB_IP" ] || die "netem: cannot resolve the '$DB_SVC' container IP; is the stack up?"
+
+    NETEM_RTT_BEFORE="$(db_rtt_ms "$DB_IP")"
+    log "netem: installing delay=$DB_NET_DELAY jitter=${DB_NET_JITTER:-none} on $DB_SVC egress"
+    export DB_NET_DELAY DB_NET_JITTER
+    dc up -d netem >/dev/null || die "netem: the delay sidecar would not start"
+
+    NETEM_QDISC="$(dc exec -T netem tc qdisc show dev eth0 2>/dev/null | tr -d '\r' | head -1)"
+    case "$NETEM_QDISC" in
+        *netem*delay*) ;;
+        *) die "netem: no netem qdisc on $DB_SVC after asking for delay=$DB_NET_DELAY.
+   tc reported: ${NETEM_QDISC:-<the sidecar is not running>}
+   Its own output says why:  docker compose logs netem" ;;
+    esac
+
+    NETEM_RTT_AFTER="$(db_rtt_ms "$DB_IP")"
+    # Half the requested delay is a deliberately loose floor: it is proving that the shaping is
+    # REAL and of the right order, not calibrating it. netem's own scheduling overhead pushes the
+    # measured figure slightly ABOVE the request (2ms asked, ~2.03ms seen), so the interesting
+    # direction is a value that barely moved.
+    python3 - "${NETEM_RTT_BEFORE:-0}" "${NETEM_RTT_AFTER:-0}" "$DB_NET_DELAY_MS" <<'PYNETEM' || die \
+"netem: the qdisc is installed but the measured RTT did not move by anything like $DB_NET_DELAY (see the line above). Treat this run as unshaped."
+import sys
+before, after, want = (float(x) for x in sys.argv[1:4])
+got = after - before
+print("[netem] RTT %.3f -> %.3f ms (+%.3f, asked for +%.3f)" % (before, after, got, want),
+      file=sys.stderr)
+sys.exit(0 if got >= 0.5 * want else 1)
+PYNETEM
+    log "netem: $NETEM_QDISC"
+fi
+# <<< netem
+
 # ---------------------------------------------------------------- cadvisor check (advisory)
 #
 # Cannot run before "$RUN_DIR" is created: cadvisor can only be asked about the api
@@ -422,6 +561,17 @@ meta = {
     # it is not comparable to one that did not even at the same commit. Default here mirrors
     # docker-compose's.
     "command_pool": int("${COMMAND_POOL:-112}"),
+    # The injected datacenter RTT on the postgres -> api hop, and the evidence that it took.
+    # Empty means the run was unshaped, which is the default. db_net_qdisc is what tc reported
+    # from inside postgres' namespace and the two rtt figures bracket the install, so a run
+    # cannot record a delay it did not actually get -- the same reason image_id is recorded
+    # next to image_tag.
+    "db_net_delay": "${DB_NET_DELAY:-}",
+    "db_net_jitter": "${DB_NET_JITTER:-}",
+    "db_net_qdisc": """$NETEM_QDISC""".strip(),
+    # None, not null: this heredoc is Python source, and json.dump writes it out as null.
+    "db_net_rtt_before_ms": ${NETEM_RTT_BEFORE:-None},
+    "db_net_rtt_after_ms": ${NETEM_RTT_AFTER:-None},
     "k6_exit_code": int("$K6_EXIT"),
     "config": config,
     "steps": steps,

@@ -105,9 +105,22 @@ k6 scenario rather than a ratio, so it does not perturb the write arrival rate.
 | `SEED` | 1337 | RNG seed; identical item sequence across variants |
 | `SKIP_BUILD` | 0 | Skip gradle+docker build (only if the image is already current) |
 | `ALLOW_DIRTY` | 0 | Permit uncommitted `src/` — still reports `INVALID` |
+| `DB_NET_DELAY` | **unset** | Datacenter RTT injected on the api→postgres link (tc syntax: `500us`, `2ms`). Unset = unshaped |
+| `DB_NET_JITTER` | **unset** | Jitter around `DB_NET_DELAY`. Reorders packets — leave unset unless that is the subject |
 
 `ITEMS_PER_ORDER` must be `<= DISTINCT_ITEMS`; the harness refuses otherwise. Set
 `ALLOW_DUP_LINES=true` to deliberately hit one aggregate twice in an order.
+
+`DB_NET_DELAY` shapes the database link with `tc netem`, from a sidecar that joins postgres'
+network namespace (the `netem` service, behind a compose profile). netem delays *egress* only
+and the qdisc sits on postgres, so a query round trip crosses it exactly once and the value is
+the whole added RTT rather than one leg — same rack is 0.1–0.3 ms, cross-AZ 0.5–2 ms,
+cross-region 10–100 ms. **The unit is mandatory**: a bare number is *nanoseconds* to `tc`, so
+`DB_NET_DELAY=2` would install `delay 2ns` and shape nothing. It is installed after the API is
+healthy, so migrations and Spring startup are never shaped, and `meta.json` records the qdisc
+read back out of the namespace next to the RTT measured either side of installing it
+(`db_net_qdisc`, `db_net_rtt_before_ms`, `db_net_rtt_after_ms`) — a run cannot claim a delay it
+did not get. The delay is paid per *statement*, so it costs more on the chattier write paths.
 
 The warmup is fixed-iteration *and* fixed-rate. Fixed iterations so a fast variant does not
 open its window with deeper event-store, snapshot and cache state than a slow one; fixed

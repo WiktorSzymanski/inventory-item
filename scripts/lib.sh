@@ -204,8 +204,15 @@ dc_main() {
 # so without it a TO run would inherit the previous ES run's postgres volume under a schema
 # that does not match. --remove-orphans clears anything left by an older layout whose
 # service names differed.
+#
+# `--profile netem` is what reaches the delay sidecar. `down` does NOT remove the containers of
+# services whose profile is inactive — verified against Compose v5.5.0: a plain
+# `down -v --remove-orphans` tore the whole stack down and left `netem` sitting there exited.
+# The qdisc itself dies with postgres' network namespace either way, so what this prevents is
+# only a stale container, but bench.sh then has to notice and clear it on the next unshaped run
+# rather than starting from nothing. Add any future profile here for the same reason.
 teardown() {
-    dc_main down -v --remove-orphans --timeout 30 >/dev/null 2>&1 || true
+    dc_main --profile netem down -v --remove-orphans --timeout 30 >/dev/null 2>&1 || true
 }
 
 # `down --remove-orphans` only reaches containers in OUR compose project. A stack brought
