@@ -140,15 +140,25 @@ class InventoryPessimisticConcurrencyTest {
         assertThat(loads!!.count())
             .`as`("one load sample per doLoadWithLock, covering the hit arm copy() also counted")
             .isGreaterThanOrEqualTo(copies.count())
-        // The repair reads the store on the same thread, but only after the append already failed.
-        // Counting it as a write-path load is exactly the confusion the path tag exists to remove.
+        // The repair reads the store inside the load, but it is repair work, not this command's state
+        // load. Counting it as a write-path load is exactly the confusion the path tag exists to remove.
         assertThat(meterRegistry.find("state_load_time").tag("phase", "load").tag("path", "repair").timer())
             .`as`("a cache repair is never a write-path load")
             .isNull()
-        // Contention here produces far more empty probes than repairs; both must be timed, apart.
         assertThat(catchupDurationCount("noop") + catchupDurationCount("applied"))
-            .`as`("every rollback's repair attempt was timed")
+            .`as`("every repair attempt was timed")
             .isGreaterThan(0L)
+        // The mark-and-resolve strategy under real contention: losers record the sequence the winner
+        // took, and the next load resolves it instead of handing out state that is already doomed.
+        assertThat(meterRegistry.get("inventory.opt.cache.stale.mark").counter().count())
+            .`as`("real contention recorded marks")
+            .isGreaterThan(0.0)
+        assertThat(meterRegistry.get("inventory.opt.cache.stale.hit").counter().count())
+            .`as`("marks were resolved at load, not left to rot")
+            .isGreaterThan(0.0)
+        assertThat(inventoryItemRepository.cachedKnownSequence(itemId))
+            .`as`("no mark outlives the run: the cache settled at or past everything it knew about")
+            .isLessThanOrEqualTo(inventoryItemRepository.cachedSequence(itemId))
 
         println(
             "[OPT-IT] stock=$initialStock attempts=$concurrentReserves reserved=$reserved failed=$failed " +
@@ -186,8 +196,23 @@ class InventoryPessimisticConcurrencyTest {
             ),
         )
 
-        // Collides at seqBefore+1, rolls back, catchUp pulls in the foreign event, retry lands at +2.
+        val markedBefore = meterRegistry.get("inventory.opt.cache.stale.mark").counter().count()
+        val staleHitsBefore = meterRegistry.get("inventory.opt.cache.stale.hit").counter().count()
+
+        // Collides at seqBefore+1 and rolls back, MARKING the entry with that sequence; no store read
+        // happens there. The retry's load sees sequence < knownStoreSequence, catches up, lands at +2.
         gateway.sendAndWait<Any?>(SagaReserveItemCommand(id = itemId, quantity = 1))
+
+        assertThat(meterRegistry.get("inventory.opt.cache.stale.mark").counter().count() - markedBefore)
+            .`as`("the lost race recorded a mark")
+            .isGreaterThanOrEqualTo(1.0)
+        assertThat(meterRegistry.get("inventory.opt.cache.stale.hit").counter().count() - staleHitsBefore)
+            .`as`("the retry's load found the mark and resolved it before running the command")
+            .isGreaterThanOrEqualTo(1.0)
+        assertThat(inventoryItemRepository.cachedKnownSequence(itemId))
+            .`as`("the mark is resolved once the entry reaches it")
+            .isNotNull()
+            .isLessThanOrEqualTo(inventoryItemRepository.cachedSequence(itemId))
 
         val catchups = meterRegistry.get("inventory.opt.catchup").counter().count() - catchupsBefore
         val failures = meterRegistry.get("inventory.opt.catchup.failed").counter().count() - failedBefore

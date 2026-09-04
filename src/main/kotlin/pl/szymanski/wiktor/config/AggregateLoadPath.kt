@@ -11,11 +11,12 @@ package pl.szymanski.wiktor.config
  *  - **[COMMAND]** — [PessimisticCachingRepository.doLoadWithLock] missing the cache and falling
  *    through to `super`. This, and only this, is the write path: state being materialised for a
  *    command that is about to append.
- *  - **[REPAIR]** — [PessimisticCachingRepository.catchUp] reading the delta after a rollback. It
- *    runs on the losing command's thread but AFTER its append failed, so it is the cost of the
- *    conflict, not the cost of the write. An empty probe used to be the only one distinguishable
- *    (it identifies no aggregate and lands under `unknown`); a repair that actually finds events was
- *    tagged `InventoryItem` and was indistinguishable from a cold miss.
+ *  - **[REPAIR]** — [PessimisticCachingRepository] resolving a stale mark: reading the delta that a
+ *    cache entry known to be behind the store is missing. It runs INSIDE the load, before the command
+ *    executes, so unlike the post-rollback repair it replaced it is genuinely on the write path and
+ *    the `{phase=load}` envelope legitimately contains it. The tag is what keeps it subtractable, and
+ *    what keeps `{phase=events,path=command}` meaning "cold miss" rather than pooling the two reads —
+ *    a repair that finds events is otherwise tagged `InventoryItem` and indistinguishable from one.
  *  - **[SNAPSHOT]** — [CacheFedSnapshotter]'s fallback to the stock replay task, which reads the
  *    snapshot row plus the whole tail. It runs inline on the command thread at `onPrepareCommit`, so
  *    it IS before the insert, but it is not this command's state load and pooling it with one
