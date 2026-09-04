@@ -203,4 +203,69 @@ class PessimisticCachingRepositoryStaleMarkTest {
 
         assertThat(repository.cachedKnownSequence(itemId)).isEqualTo(3L)
     }
+
+    // --- resolving the mark at load ------------------------------------------------------------
+
+    @Test
+    fun `a load on a known-stale entry catches up before handing state to the command`() {
+        seedItem()
+        loadAndCommit()                       // cache at 0
+        foreignAppend(1L, reserved())
+        loadAndRollback(ConcurrencyException("simulated 23505"))   // mark = 1
+        assertThat(repository.cachedSequence(itemId)).isEqualTo(0L)
+
+        loadAndCommit()                       // the retry
+
+        assertThat(repository.cachedSequence(itemId)).isEqualTo(1L)
+        assertThat(repository.cachedKnownSequence(itemId)).isEqualTo(1L)   // 1 >= 1, resolved
+        assertThat(counter("inventory.opt.cache.stale.hit")).isEqualTo(1.0)
+        assertThat(counter("inventory.opt.catchup")).isEqualTo(1.0)
+        assertThat(catchupCount("applied")).isEqualTo(1L)
+    }
+
+    @Test
+    fun `a load on an unmarked entry never touches the store`() {
+        seedItem()
+        loadAndCommit()
+
+        loadAndCommit()
+        loadAndCommit()
+
+        assertThat(counter("inventory.opt.cache.stale.hit")).isZero()
+        assertThat(catchupCount("noop") + catchupCount("applied") + catchupCount("failed")).isZero()
+        assertThat(counter("inventory.opt.cache.hit")).isEqualTo(2.0)
+    }
+
+    @Test
+    fun `catching up spans a multi-event gap in one read`() {
+        seedItem()
+        loadAndCommit()
+        foreignAppend(1L, reserved())
+        foreignAppend(2L, reserved())
+        foreignAppend(3L, reserved())
+        loadAndRollback(ConcurrencyException("simulated 23505"))   // mark = 1
+
+        loadAndCommit()
+
+        // The mark only proved sequence 1, but the read is "everything from 1", so it lands at head.
+        assertThat(repository.cachedSequence(itemId)).isEqualTo(3L)
+        assertThat(catchupCount("applied")).isEqualTo(1L)
+        assertThat(meterRegistry.find("inventory.opt.catchup.events").summary()!!.totalAmount()).isEqualTo(3.0)
+    }
+
+    @Test
+    fun `a mark that proves wrong is cleared after a single empty read`() {
+        seedItem()
+        loadAndCommit()
+        // A ConcurrencyException with no foreign event behind it: the mark is a lie.
+        loadAndRollback(ConcurrencyException("simulated 23505"))
+        assertThat(repository.cachedKnownSequence(itemId)).isEqualTo(1L)
+
+        loadAndCommit()                       // pays one empty read, then clears the mark
+        assertThat(catchupCount("noop")).isEqualTo(1L)
+
+        loadAndCommit()                       // must NOT pay again
+        assertThat(catchupCount("noop")).isEqualTo(1L)
+        assertThat(counter("inventory.opt.cache.stale.hit")).isEqualTo(1.0)
+    }
 }

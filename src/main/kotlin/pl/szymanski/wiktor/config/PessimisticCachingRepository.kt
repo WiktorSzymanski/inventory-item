@@ -227,6 +227,13 @@ class PessimisticCachingRepository<T : Any>(
     private val staleMarkCounter = meterRegistry.counter("inventory.opt.cache.stale.mark")
 
     /**
+     * Loads that found a known-stale entry and caught up rather than handing a command state whose
+     * next append was already guaranteed to collide. The headline number for this branch: doomed
+     * commands intercepted. Grafana-only, like [staleMarkCounter].
+     */
+    private val staleHitCounter = meterRegistry.counter("inventory.opt.cache.stale.hit")
+
+    /**
      * Repository-level cache of confirmed state, bounded by an idle TTL and a maximum size.
      *
      * `expireAfterAccess` (not `expireAfterWrite`): a hot aggregate is never evicted, so the bounds
@@ -271,22 +278,33 @@ class PessimisticCachingRepository<T : Any>(
             return aggregate
         }
         hitCounter.increment()
+        // Exact, not heuristic: sequence < knownStoreSequence means the sequence this state would
+        // append is already taken, so the command is doomed before it starts. Paying a delta read
+        // here buys a command that can succeed, in place of a certain conflict plus 25ms of backoff
+        // and one of only five retries.
+        val entry = if (cached.sequence < cached.knownStoreSequence) {
+            staleHitCounter.increment()
+            catchUp(aggregateIdentifier, cached) ?: cached   // repair is best-effort; stale is survivable
+        } else {
+            cached
+        }
         // reconfigure (NOT prepareTrigger): keeps the snapshot event counter running across commands.
         // Without a lock, concurrent commands on one aggregate share this trigger instance and race on
         // its counter. That race is benign — it can only make the snapshot cadence slightly irregular,
         // never produce a wrong snapshot — whereas prepareTrigger would hand out a ZEROED counter per
         // command and stop the threshold from ever being reached, silently disabling snapshotting.
-        val trigger = snapshotTriggerDefinition.reconfigure(aggregateType, cached.trigger)
+        val trigger = snapshotTriggerDefinition.reconfigure(aggregateType, entry.trigger)
         // Everything the hit path does instead of touching the store — see [copyTimer]. The
         // reconfigure above is excluded deliberately: it is bookkeeping on the snapshot counter, not
         // part of materialising state, and folding it in would flatter the comparison.
         val copySample = Timer.start(meterRegistry)
         val aggregate = EventSourcedAggregate.reconstruct(
-            deepCopy(cached.root), aggregateModel(), cached.sequence, cached.deleted, eventStore, trigger,
+            deepCopy(entry.root), aggregateModel(), entry.sequence, entry.deleted, eventStore, trigger,
         )
         copySample.stop(copyTimer)
         validateOnLoad(aggregate, expectedVersion)
-        registerCacheHooks(cached.sequence, aggregate)
+        // The CAUGHT-UP sequence, so a later mark records the sequence this command actually targeted.
+        registerCacheHooks(entry.sequence, aggregate)
         return aggregate
     }
 
@@ -358,61 +376,78 @@ class PessimisticCachingRepository<T : Any>(
     }
 
     /**
-     * Incremental catch-up after a rolled-back command: read only the delta events the cached state is
-     * missing and apply them, so the retry serves fresh state without a snapshot replay.
+     * Bring a known-stale entry up to date: read only the delta it is missing and replay it onto a
+     * copy, then publish the result so every concurrent loser of the same race finds it fresh instead
+     * of issuing the same read. Returns the entry now in the cache, or null if nothing moved.
      *
-     * Lock-free, this is the ordinary single-node path: the command that lost the race for sequence
-     * N+1 lands here, and by retry time the winner's [advance] (afterCommit) has usually already moved
-     * the cache to the store head — this delta read is the same-effect realisation of that for the
-     * case where no local commit did (e.g. a different node won). Strictly best-effort and
-     * NON-destructive: on any failure the cache is left untouched
-     * (never invalidated) so we never fall back into the snapshot+tail replay path this cache exists
-     * to avoid. An absent entry — expired, or never loaded — needs no repair: the next load misses and
-     * cold-replays from the store, which is authoritative.
+     * Runs on the LOAD path, before the command executes — that is the whole point of the mark. It is
+     * still tagged [AggregateLoadPath.REPAIR] because it is repair work, not this command's state load:
+     * the tag keeps `state_load_time{phase=events,path=command}` meaning "cold miss" and leaves the
+     * repair subtractable from the `{phase=load}` envelope that now legitimately contains it.
+     *
+     * Best-effort and NON-destructive: on any failure the cache is left untouched (never invalidated),
+     * the caller proceeds on stale state, and the append conflicts exactly as it would have anyway. The
+     * mark survives, so the next load tries again — unlike the eager repair this replaces, a failed
+     * catch-up no longer strands the aggregate.
      */
-    private fun catchUp(id: String, baseSequence: Long) =
-        // Everything below reads the store, so it must not be tagged as a write-path load: it runs
-        // after this command's append already failed. See [AggregateLoadPath].
-        AggregateLoadPath.on(AggregateLoadPath.REPAIR) { repair(id, baseSequence) }
+    private fun catchUp(id: String, current: Confirmed<T>): Confirmed<T>? =
+        AggregateLoadPath.on(AggregateLoadPath.REPAIR) { repair(id, current) }
 
-    private fun repair(id: String, baseSequence: Long) {
+    private fun repair(id: String, current: Confirmed<T>): Confirmed<T>? {
         val sample = Timer.start(meterRegistry)
-        // Starts as the common case and is promoted only where the work actually happened, so the
-        // early returns below (no entry, empty delta, no version) fall through the finally as "noop"
-        // without each needing to say so.
+        // Starts as the common case and is promoted only where the work actually happened.
         var outcome = catchupNoop
         try {
-            val current = confirmed.getIfPresent(id) ?: return
             val delta = eventStore.readEvents(id, current.sequence + 1)
-            if (!delta.hasNext()) return
+            if (!delta.hasNext()) return clearMark(id, current)
             // Throwaway trigger: this replay is a cache repair, not command execution — it must not
-            // schedule a snapshot from inside a rollback, nor advance the live counter.
+            // schedule a snapshot, nor advance the live counter.
             val aggregate = EventSourcedAggregate.reconstruct(
                 deepCopy(current.root), aggregateModel(), current.sequence, current.deleted, eventStore,
                 NoSnapshotTriggerDefinition.TRIGGER,
             )
             aggregate.initializeState(delta) // replays the delta onto the pre-seeded root (no re-publish)
-            val newSequence = aggregate.version() ?: return
-            if (newSequence > current.sequence) {
-                // Keep the live trigger; only the state moved forward.
-                val entry = Confirmed(deepCopy(aggregate.aggregateRoot), newSequence, aggregate.isDeleted, current.trigger)
-                confirmed.asMap().merge(id, entry, ::mergeConfirmed)
-                catchupCounter.increment()
-                catchupEvents.record((newSequence - current.sequence).toDouble())
-                outcome = catchupApplied
-            }
+            val newSequence = aggregate.version() ?: return null
+            if (newSequence <= current.sequence) return null
+            // Keep the live trigger; only the state moved forward. The mark rides along and is dropped
+            // by [mergeConfirmed] once the sequence reaches it.
+            val entry = Confirmed(
+                deepCopy(aggregate.aggregateRoot), newSequence, aggregate.isDeleted, current.trigger,
+                current.knownStoreSequence,
+            )
+            catchupCounter.increment()
+            catchupEvents.record((newSequence - current.sequence).toDouble())
+            outcome = catchupApplied
+            return confirmed.asMap().merge(id, entry, ::mergeConfirmed)
         } catch (e: Exception) {
             outcome = catchupFailedTimer
-            // Non-destructive: leave the cache as-is; the committing command's afterCommit keeps it fresh.
-            // WARN, not DEBUG: the root logger is at INFO, so a DEBUG line here was never emitted and
-            // this failure was completely silent. See the counter's declaration for why it matters.
+            // Non-destructive: leave the cache as-is. WARN, not DEBUG: the root logger is at INFO, so a
+            // DEBUG line here was never emitted and this failure was completely silent.
             catchupFailed.increment()
-            log.warn("[PES] delta catch-up FAILED for {} (base={}) — cache may now be stale, " +
-                "commands on this aggregate will conflict until a later rollback repairs it", id, baseSequence, e)
+            log.warn("[PES] delta catch-up FAILED for {} at seq {} — the command will run on stale " +
+                "state and conflict; the mark survives, so the next load retries the repair",
+                id, current.sequence, e)
+            return null
         } finally {
             sample.stop(outcome)
         }
     }
+
+    /**
+     * The mark was wrong: the store has nothing past [current]'s sequence. Lower it so this entry does
+     * not pay a store read on every subsequent load. Only applied while the entry has not moved, so a
+     * newer writer's information is never discarded.
+     *
+     * A foreign commit landing between the empty read and this clear would wipe a mark that had just
+     * become valid. That costs exactly one doomed command, whose own rollback re-marks the entry — the
+     * same self-correcting loop the design rests on everywhere else.
+     */
+    private fun clearMark(id: String, current: Confirmed<T>): Confirmed<T>? =
+        confirmed.asMap().computeIfPresent(id) { _, old ->
+            if (old.sequence == current.sequence && old.knownStoreSequence > old.sequence)
+                old.copy(knownStoreSequence = old.sequence)
+            else old
+        }
 
     private fun deepCopy(root: T): T = objectMapper.convertValue(root, aggregateType)
 
