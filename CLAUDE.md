@@ -44,23 +44,18 @@ benchmarked against each other under an identical workload.
 `ES-3-pesimistic`); `TO-*` branches implement the same API over a classic mutable schema
 with an outbox.
 
-**This branch is `ES-4-staleMark-parallel`: `ES-4-staleMark`'s mark-and-resolve cache PLUS the
-order saga dispatching every line's reserve command AT ONCE instead of one after the next.**
+**This branch is `ES-4-parallel`: `ES-4` with the order saga dispatching every line's reserve
+command AT ONCE instead of one after the next.** It is a one-variable A/B against `ES-4` — same
+lock, same cache, same pools, same gap tuning, same segment count; only the saga differs. The
+same port on the uncached baseline is `ES-2-parallel`, so the pair of pairs is what separates
+the cache from the dispatch shape. Read `domain/saga/OrderReservationSaga.kt`'s class comment
+for what that costs and why the saga can no longer end on the first failure. Everything below
+describes `ES-4`, which this branch is otherwise identical to.
 
-IT IS TWO CHANGES OFF `ES-4`, one on each axis, so it is single-variable against
-`ES-4-staleMark` (saga) and against `ES-4-parallel` (cache repair strategy) — and against `ES-4`
-it is neither. A table that puts it next to `ES-4` alone cannot attribute what it shows.
-
-The two are not independent by accident. The mark is written by a command that lost a race and
-read by the next load of that aggregate; parallel dispatch changes how many commands are in
-flight per order and therefore how often a lost race happens at all, which is exactly the input
-the mark strategy is tuned against. That interaction is the reason this branch exists rather
-than being inferable from the other two.
-
-Read `domain/saga/OrderReservationSaga.kt`'s class comment for what parallel dispatch costs and
-why the saga can no longer end on the first failure, and the `PessimisticCachingRepository`
-bullet below for the mark. Everything else describes `ES-4`, which this branch is otherwise
-identical to.
+It was two changes off `ES-4` between 2026-09-04 12:37 and 13:44, when the mark-and-resolve
+cache lived on `ES-4-staleMark-parallel` and this branch still repaired eagerly. `ES-4` adopted
+the mark the same day (commit b0bdd98 here, the fast-forward past a0b4c9c there), so the cache
+is common ground again and the saga is the only axis.
 
 **`ES-4` is the lock-free ES variant.** Its `InventoryItem` repository is built with
 `NullLockFactory`, so nothing serialises concurrent commands on one aggregate and conflicts
@@ -148,7 +143,7 @@ terminal disposition in `OrderReservationSaga` that releases the already-reserve
 sends `FailOrderCommand`. A lost race is therefore a `REJECTED` order — the same way TO has
 always degraded.
 
-**On `ES-4` and `ES-4-staleMark` that disposition runs off-thread and ends the saga through
+**On `ES-4` that disposition runs off-thread and ends the saga through
 `@EndSaga`; here it does not.** With every line in flight at once, failing the order from a pool
 thread would end the saga while its siblings were still running. An exhausted reserve therefore
 publishes `SagaReserveAbandonedEvent`, which carries the correlationId back into the saga; the
@@ -256,7 +251,7 @@ KurrentDB and no R2DBC on any current branch.
   `FailOrderCommand`. Its `OrderStatus` enum is `PENDING/COMPLETED/FAILED`.
 - **`domain/saga/OrderReservationSaga.kt`** — started by `OrderCreatedEvent`. Reserves every
   line of the order **in parallel**: all N reserve commands are submitted to the command pool
-  from the start handler, where `ES-4-staleMark` dispatches line k+1 only once line k's
+  from the start handler, where `ES-4` dispatches line k+1 only once line k's
   `InventoryReservedEvent` has come back through the processor. The saga counts its lines down
   and takes ONE terminal decision, in `settle()`, when the last one reports — it cannot end on
   the first failure, because that would drop the correlationId association while its siblings
@@ -266,7 +261,7 @@ KurrentDB and no R2DBC on any current branch.
   processor thread never blocks waiting on an aggregate; a command that fails for good cannot
   touch `SagaLifecycle` from that pool thread, so a reserve publishes
   `SagaReserveAbandonedEvent` back into the saga and the completion command (sent after the
-  saga has ended) keeps `ES-4-staleMark`'s off-thread `abandon()`. Emits `saga.completed{outcome}`,
+  saga has ended) keeps `ES-4`'s off-thread `abandon()`. Emits `saga.completed{outcome}`,
   `saga.lifetime{outcome}` and `saga.command.failed{stage}`, unchanged.
 - **`domain/events.kt`** — `SagaReserveAbandonedEvent` is branch-local and handled by nothing
   but the saga. It is published by `EventGateway`, not applied by an aggregate: nothing
@@ -280,15 +275,19 @@ KurrentDB and no R2DBC on any current branch.
   concurrent commands all load at sequence N, all append N+1, one wins, and the losers take
   `23505` → `SQLStateResolver` → `ConcurrencyException` → `ConcurrencyRetryScheduler`. A cache
   hit can still be stale — that is caught at append time and retried — but never *knowably*
-  stale: **this branch marks rather than repairs.** A losing command writes
+  stale: **`ES-4` marks rather than repairs.** A losing command writes
   `knownStoreSequence = baseSequence + 1` onto the entry (guarded on `ConcurrencyException`,
   since a mark is persistent state) and reads nothing. The next load compares
   `sequence >= knownStoreSequence`; if it holds the entry is used as-is, otherwise the loader
   reads the delta, replays it, publishes the result and runs the command on that. The check is
   exact — `sequence < knownStoreSequence` means the next append targets a taken sequence and
   *will* conflict — so the read it triggers is never speculative. An empty delta clears the mark,
-  so a mark that proves wrong costs one read, not one per load. `ES-4` is the eager-repair
-  baseline this A/Bs against. The deep copy per load is what makes all of it safe — without
+  so a mark that proves wrong costs one read, not one per load. `ES-4` REPAIRED EAGERLY until
+  2026-09-04 — every rollback paid an incremental `catchUp`, empty probes included. That code is
+  still reachable (`a0b4c9c` here, `d141755` on `ES-4-parallel`) but nothing in `variants.env`
+  builds it, so the two strategies can no longer be A/B'd from the suite. `ES-4-bounded` and
+  `ES-4-mongo` branched before the adoption and still repair eagerly, which makes each of them two
+  variables off `ES-4`, not one. The deep copy per load is what makes all of it safe — without
   a lock, concurrent commands would otherwise mutate one shared root.
   **Caffeine**, bounded by `cache.ttl` (`expireAfterAccess`, 10m)
   and `cache.maximum-size` (10000); a cache hit skips stream replay entirely. Every load
@@ -407,17 +406,19 @@ archived before the tag existed.
 merge), and `path="repair"` on `state_load_time` is the store read inside it; the gap between them
 is what the repair costs beyond reading.
 
-Two counters are specific to this branch's mark-and-resolve strategy, and both are **Grafana-only** —
+Two counters belong to the mark-and-resolve strategy — `ES-4` and `ES-4-parallel` only — and both are
+**Grafana-only**, with no panel on `main` yet —
 adding them to `k6/bench/queries.promql` would break its byte-identity across the variant branches, so
 `compare.py` does not see them:
 
 | metric | meaning |
 | --- | --- |
 | `inventory_opt_cache_stale_mark_total` | marks recorded — commands that lost a race and told the cache which sequence the winner took |
-| `inventory_opt_cache_stale_hit_total` | loads that found a known-stale entry and caught up: **doomed commands intercepted**, the headline number for this branch |
+| `inventory_opt_cache_stale_hit_total` | loads that found a known-stale entry and caught up: **doomed commands intercepted**, the headline number for the strategy |
 
-`inventory_opt_catchup_duration_seconds{outcome="noop"}` changes meaning here. On `ES-4` it is the
-empty probe every rollback paid; on this branch catch-up only runs when the entry is *known* stale, so
+`inventory_opt_catchup_duration_seconds{outcome="noop"}` changed meaning on 2026-09-04. In any run
+archived up to then it is the empty probe every rollback paid; since the mark, catch-up only runs when
+the entry is *known* stale, so
 a `noop` means a mark was set with no real conflict behind it. Its count should be near zero — if it
 is not, something is throwing `ConcurrencyException` without a duplicate key behind it.
 
