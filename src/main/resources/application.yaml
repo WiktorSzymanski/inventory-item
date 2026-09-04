@@ -73,6 +73,35 @@ app:
     # by construction — which is what this default asked for anyway, so nothing a run relied on
     # changes. OrderWorkerConfig warns if it is set to anything else.
     queue-capacity: ${ORDER_WORKER_QUEUE_CAPACITY:2147483647}  # unbounded (Int.MAX_VALUE); absorb load like ES, no queue-full shedding
+  # THE SECOND POOL, AND THE ONLY THING THAT MAKES THIS BRANCH TO-3-parallel.
+  #
+  # The reserve path's MODIFY phase runs here instead of on the order-worker thread: an order's
+  # lines are grouped by item and the groups reserve concurrently, so the phase costs about one
+  # reserveDelayMs rather than ITEMS_PER_ORDER of them. See ReserveFanoutPool.
+  #
+  # 150 is affordable in a way an order-worker width of 150 would not be, and the reason is worth
+  # keeping next to the number: THESE THREADS TAKE NO DATABASE CONNECTION AND HOLD NO ROW LOCK.
+  # The modify phase runs outside the write transaction by construction, so this pool does not
+  # draw on DB_MAX_CONNECTIONS at all and does not appear in the budget above. It costs memory —
+  # ~150 platform thread stacks, tens of MB resident, and nothing while they are parked in
+  # Thread.sleep.
+  #
+  # Sizing: peak demand is arrival_rate x ITEMS_PER_ORDER x reserveDelayMs x attempts. The widest
+  # bench cell (W-fan/C01: 145 rps, 16 lines, 25 ms) needs 58 threads at one attempt and 290 at the
+  # 5-attempt retry cap, so 150 covers every cell except a sustained worst case at W-fan — where
+  # the overflow degrades to running inline on the order-worker thread rather than failing.
+  #
+  # docker-compose sets RESERVE_FANOUT_THREADS for every variant and it is inert on all of them but
+  # this one. RESERVE_FANOUT_THREADS=1 is the useful degenerate setting: same image, near-sequential
+  # execution, so it isolates the fan-out's own overhead from the parallelism.
+  reserve-fanout:
+    threads: ${RESERVE_FANOUT_THREADS:150}
+    # BOUNDED, unlike the order pool's queue, and deliberately. On overflow the group runs on the
+    # submitting order-worker thread — TO-3's behaviour exactly — which is a degradation you can
+    # see in executor_queued_tasks and in the order pool's active count. An unbounded queue would
+    # swallow the overflow silently and the parallelism would stop happening at precisely the load
+    # it exists for.
+    queue-capacity: ${RESERVE_FANOUT_QUEUE_CAPACITY:1000}
   # NO app.order-retry ON THIS BRANCH ANY MORE.
   #
   # There used to be a second pool here (`order-retry-*`, 50 threads) which served the backoff AND

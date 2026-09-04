@@ -15,6 +15,7 @@ import pl.szymanski.wiktor.domain.ReservedItem
 import pl.szymanski.wiktor.exception.NotFoundException
 import pl.szymanski.wiktor.repository.InventoryRepository
 import pl.szymanski.wiktor.repository.OrderRepository
+import pl.szymanski.wiktor.service.ReserveFanoutPool
 import java.time.Clock
 import java.time.Instant
 import java.util.Optional
@@ -41,7 +42,9 @@ class StateLoadAggregateTagTest {
     private val registry = SimpleMeterRegistry()
 
     private val handler = ReserveOrderItemsCommandHandler(
-        inventoryRepo, orderRepo, writeHandler, Clock.systemUTC(), registry,
+        inventoryRepo, orderRepo, writeHandler,
+        ReserveFanoutPool(threads = 4, queueCapacity = 64),
+        Clock.systemUTC(), registry,
     )
 
     private fun loads(source: String, aggregate: String): Long =

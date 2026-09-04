@@ -20,6 +20,7 @@ import pl.szymanski.wiktor.exception.InsufficientStockException
 import pl.szymanski.wiktor.exception.NotFoundException
 import pl.szymanski.wiktor.repository.InventoryRepository
 import pl.szymanski.wiktor.repository.OrderRepository
+import pl.szymanski.wiktor.service.ReserveFanoutPool
 import java.time.Clock
 import java.time.Instant
 import java.util.Optional
@@ -40,8 +41,15 @@ class ReserveOrderItemsPhaseTest {
     private val writeHandler = mockk<OrderWriteCommandHandler>(relaxed = true)
     private val clock: Clock = Clock.systemUTC()
 
+    // Every assertion below is TO-3's, unchanged: this branch only moves the modify phase onto a
+    // pool, and the invariants it has to keep — one select per order, the itemId-sorted batch,
+    // same-item lines folding into one row, insufficient stock aborting before any write — are
+    // exactly the ones that file already pinned. A width above 1 is what makes them run
+    // concurrently and therefore worth re-asserting here.
+    private val fanoutPool = ReserveFanoutPool(threads = 4, queueCapacity = 64)
+
     private val handler = ReserveOrderItemsCommandHandler(
-        inventoryRepo, orderRepo, writeHandler, clock, SimpleMeterRegistry(),
+        inventoryRepo, orderRepo, writeHandler, fanoutPool, clock, SimpleMeterRegistry(),
     )
 
     private val outcome = slot<OrderReserveOutcome>()

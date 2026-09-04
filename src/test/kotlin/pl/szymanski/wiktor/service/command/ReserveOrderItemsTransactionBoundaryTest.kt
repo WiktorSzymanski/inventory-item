@@ -26,6 +26,7 @@ import pl.szymanski.wiktor.domain.ReservedItem
 import pl.szymanski.wiktor.repository.InventoryBatchWriter
 import pl.szymanski.wiktor.repository.InventoryRepository
 import pl.szymanski.wiktor.repository.OrderRepository
+import pl.szymanski.wiktor.service.ReserveFanoutPool
 import java.sql.Connection
 import java.time.Clock
 import java.time.Instant
@@ -191,11 +192,18 @@ class ReserveOrderItemsTransactionBoundaryTest {
             inventoryRepository: InventoryRepository,
             orderRepository: OrderRepository,
             orderWriteCommandHandler: OrderWriteCommandHandler,
+            reserveFanoutPool: ReserveFanoutPool,
             clock: Clock,
             meterRegistry: MeterRegistry,
         ) = ReserveOrderItemsCommandHandler(
-            inventoryRepository, orderRepository, orderWriteCommandHandler, clock, meterRegistry,
+            inventoryRepository, orderRepository, orderWriteCommandHandler,
+            reserveFanoutPool, clock, meterRegistry,
         )
+
+        // The transaction assertions in this file are about phase 3 and are indifferent to the
+        // width, but the phase still has to RUN, so the context needs the pool as a bean.
+        @Bean(destroyMethod = "close")
+        fun reserveFanoutPool() = ReserveFanoutPool(threads = 4, queueCapacity = 64)
     }
 
     private fun orderCreated(vararg itemIds: String) = OrderCreatedEvent(
