@@ -32,6 +32,21 @@
       "knee_rate_tolerance": 0.95,
       "knee_inflight_growth": 1.2
     },
+    "breakpoint": {
+      "_comment": [
+        "A single ramp past the point the system keeps up, with no drain and no abort. There",
+        "is nothing here to pass or fail: the SLO checks are meaningless by construction, and",
+        "so are the two GLOBAL validity gates -- completion_ratio cannot hold when the run is",
+        "stopped mid-backlog, and dropped_iterations is expected once admission saturates.",
+        "Those two live in `validity` above rather than here, so nulling per-scenario limits",
+        "could not silence them; skip_evaluation short-circuits evaluate.py instead and the",
+        "run reports verdict NONE.",
+        "",
+        "Read these runs from dump.series (inflight, throughput) against the ramp's linear",
+        "rate function, never from the e2e percentiles -- those are truncated at T1."
+      ],
+      "skip_evaluation": true
+    },
     "spike": {
       "max_e2e_p95_confirmed_s": null,
       "max_drain_seconds": null,

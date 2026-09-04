@@ -421,6 +421,7 @@ KNOBS=(
     RESERVE_DELAY_MS
     ITEM_PREFIX ALLOW_DUP_LINES RATE DURATION STEP_START STEP_INC STEP_COUNT
     STEP_RAMP_S STEP_PLATEAU_S STEP_TRIM SPIKE_PEAK SOAK_DURATION
+    BP_START BP_PEAK BP_RAMP
     WARMUP_ITERATIONS WARMUP_RATE WARMUP_MAX_DURATION READ_RATE READ_MODE
     READ_PAGE_SIZE VU_HEADROOM VU_CEILING
 )
@@ -498,16 +499,36 @@ T1="$(date +%s)"
 log "load: complete in $((T1 - T0))s (k6 exit $K6_EXIT)"
 
 # ---------------------------------------------------------------- drain
-log "drain: waiting for order backlog to clear (cap ${DRAIN_TIMEOUT}s)"
-# drain_wait's exit status is not observable through the process substitution, so the
-# drained/timeout verdict is read from its output instead. evaluate.py turns a timeout
-# into INVALID, since a truncated e2e histogram is an unusable measurement.
-mapfile -t DRAIN < <(drain_wait "$DRAIN_TIMEOUT")
-BACKLOG_AT_STOP="${DRAIN[0]}"
-DRAIN_STATE="${DRAIN[1]}"
-DRAIN_SECONDS="${DRAIN[2]}"
-T2="$(date +%s)"
-log "drain: backlog_at_stop=$BACKLOG_AT_STOP $DRAIN_STATE in ${DRAIN_SECONDS}s"
+# `breakpoint` does not drain, by design. The scenario ramps past the point where the system
+# keeps up, so the backlog at T1 is unbounded and waiting for it to clear would measure the
+# recovery of a deliberately broken system -- and would take DRAIN_TIMEOUT to conclude
+# nothing. T2 is therefore pinned to T1: window_full collapses onto window_load, which
+# dump.py handles (`width = max(1, ...)`).
+#
+# The cost is that order_e2e_time is truncated at T1, so a breakpoint run's e2e percentiles
+# cover only the orders that completed while the ramp was climbing. They are biased optimistic
+# and are not comparable with any draining scenario. See the header of breakpointProfile().
+#
+# backlog_at_stop is still recorded: one PENDING count after the load ends is cheap and it is
+# the single most useful number the run produces about how far past break it got.
+if [ "$SCENARIO" = "breakpoint" ]; then
+    BACKLOG_AT_STOP="$(pending_orders)"
+    DRAIN_STATE="skipped"
+    DRAIN_SECONDS=0
+    T2="$T1"
+    log "drain: SKIPPED for breakpoint; backlog_at_stop=$BACKLOG_AT_STOP"
+else
+    log "drain: waiting for order backlog to clear (cap ${DRAIN_TIMEOUT}s)"
+    # drain_wait's exit status is not observable through the process substitution, so the
+    # drained/timeout verdict is read from its output instead. evaluate.py turns a timeout
+    # into INVALID, since a truncated e2e histogram is an unusable measurement.
+    mapfile -t DRAIN < <(drain_wait "$DRAIN_TIMEOUT")
+    BACKLOG_AT_STOP="${DRAIN[0]}"
+    DRAIN_STATE="${DRAIN[1]}"
+    DRAIN_SECONDS="${DRAIN[2]}"
+    T2="$(date +%s)"
+    log "drain: backlog_at_stop=$BACKLOG_AT_STOP $DRAIN_STATE in ${DRAIN_SECONDS}s"
+fi
 
 # Let the final scrapes land before querying (scrape_interval is 5s).
 log "waiting ${SCRAPE_SETTLE_S}s for final Prometheus scrapes"
@@ -610,6 +631,9 @@ meta = {
     "drain": {
         "backlog_at_stop": int("$BACKLOG_AT_STOP"),
         "drained": "$DRAIN_STATE" == "drained",
+        # drained/timeout/skipped. The bool above cannot tell a drain that ran out of time
+        # from `breakpoint`, which never drains at all -- both leave drained=false.
+        "drain_state": "$DRAIN_STATE",
         "drain_seconds": int("$DRAIN_SECONDS"),
     },
     "host": {

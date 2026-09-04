@@ -116,6 +116,56 @@ function constantRate(name, rate, duration) {
     };
 }
 
+// ---------------------------------------------------------------- breakpoint
+// A single uninterrupted ramp, BP_START -> BP_PEAK over BP_RAMP. This is Grafana's
+// breakpoint shape verbatim -- "no plateau, ramp-down, or other steps" -- and it is NOT the
+// capacity staircase with the plateaus removed. The staircase holds each rate long enough to
+// measure it at steady state, which is what makes its per-step percentiles mean anything;
+// this ramp deliberately never reaches steady state at any rate, and exists only to show
+// where the system stops keeping up.
+//
+// Three things k6's own definition calls for are deliberately ABSENT here:
+//
+//   * No abortOnFail threshold. k6's docs abort the ramp on a failing threshold, but k6
+//     cannot see the signal that matters on this API: POST /inventory/orders returns 202
+//     once OrderCreatedEvent is persisted, so http_req_duration is admission time and the
+//     reservation outcome is server-side only. The alternative -- having k6 poll Prometheus
+//     for (admitted - terminal) and abort on that -- would put a server-side signal into
+//     k6's threshold engine, which is exactly the split main.js keeps out. The run therefore
+//     always ramps to completion and the break is read off the series afterwards.
+//   * No drain. bench.sh skips drain_wait for this scenario, so T2 == T1.
+//   * No verdict. thresholds.json sets skip_evaluation, so evaluate.py reports NONE.
+//
+// CONSEQUENCE, and it governs how these runs may be read: with no drain, every order still
+// in flight at T1 never records an order_e2e_time observation. The e2e histogram is
+// truncated to whatever completed while the ramp was still climbing, so its percentiles are
+// biased optimistic and MUST NOT be compared against capacity/steady/soak numbers. What a
+// breakpoint run yields is the range series -- `inflight` and achieved throughput over time
+// -- read against the linear rate function below to recover the rate axis:
+//
+//     rate(t) = BP_START + (BP_PEAK - BP_START) x t / totalSeconds
+//
+// `steps` is empty, so dump.py performs no per-step slicing and evaluate.py finds no
+// per_step entries to analyse. That is the intended wiring, not an omission.
+function breakpointProfile() {
+    const total = durationSeconds(CONFIG.bpRamp);
+    return {
+        name: 'breakpoint',
+        steps: [],
+        totalSeconds: total,
+        scenarios: {
+            order: orderScenario({
+                executor: 'ramping-arrival-rate',
+                startRate: CONFIG.bpStart,
+                timeUnit: '1s',
+                stages: [{ target: CONFIG.bpPeak, duration: CONFIG.bpRamp }],
+                ...vus(CONFIG.bpPeak),
+            }),
+            ...readScenario(total),
+        },
+    };
+}
+
 // ---------------------------------------------------------------- spike & drain
 // Zero -> peak -> zero. Both idle segments carry weight:
 //
@@ -289,6 +339,7 @@ const BUILDERS = {
     seed: seedProfile,
     warmup: warmupProfile,
     capacity,
+    breakpoint: breakpointProfile,
     steady: () => constantRate('steady', CONFIG.rate, CONFIG.duration),
     soak: () => constantRate('soak', CONFIG.rate, CONFIG.soakDuration),
     // Same shape as `steady`. The difference is entirely in how it is RUN (RATE set above

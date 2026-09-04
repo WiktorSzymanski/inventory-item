@@ -54,7 +54,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Scenarios k6/lib/profiles.js can build, minus the internal seed/warmup phases that
 # bench.sh runs itself. Kept in step with BUILDERS there; an unknown name is caught here
 # rather than after a stack has been brought up.
-KNOWN_SCENARIOS="capacity steady soak stress spike legacy legacy-vus"
+KNOWN_SCENARIOS="capacity breakpoint steady soak stress spike legacy legacy-vus"
 
 # Scenarios whose rate is derived from a measured knee, and the knob that carries it.
 RATE_DERIVED="soak stress spike"

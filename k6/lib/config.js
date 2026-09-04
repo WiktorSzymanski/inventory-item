@@ -54,6 +54,20 @@ export const CONFIG = {
     // to multiply; the campaign's 0.4xK base with factor 4 is simply SPIKE_PEAK=1.6xK now.
     spikePeak: int('SPIKE_PEAK', 100),
     soakDuration: str('SOAK_DURATION', '60m'),
+    // Breakpoint is a single uninterrupted ramp BP_START -> BP_PEAK over BP_RAMP, per
+    // Grafana's definition: "Load slowly ramps up to a considerably high level. It has no
+    // plateau, ramp-down, or other steps." The staircase (STEP_*) exists to measure each
+    // rate at steady state; this exists to find where the system stops keeping up at all,
+    // so the two share no knobs on purpose.
+    //
+    // Unlike WARMUP_RATE, BP_PEAK keeps a default. An over-high warmup rate corrupts the
+    // state the measured window opens on, so it must be set deliberately per point; an
+    // over-high breakpoint peak merely means the tail of the ramp is deep overload, which
+    // is what the scenario is for. Set it per point anyway when the point is a slow one --
+    // C11's staircase peaks at 29/s, where ramping to 400 spends most of the run past break.
+    bpStart: int('BP_START', 0),
+    bpPeak: int('BP_PEAK', 400),
+    bpRamp: str('BP_RAMP', '20m'),
 
     // ---- warmup: fixed ITERATIONS, delivered at a fixed RATE ------------------
     // Two separate invariants, and the warmup needs both.

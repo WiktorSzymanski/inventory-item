@@ -58,6 +58,7 @@ phase and how it is judged change.
 |---|---|---|---|
 | `steady` *(default)* | Constant arrival rate | `RATE`, `DURATION` | Full default SLO set. The run the thesis tables compare |
 | `capacity` | Staircase: `STEP_COUNT` plateaus at `STEP_START + i x STEP_INC`, each reached over `STEP_RAMP_S` and held `STEP_PLATEAU_S` | `STEP_*` | Latency, drain and rejection SLOs **off** — it exists to find the knee, so it fails only when there is no knee to find |
+| `breakpoint` | One uninterrupted ramp `BP_START` → `BP_PEAK` over `BP_RAMP`. No plateau, no ramp-down, no drain — Grafana's breakpoint shape | `BP_*` | **Not judged at all.** `skip_evaluation` makes `evaluate.py` report `NONE` and exit 0 |
 | `stress` | Same shape as `steady`, run *above* the measured knee | `RATE`, `DURATION` | The only scenario where an undrained backlog is the measurement rather than `INVALID`. Latency and lag SLOs off; completion and no-restart still hard |
 | `spike` | Idle → burst → idle: `60s` at 0, `10s` ramp in, `60s` at peak, `10s` ramp out, `240s` at 0 (380s total) | `SPIKE_PEAK` | Recovery time after the burst (`max_recovery_seconds` 180). Latency and drain off |
 | `soak` | Constant rate, long | `RATE`, `SOAK_DURATION` | Drift, not absolutes: e2e p95 and heap in the last decile vs the first (1.3x / 1.5x), drain <= 300s |
@@ -72,6 +73,33 @@ someone picked. Clearing it usually outlasts that tail, which is why `DRAIN_TIME
 to **1800s for `spike`** and 900s everywhere else: the drain is part of the measurement here,
 and a drain that times out reports `INVALID`. The recovery series is dumped over
 `[T0, T2]`, so the moment in-flight comes back down is found wherever it falls.
+
+`breakpoint` and `capacity` answer different questions and are not substitutes. The staircase
+holds each rate long enough to measure it at steady state, which is what makes its per-step
+percentiles mean anything; `breakpoint` is one continuous ramp that never reaches steady state
+at any rate, and shows only where the system stops keeping up. It follows Grafana's definition
+— *"Load slowly ramps up to a considerably high level. It has no plateau, ramp-down, or other
+steps"* — with one deliberate departure: **there is no `abortOnFail` threshold.** k6's docs
+abort the ramp on a failing threshold, but k6 cannot see the signal that matters here. `POST
+/inventory/orders` returns 202 once `OrderCreatedEvent` is persisted, so `http_req_duration` is
+admission time and the reservation outcome is server-side only. Having k6 poll Prometheus for
+`admitted - terminal` and abort on that would work, but it puts a server-side signal into k6's
+threshold engine — exactly the split `main.js` keeps out. The ramp therefore always runs to
+completion.
+
+It also does **not drain**: `T2 = T1`, so `window_full` collapses onto `window_load`. That is
+the load-bearing caveat for anyone reading these runs — every order still in flight at `T1`
+never records an `order_e2e_time` observation, so a breakpoint run's e2e percentiles cover only
+what finished while the ramp was still climbing. **They are biased optimistic and are not
+comparable with `capacity`, `steady` or `soak`.** Read the run from `dump.series` — `inflight`
+and achieved throughput over time — against the ramp's linear rate function:
+
+```
+rate(t) = BP_START + (BP_PEAK - BP_START) x t / expected_seconds
+```
+
+`meta.json` records `drain.drain_state = "skipped"`, which is what distinguishes these runs
+from a drain that timed out; both leave `drained = false`.
 
 `seed` and `warmup` are also valid profile names, but they are phases `bench.sh` runs itself
 around the load phase — never pass them as `SCENARIO`. An unknown name fails at k6 init and

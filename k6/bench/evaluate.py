@@ -15,6 +15,11 @@ import os
 import sys
 
 PASS, FAIL, INVALID = "PASS", "FAIL", "INVALID"
+# Not a verdict: the marker for a scenario that is not judged at all. `breakpoint` sets
+# skip_evaluation because it has no drain and no steady state, so every SLO and both global
+# validity gates would fire on the behaviour the run exists to produce. NONE exits 0 so
+# bench.sh (which ends with `exit $EVAL_EXIT`) does not fail the run in run-suite.sh.
+NONE = "NONE"
 
 
 def load(path, required=True):
@@ -289,6 +294,20 @@ def main():
     limits = dict(conf.get("defaults", {}))
     limits.update(conf.get("scenarios", {}).get(scenario, {}))
     limits.pop("_comment", None)
+
+    if limits.get("skip_evaluation"):
+        result = {
+            "run_id": meta.get("run_id"),
+            "variant": meta.get("variant"),
+            "scenario": scenario,
+            "verdict": NONE,
+            "checks": [],
+            "note": "scenario is not evaluated; read dump.series, not the e2e percentiles",
+        }
+        with open(os.path.join(ARGS.run_dir, "verdict.json"), "w") as fh:
+            json.dump(result, fh, indent=2)
+        print(f"verdict: {NONE} (scenario {scenario} is not evaluated)")
+        return 0
 
     checks = Checks()
     check_validity(checks, meta, dump, summary, conf.get("validity", {}), limits)
