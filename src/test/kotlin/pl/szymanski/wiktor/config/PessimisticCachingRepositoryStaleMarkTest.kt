@@ -139,4 +139,68 @@ class PessimisticCachingRepositoryStaleMarkTest {
 
         assertThat(mergeConfirmed(old, candidate)).isSameAs(old)
     }
+
+    // --- marking on rollback -------------------------------------------------------------------
+
+    @Test
+    fun `a ConcurrencyException rollback marks the entry with the sequence it failed to insert`() {
+        seedItem()
+        loadAndCommit()                       // cache at 0
+        foreignAppend(1L, reserved())         // a foreign writer takes sequence 1
+
+        loadAndRollback(ConcurrencyException("simulated 23505"))
+
+        // Loaded at 0, so it tried to insert 1 and lost: sequence 1 is proven to exist.
+        assertThat(repository.cachedKnownSequence(itemId)).isEqualTo(1L)
+        assertThat(repository.cachedSequence(itemId)).isEqualTo(0L)
+        assertThat(counter("inventory.opt.cache.stale.mark")).isEqualTo(1.0)
+    }
+
+    @Test
+    fun `a wrapped ConcurrencyException is still recognised`() {
+        seedItem()
+        loadAndCommit()
+
+        loadAndRollback(IllegalStateException("wrapper", ConcurrencyException("simulated 23505")))
+
+        assertThat(repository.cachedKnownSequence(itemId)).isEqualTo(1L)
+    }
+
+    @Test
+    fun `a non-concurrency rollback leaves the entry unmarked`() {
+        seedItem()
+        loadAndCommit()
+
+        // A business failure or a DB timeout proves NOTHING about the store head. Marking here
+        // would strand the entry above its own sequence forever, costing a SELECT on every load.
+        loadAndRollback(IllegalStateException("insufficient stock"))
+
+        assertThat(repository.cachedKnownSequence(itemId)).isEqualTo(UNKNOWN_SEQUENCE)
+        assertThat(counter("inventory.opt.cache.stale.mark")).isEqualTo(0.0)
+    }
+
+    @Test
+    fun `a rollback no longer reads the store`() {
+        seedItem()
+        loadAndCommit()
+        foreignAppend(1L, reserved())
+
+        loadAndRollback(ConcurrencyException("simulated 23505"))
+
+        // The whole point of the change: the losing command records one number and stops.
+        assertThat(catchupCount("noop") + catchupCount("applied") + catchupCount("failed")).isZero()
+    }
+
+    @Test
+    fun `the mark only ever moves up`() {
+        seedItem()
+        foreignAppend(1L, reserved())
+        foreignAppend(2L, reserved())
+        loadAndCommit()                       // cold miss -> cache at 2
+
+        repository.markForTest(itemId, 3L)
+        repository.markForTest(itemId, 2L)
+
+        assertThat(repository.cachedKnownSequence(itemId)).isEqualTo(3L)
+    }
 }

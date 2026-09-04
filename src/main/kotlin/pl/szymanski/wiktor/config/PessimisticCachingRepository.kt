@@ -14,6 +14,8 @@ import org.axonframework.eventsourcing.SnapshotTrigger
 import org.axonframework.eventsourcing.SnapshotTriggerDefinition
 import org.axonframework.eventsourcing.eventstore.EventStore
 import org.axonframework.messaging.unitofwork.CurrentUnitOfWork
+import org.axonframework.messaging.unitofwork.UnitOfWork
+import org.axonframework.modelling.command.ConcurrencyException
 import org.slf4j.LoggerFactory
 import java.util.concurrent.Callable
 
@@ -218,6 +220,13 @@ class PessimisticCachingRepository<T : Any>(
     private val evictedCounter = meterRegistry.counter("inventory.opt.cache.evicted")
 
     /**
+     * Marks recorded: commands that lost a race and told the cache which sequence the winner took.
+     * Deliberately NOT in `k6/bench/queries.promql`, which is shared byte-for-byte across the variant
+     * branches — this series is Grafana-only.
+     */
+    private val staleMarkCounter = meterRegistry.counter("inventory.opt.cache.stale.mark")
+
+    /**
      * Repository-level cache of confirmed state, bounded by an idle TTL and a maximum size.
      *
      * `expireAfterAccess` (not `expireAfterWrite`): a hot aggregate is never evicted, so the bounds
@@ -292,11 +301,51 @@ class PessimisticCachingRepository<T : Any>(
         val uow = CurrentUnitOfWork.get()
         // afterCommit fires only on a successful commit => cache holds persisted state exclusively.
         uow.afterCommit { advance(aggregate.identifierAsString(), aggregate) }
-        // onRollback fires on a failed command — lock-free, typically the lost race for this sequence.
-        // Thanks to the deep copy there is nothing to undo, so this only pulls in the events the
-        // winner (local or on another node) appended.
-        uow.onRollback { catchUp(aggregate.identifierAsString(), baseSequence) }
+        // onRollback fires on a failed command — lock-free, typically the lost race for baseSequence+1.
+        // It records what the failure PROVED and nothing more; the store read that resolves it happens
+        // at the next load, where its result is actually verified before use. See the class KDoc.
+        uow.onRollback { rolledBack -> markKnownSequence(aggregate.identifierAsString(), baseSequence + 1, rolledBack) }
     }
+
+    /**
+     * Record that [knownSequence] is taken in the store, so the next load of [id] knows this entry is
+     * doomed and catches up before handing state to a command.
+     *
+     * Guarded on [ConcurrencyException] because a mark is PERSISTENT state, unlike the eager repair it
+     * replaces. A rollback from a business failure or a DB timeout proves nothing about the store head,
+     * and a mark set from one would sit permanently above the entry's own sequence — nothing would ever
+     * advance the cache far enough to clear it — costing a store read on every subsequent load.
+     * [repair]'s empty-delta clear is the second line of defence; this is the first.
+     *
+     * `computeIfPresent` gives the same per-key atomicity as [advance]'s merge, and the work inside is a
+     * field copy, never I/O. An absent entry needs no mark: the next load misses and reads the store,
+     * which is authoritative.
+     */
+    private fun markKnownSequence(id: String, knownSequence: Long, uow: UnitOfWork<*>) {
+        if (!isConcurrencyFailure(uow)) return
+        mark(id, knownSequence)
+    }
+
+    private fun mark(id: String, knownSequence: Long) {
+        staleMarkCounter.increment()
+        confirmed.asMap().computeIfPresent(id) { _, old ->
+            if (knownSequence > old.knownStoreSequence) old.copy(knownStoreSequence = knownSequence) else old
+        }
+    }
+
+    /**
+     * Whether this rollback was a lost race. `AbstractUnitOfWork.commitAsRoot` calls `setRollbackCause`
+     * BEFORE `changePhase(Phase.ROLLBACK)`, so the cause is already on the UnitOfWork when rollback
+     * handlers run. The cause chain is walked rather than the top exception tested, matching
+     * [ConcurrencyRetryScheduler] — the 23505 arrives wrapped.
+     */
+    private fun isConcurrencyFailure(uow: UnitOfWork<*>): Boolean {
+        val cause: Throwable = uow.executionResult?.exceptionResult ?: return false
+        return generateSequence(cause) { it.cause }.any { it is ConcurrencyException }
+    }
+
+    /** Testing: record a mark directly, without staging a rollback. */
+    internal fun markForTest(id: String, knownSequence: Long) = mark(id, knownSequence)
 
     /** Monotonically advance the confirmed cache to the aggregate's just-persisted state. */
     private fun advance(id: String, aggregate: EventSourcedAggregate<T>) {
