@@ -44,6 +44,24 @@ benchmarked against each other under an identical workload.
 `ES-3-pesimistic`); `TO-*` branches implement the same API over a classic mutable schema
 with an outbox.
 
+**This branch is `ES-4-staleMark-parallel`: `ES-4-staleMark`'s mark-and-resolve cache PLUS the
+order saga dispatching every line's reserve command AT ONCE instead of one after the next.**
+
+IT IS TWO CHANGES OFF `ES-4`, one on each axis, so it is single-variable against
+`ES-4-staleMark` (saga) and against `ES-4-parallel` (cache repair strategy) — and against `ES-4`
+it is neither. A table that puts it next to `ES-4` alone cannot attribute what it shows.
+
+The two are not independent by accident. The mark is written by a command that lost a race and
+read by the next load of that aggregate; parallel dispatch changes how many commands are in
+flight per order and therefore how often a lost race happens at all, which is exactly the input
+the mark strategy is tuned against. That interaction is the reason this branch exists rather
+than being inferable from the other two.
+
+Read `domain/saga/OrderReservationSaga.kt`'s class comment for what parallel dispatch costs and
+why the saga can no longer end on the first failure, and the `PessimisticCachingRepository`
+bullet below for the mark. Everything else describes `ES-4`, which this branch is otherwise
+identical to.
+
 **`ES-4` is the lock-free ES variant.** Its `InventoryItem` repository is built with
 `NullLockFactory`, so nothing serialises concurrent commands on one aggregate and conflicts
 are resolved by the event store's unique constraint plus `ConcurrencyRetryScheduler`. It
@@ -125,11 +143,18 @@ Everything below about lost races applies to `ES-4` at **every** replica count, 
 Both are now fixed on all four ES branches — (2) on all four, (1) on the three that lacked it.
 `.persistenceExceptionResolver(SQLStateResolver())` turns a `23505` into a
 `ConcurrencyException`, so `ConcurrencyRetryScheduler` retries it
-(5 attempts, `25ms * 2^n` capped at 500 ms); a command that still fails after that reaches
-`OrderReservationSaga.abandon()`, which releases the already-reserved lines and sends
-`FailOrderCommand`, and the resulting `OrderFailedEvent` comes back to an `@EndSaga` handler
-that ends the saga. A lost race is therefore a `REJECTED` order — the same way TO has always
-degraded.
+(5 attempts, `25ms * 2^n` capped at 500 ms); a command that still fails after that reaches a
+terminal disposition in `OrderReservationSaga` that releases the already-reserved lines and
+sends `FailOrderCommand`. A lost race is therefore a `REJECTED` order — the same way TO has
+always degraded.
+
+**On `ES-4` and `ES-4-staleMark` that disposition runs off-thread and ends the saga through
+`@EndSaga`; here it does not.** With every line in flight at once, failing the order from a pool
+thread would end the saga while its siblings were still running. An exhausted reserve therefore
+publishes `SagaReserveAbandonedEvent`, which carries the correlationId back into the saga; the
+saga settles that line like any other, and fails the order once every line has reported. The
+`OrderFailedEvent` handler survives as a safety net for a failure from outside the saga and is
+NOT `@EndSaga` — it records the order as decided and lets the countdown finish.
 
 **Most of the improvement is the retry, not the saga.** Retrying absorbs almost every
 conflict, so far fewer commands ever reach exhaustion; the saga's terminal path only has to
@@ -164,14 +189,18 @@ when the resulting `OrderFailedEvent` arrives. The order still ends up `FAILED`/
 `outcome="completed"`. `saga_command_failed_total{stage="complete"}` is the only signal for
 that path — read it alongside the outcome split, never instead of it.
 
-The `stage` tag has six values: `reserve`, `complete`, `release`, `fail-order`,
-`fail-order-ignored` and `abandon-rejected`. The last three are the ones that can leave an
-order non-terminal, so a non-zero value there is a different class of problem from the first
-three: `fail-order` means the terminal command itself failed; `fail-order-ignored` means the
-aggregate refused it because the order was no longer `PENDING`, so no `OrderFailedEvent`
-exists and the saga never ends; `abandon-rejected` means the saga pool refused the
-disposition and it ran inline. `python3 k6/bench/compare.py --cols saga <run-dirs>` tabulates
-all of them alongside the contention-vs-stock split.
+The `stage` tag has seven values here — the six every other branch emits (`reserve`, `complete`,
+`release`, `fail-order`, `fail-order-ignored`, `abandon-rejected`) plus `abandon-publish`, which
+exists only on the two `-parallel` branches. The last four are the ones that can leave an order
+non-terminal, so a non-zero value there is a different class of problem from the first three:
+`fail-order` means the terminal command itself failed; `fail-order-ignored` means the aggregate
+refused it because the order was no longer `PENDING`, so no `OrderFailedEvent` exists;
+`abandon-rejected` means the saga pool refused the disposition and it ran inline; and
+`abandon-publish` means an exhausted reserve could not publish its `SagaReserveAbandonedEvent`,
+so that line never settles, the saga waits forever and its `saga_entry` row survives the run.
+`abandon-publish` is the one series on this branch that invalidates a run on its own — check it
+before reading a `saga_entry` residue as a leak in the design. `python3 k6/bench/compare.py
+--cols saga <run-dirs>` tabulates all of them alongside the contention-vs-stock split.
 
 **`REPLICAS=1` is still the measurement-grade configuration**, because at `REPLICAS>1` the
 rejection rate is an artefact of lost write races rather than of stock. Read multi-replica
@@ -225,16 +254,24 @@ KurrentDB and no R2DBC on any current branch.
   `InventoryReservationFailedEvent` — not an exception), `ReleaseReservationCommand`.
 - **`domain/OrderAggregate.kt`** — `CreateOrderCommand` / `CompleteOrderCommand` /
   `FailOrderCommand`. Its `OrderStatus` enum is `PENDING/COMPLETED/FAILED`.
-- **`domain/saga/OrderReservationSaga.kt`** — started by `OrderCreatedEvent`. Reserves the
-  order's items **strictly sequentially**, so an N-line order costs N saga round trips.
-  Compensates with `ReleaseReservationCommand` for each already-reserved line on failure.
-  Dispatches on a separate 64-thread executor so the processor thread never blocks waiting on
-  an aggregate. Every `commandGateway.send` has a failure disposition: a command that
-  fails for good reaches `abandon()`, which releases what was already reserved and sends
-  `FailOrderCommand`; the resulting `OrderFailedEvent` comes back to an `@EndSaga` handler.
-  That indirection is required — `SagaLifecycle` resolves the current saga from a ThreadLocal
-  bound to the processor's unit of work, so it cannot be touched from a pool thread. Emits
-  `saga.completed{outcome}`, `saga.lifetime{outcome}` and `saga.command.failed{stage}`.
+- **`domain/saga/OrderReservationSaga.kt`** — started by `OrderCreatedEvent`. Reserves every
+  line of the order **in parallel**: all N reserve commands are submitted to the command pool
+  from the start handler, where `ES-4-staleMark` dispatches line k+1 only once line k's
+  `InventoryReservedEvent` has come back through the processor. The saga counts its lines down
+  and takes ONE terminal decision, in `settle()`, when the last one reports — it cannot end on
+  the first failure, because that would drop the correlationId association while its siblings
+  were still in flight and their reservations would be held forever. Compensation is built
+  from the events that arrived, never from a position in `items`: with N in flight, arrival
+  order says nothing about which line reported. Dispatch is on `sagaCommandExecutor` so the
+  processor thread never blocks waiting on an aggregate; a command that fails for good cannot
+  touch `SagaLifecycle` from that pool thread, so a reserve publishes
+  `SagaReserveAbandonedEvent` back into the saga and the completion command (sent after the
+  saga has ended) keeps `ES-4-staleMark`'s off-thread `abandon()`. Emits `saga.completed{outcome}`,
+  `saga.lifetime{outcome}` and `saga.command.failed{stage}`, unchanged.
+- **`domain/events.kt`** — `SagaReserveAbandonedEvent` is branch-local and handled by nothing
+  but the saga. It is published by `EventGateway`, not applied by an aggregate: nothing
+  happened to inventory, and the aggregate that would have appended it is the one that could
+  not be reached.
 - **`config/PessimisticCachingRepository.kt`** — copy-on-write cache in front of the
   event-sourcing repository, built **lock-free** with `NullLockFactory` (`AxonConfig`
   overrides `LockingRepository`'s pessimistic default). The class name predates that switch
