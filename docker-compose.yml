@@ -82,6 +82,37 @@ services:
       # Recorded in meta.json as command_pool, since two runs of the same commit differ by it.
       # Like AXON_SAGA_INTAKE_CAPACITY it needs no token reset — it is read at bean creation.
       COMMAND_POOL: "${COMMAND_POOL:-112}"
+      # ES-2/ES-4 family ONLY (ES-2, ES-4, ES-4-bounded, and the mongo ports); every other variant
+      # binds neither. The aggregate snapshot trigger: `snapshot.enabled` chooses
+      # EventCountSnapshotTriggerDefinition over NoSnapshotTriggerDefinition, `snapshot.event-count`
+      # is how many events pass before the next snapshot is written. Every branch that has it ships
+      # `enabled: true` / `event-count: 30` in its own application.yaml.
+      #
+      # ES-1 HAS NEITHER, deliberately: no SnapshotProperties, no trigger bean, so every load there
+      # is a full replay and that is the branch's identity. These variables reach its container and
+      # change nothing. run-suite.sh warns via the `snapshot-trigger` capability in variants.env,
+      # because that no-op is otherwise invisible — the run succeeds and only the numbers are wrong.
+      #
+      # BARE, unlike COMMAND_POOL above: a compose default always SETS the variable, so a `:-30`
+      # here would override each branch's application.yaml and make the shipped value dead text.
+      # Written bare, compose forwards these only when the host has them set.
+      #
+      #     SNAPSHOT_EVENT_COUNT=200 scripts/run-suite.sh --only ES-4   # rarer snapshots, longer tails
+      #     SNAPSHOT_ENABLED=false   scripts/run-suite.sh --only ES-4   # ES-1's load path on ES-4
+      #
+      # The binding was VERIFIED on the inventory-reservation-es-4 image rather than assumed, since
+      # a wrong variable name is exactly the silent no-op this knob exists to avoid: an invalid
+      # value aborts startup with `Failed to bind properties under 'snapshot.event-count' ...
+      # Origin: System Environment Property "SNAPSHOT_EVENT_COUNT"`, which also proves the env var
+      # outranks application.yaml (SNAPSHOT_EVENTCOUNT binds identically; one spelling is enough).
+      # Behaviourally, same image and 9 events on one aggregate: unset -> 0 rows in
+      # snapshot_event_entry, event-count 2 -> a snapshot row at sequence 8.
+      #
+      # Read at bean creation, so like COMMAND_POOL it needs no token reset; reset.sh truncates
+      # snapshot_event_entry between runs anyway. Recorded in meta.json as snapshot_enabled /
+      # snapshot_event_count, since two runs of the same commit differ by them.
+      SNAPSHOT_ENABLED:
+      SNAPSHOT_EVENT_COUNT:
       POOLING_INTERVAL:    "${POOLING_INTERVAL:-PT0.1S}"
       CACHE_TTL:           "${CACHE_TTL:-10m}"
       CACHE_MAXIMUM_SIZE:  "${CACHE_MAXIMUM_SIZE:-10000}"

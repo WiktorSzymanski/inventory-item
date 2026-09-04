@@ -19,6 +19,14 @@
 # variants.env. Both levers are held under the row/aggregate lock, so lower RATE when
 # raising them.
 #
+# SNAPSHOT_ENABLED / SNAPSHOT_EVENT_COUNT are the exception to "every knob is one bench.sh
+# understands": they never reach k6 at all. docker-compose forwards them straight to the API
+# container, where they set Axon's aggregate snapshot trigger, and only the ES-2/ES-4 family
+# declares the property -- ES-1 has no snapshotter by design, TO has no aggregate to snapshot.
+# The same variants.env guard covers them, under the `snapshot-trigger` capability.
+#
+#     SNAPSHOT_EVENT_COUNT=200 scripts/run-suite.sh --only ES-4
+#
 # Options:
 #   --only V1,V2         subset of variants.env (validated; order still follows the registry)
 #   --no-build           use the images as they are; do not rebuild even if stale

@@ -547,20 +547,33 @@ meta = {
     "db_name": "$DB_NAME",
     "api_container_re": "${API_CONTAINER_RE:-}",
     "expected_replicas": 1,
-    # order-saga segment count actually in force. Not derivable from branch+commit:
-    # compose passes AXON_SAGA_TOTAL_SEGMENTS and application.yaml defaults it to 60,
-    # so two runs of the same commit can differ here. TO variants have no saga processor
-    # and the value is meaningless for them.
-    "saga_total_segments": int("${AXON_SAGA_TOTAL_SEGMENTS:-60}"),
-    # ES-4-bounded's intake bound, for the same reason: compose always SETS the variable, so two
-    # runs of the same commit can differ here. Meaningless for every other variant, which binds
-    # the property and never reads it.
-    "saga_intake_capacity": int("${AXON_SAGA_INTAKE_CAPACITY:-112}"),
+    # order-saga segment count actually in force. Not derivable from branch+commit: compose
+    # passes AXON_SAGA_TOTAL_SEGMENTS on every run, so two runs of the same commit can differ
+    # here. TO variants have no saga processor and the value is meaningless for them.
+    #
+    # THE FALLBACK MUST MIRROR DOCKER-COMPOSE'S, not the branch's application.yaml. Compose
+    # always SETS the variable, so an unset host env still reaches the container as compose's
+    # default and the yaml's own `${AXON_SAGA_TOTAL_SEGMENTS:60}` is dead text. This read 60
+    # against compose's 32 until 2026-09-04: every run that did not set the knob recorded a
+    # segment count the API never ran, and no archive can be backfilled from meta.json alone.
+    # scripts/tests/test_compose_files.py pins the two files together so it cannot drift again.
+    "saga_total_segments": int("${AXON_SAGA_TOTAL_SEGMENTS:-32}"),
+    # ES-4-bounded's intake bound, for the same reason and with the same fallback rule; it read
+    # 112 against compose's 70 until the same date. Meaningless for every other variant, which
+    # binds the property and never reads it.
+    "saga_intake_capacity": int("${AXON_SAGA_INTAKE_CAPACITY:-70}"),
     # The saga-command pool width, for the same reason, and it matters more than the other two:
     # it sets the connection budget as 2 x (command_pool + saga threads + 3), so a run that moved
     # it is not comparable to one that did not even at the same commit. Default here mirrors
     # docker-compose's.
     "command_pool": int("${COMMAND_POOL:-112}"),
+    # The snapshot trigger actually in force, on the ES-2/ES-4 family. Strings, and EMPTY when the
+    # run did not set them: compose forwards both bare, so an unset run is whatever that branch's
+    # application.yaml ships (enabled, every 30 events) and there is no branch-independent number
+    # to fall back to -- ES-1 takes no snapshots at all, and int("") would abort the run here.
+    # Same reason as db_net_delay below: absent means "the default stack", not a value.
+    "snapshot_enabled": "${SNAPSHOT_ENABLED:-}",
+    "snapshot_event_count": "${SNAPSHOT_EVENT_COUNT:-}",
     # The injected datacenter RTT on the postgres -> api hop, and the evidence that it took.
     # Empty means the run was unshaped, which is the default. db_net_qdisc is what tc reported
     # from inside postgres' namespace and the two rtt figures bracket the install, so a run

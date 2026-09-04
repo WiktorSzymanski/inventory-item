@@ -70,19 +70,31 @@ has_cap() {
 # This failure is silent by construction and cannot be caught downstream: k6 is
 # the same for every variant and sends every knob, Spring ignores unknown JSON
 # properties, and meta.json records what k6 was TOLD rather than what the server honoured.
+# The compose-forwarded knobs (SNAPSHOT_*) fail the same way one layer over: compose passes
+# every variable it names to every variant's container, and a branch that never declares the
+# property binds nothing.
 # So a suite-wide RESERVE_DELAY_MS sweep produces six rows that look like they applied a
 # delay and did not. Nothing else in the pipeline can tell the difference, which is why the
 # check has to live here, before the first run starts.
+_SNAPSHOT_KNOB_HOW="compose forwards the variable to every container and only a branch with
+SnapshotProperties binds it, so elsewhere it is discarded with no error, while"
+
 warn_unsupported_knobs() {
     local variants="$1"
     _warn_knob "$variants" RESERVE_DELAY_MS "${RESERVE_DELAY_MS:-}" reserve-delay \
         "a per-reserve sleep in the aggregate"
     _warn_knob "$variants" PAYLOAD_BYTES "${PAYLOAD_BYTES:-}" payload-bytes \
         "aggregate padding on the row each reserve rewrites"
+    # Not a k6 knob: compose forwards these to the container, so the sixth argument replaces the
+    # k6 sentence in _warn_knob with how THIS one goes missing. Same shape of failure either way.
+    _warn_knob "$variants" SNAPSHOT_ENABLED "${SNAPSHOT_ENABLED:-}" snapshot-trigger \
+        "the aggregate snapshot switch" "$_SNAPSHOT_KNOB_HOW"
+    _warn_knob "$variants" SNAPSHOT_EVENT_COUNT "${SNAPSHOT_EVENT_COUNT:-}" snapshot-trigger \
+        "the aggregate snapshot interval" "$_SNAPSHOT_KNOB_HOW"
 }
 
 _warn_knob() {
-    local variants="$1" name="$2" value="$3" cap="$4" what="$5" v missing="" ok=""
+    local variants="$1" name="$2" value="$3" cap="$4" what="$5" how="${6:-}" v missing="" ok=""
     [ -n "$value" ] && [ "$value" != "0" ] || return 0
     for v in $variants; do
         has_cap "$v" "$cap" || missing="$missing $v"
@@ -97,9 +109,18 @@ _warn_knob() {
     log ""
     log "WARNING: $name=$value is $what, and these selected variants do not implement it:"
     log "        $missing"
-    log "         k6 sends the field to every branch and Spring ignores unknown properties, so"
-    log "         it is discarded there with no error, while meta.json still records $value —"
-    log "         it records what k6 was told, not what the server applied."
+    # The default sentence is k6's transport. A caller whose knob travels another way passes its
+    # own; the tail is common, because what makes the failure silent is the same in both cases —
+    # meta.json records the request, and nothing downstream can tell a honoured knob from a
+    # dropped one.
+    if [ -n "$how" ]; then
+        while IFS= read -r line; do log "         $line"; done <<<"$how"
+    else
+        log "         k6 sends the field to every branch and Spring ignores unknown properties, so"
+        log "         it is discarded there with no error, while"
+    fi
+    log "         meta.json still records $value — it records what the harness was told, not"
+    log "         what the server applied."
     log "         Branches that honour it: $ok"
     log ""
 }
