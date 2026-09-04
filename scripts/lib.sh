@@ -79,6 +79,13 @@ has_cap() {
 _SNAPSHOT_KNOB_HOW="compose forwards the variable to every container and only a branch with
 SnapshotProperties binds it, so elsewhere it is discarded with no error, while"
 
+# Same shape, different binder: only TO-3-parallel has a ReserveFanoutProperties to bind these to.
+# Worth warning about rather than shrugging at, because the knob LOOKS family-wide -- it is set on
+# every TO container -- and a sweep of it across the TO family would produce rows that differ in
+# nothing at all.
+_FANOUT_KNOB_HOW="compose forwards the variable to every container and only a branch with
+ReserveFanoutProperties binds it, so elsewhere it is discarded with no error, while"
+
 warn_unsupported_knobs() {
     local variants="$1"
     _warn_knob "$variants" RESERVE_DELAY_MS "${RESERVE_DELAY_MS:-}" reserve-delay \
@@ -91,6 +98,10 @@ warn_unsupported_knobs() {
         "the aggregate snapshot switch" "$_SNAPSHOT_KNOB_HOW"
     _warn_knob "$variants" SNAPSHOT_EVENT_COUNT "${SNAPSHOT_EVENT_COUNT:-}" snapshot-trigger \
         "the aggregate snapshot interval" "$_SNAPSHOT_KNOB_HOW"
+    _warn_knob "$variants" RESERVE_FANOUT_THREADS "${RESERVE_FANOUT_THREADS:-}" reserve-fanout \
+        "the width of the reserve modify phase's fan-out pool" "$_FANOUT_KNOB_HOW"
+    _warn_knob "$variants" RESERVE_FANOUT_QUEUE_CAPACITY "${RESERVE_FANOUT_QUEUE_CAPACITY:-}" reserve-fanout \
+        "the queue in front of that pool" "$_FANOUT_KNOB_HOW"
 }
 
 _warn_knob() {

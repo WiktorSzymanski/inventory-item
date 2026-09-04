@@ -117,17 +117,44 @@ services:
       CACHE_TTL:           "${CACHE_TTL:-10m}"
       CACHE_MAXIMUM_SIZE:  "${CACHE_MAXIMUM_SIZE:-10000}"
       DB_MAX_CONNECTIONS:  "${DB_MAX_CONNECTIONS:-350}"
-      # 50 for every TO branch (TO-1, TO-2, TO-2-fix-A, TO-2-push, TO-3, TO-4), down from 200.
+      # 50 for every TO branch, down from 200.
       #
       # It has to be set HERE and cannot be expressed per branch: a compose default always SETS
-      # the variable, so this line overrides whatever each branch's application.yaml says. Every
-      # TO branch still ships `${ORDER_WORKER_THREADS:200}` and every one of those defaults is
-      # dead text under the harness — the DANGER comments there naming 150 are stale on both the
-      # number and the mechanism.
+      # the variable, so this line overrides whatever each branch's application.yaml says. As of
+      # 2026-09-04 every TO branch also SHIPS 50, so the two finally agree and a reader can size an
+      # experiment off either — before that they all shipped a `${ORDER_WORKER_THREADS:200}` that
+      # was dead text under the harness, and no archived run recorded which width it used.
+      #
+      # Recorded in meta.json as order_worker_threads since 2026-09-04, so runs stay comparable
+      # across a change to this line. Archives taken before then have no such field and were all
+      # at 50 regardless.
       #
       # Inert on ES: no ES branch references order-worker or ORDER_WORKER at all, so this does
       # not resource the two families differently and is not a TO-vs-ES confound.
       ORDER_WORKER_THREADS: "${ORDER_WORKER_THREADS:-50}"
+      # TO-3-parallel ONLY; every other variant binds neither and ignores both. The pool the
+      # reserve path's MODIFY phase fans out across: an order's lines are grouped by item and the
+      # groups reserve concurrently, so the phase costs about one reserveDelayMs instead of
+      # ITEMS_PER_ORDER of them.
+      #
+      # IT DOES NOT MOVE THE CONNECTION BUDGET, and that is the point of the width. Unlike
+      # COMMAND_POOL, whose every busy thread holds two axon-jdbc-pool connections, these threads
+      # run entirely outside the write transaction — no Hikari connection, no row lock, nothing but
+      # arithmetic and the artificial sleep. 150 of them cost ~150 platform thread stacks of memory
+      # and no database resource at all, so DB_MAX_CONNECTIONS is unaffected and the TO connection
+      # arithmetic (http 99 + workers 50 + delivery 100) is unchanged.
+      #
+      # Sizing: peak demand is arrival_rate x ITEMS_PER_ORDER x reserveDelayMs x attempts. The
+      # widest cell (W-fan/C01: 145 rps, 16 lines, 25 ms) wants 58 threads at one attempt and 290
+      # at the 5-attempt retry cap; past the width and the queue, a group runs inline on the
+      # order-worker thread, which is TO-3's sequential behaviour rather than a failure.
+      #
+      #     RESERVE_FANOUT_THREADS=1 scripts/run-suite.sh --only TO-3-parallel
+      #
+      # is the useful degenerate setting: same image, near-sequential execution, so it isolates the
+      # fan-out's own overhead from the parallelism. Both are recorded in meta.json.
+      RESERVE_FANOUT_THREADS: "${RESERVE_FANOUT_THREADS:-150}"
+      RESERVE_FANOUT_QUEUE_CAPACITY: "${RESERVE_FANOUT_QUEUE_CAPACITY:-1000}"
       HTTP_THREADS: "${HTTP_THREADS:-99}"
       # TO-1 and TO-2, and inert everywhere else (Spring ignores unknown properties). Selects how
       # the outbox drain finds its next page: CURSOR reads `seq > cursor`, SCAN proves absence over

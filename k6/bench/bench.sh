@@ -567,6 +567,18 @@ meta = {
     # it is not comparable to one that did not even at the same commit. Default here mirrors
     # docker-compose's.
     "command_pool": int("${COMMAND_POOL:-112}"),
+    # The TO order-worker width. Compose has pinned this on every TO run since 667d4e5 and it was
+    # recorded NOWHERE until 2026-09-04, so no archived TO run says which width it ran at -- the
+    # branches' own application.yaml said 200 and was overridden to 50 every single time. Fallback
+    # mirrors docker-compose's, as above. Meaningless on ES, which never binds it.
+    "order_worker_threads": int("${ORDER_WORKER_THREADS:-50}"),
+    # TO-3-parallel's reserve fan-out pool, and the queue in front of it. Two runs of the same
+    # commit differ by these: the width sets how much of the modify phase actually runs in
+    # parallel, and once width and queue are both exhausted a line group runs inline on the
+    # order-worker thread instead -- i.e. the branch degrades to TO-3 without saying so anywhere
+    # else. Fallbacks mirror docker-compose's. Meaningless on every other variant.
+    "reserve_fanout_threads": int("${RESERVE_FANOUT_THREADS:-150}"),
+    "reserve_fanout_queue_capacity": int("${RESERVE_FANOUT_QUEUE_CAPACITY:-1000}"),
     # The snapshot trigger actually in force, on the ES-2/ES-4 family. Strings, and EMPTY when the
     # run did not set them: compose forwards both bare, so an unset run is whatever that branch's
     # application.yaml ships (enabled, every 30 events) and there is no branch-independent number
