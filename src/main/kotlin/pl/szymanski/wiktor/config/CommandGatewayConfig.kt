@@ -167,8 +167,13 @@ class CommandGatewayConfig {
     ): RetryScheduler = ConcurrencyRetryScheduler(
         retryExecutor = retryTimerExecutor,
         commandExecutor = sagaCommandExecutor,
-        maxRetries = 5,        // UNCHANGED — retry POLICY is identical on every ES variant, so a
-        initialDelayMs = 25L,  // difference between them cannot be blamed on the backoff curve.
+        // The BUDGET is unchanged and still identical on every ES variant. The CURVE is not:
+        // since 2026-09-04 this branch jitters it (+/-50%, mean-preserving) while ES-3, ES-4 and
+        // its four arms, and ES-2-mongo, still wait it deterministically — see
+        // ConcurrencyRetryScheduler.delayMsFor. A difference read ACROSS that line is not
+        // backoff-controlled; a difference read within either group still is.
+        maxRetries = 5,
+        initialDelayMs = 25L,
         meterRegistry = meterRegistry,
     )
 
