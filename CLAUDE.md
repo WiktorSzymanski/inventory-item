@@ -159,19 +159,18 @@ when the resulting `OrderFailedEvent` arrives. The order still ends up `FAILED`/
 `outcome="completed"`. `saga_command_failed_total{stage="complete"}` is the only signal for
 that path — read it alongside the outcome split, never instead of it.
 
-The `stage` tag has seven values here — the six every other branch emits (`reserve`,
-`complete`, `release`, `fail-order`, `fail-order-ignored`, `abandon-rejected`) plus
-`abandon-publish`, which exists only on this branch. The last four are the ones that can leave
-an order non-terminal, so a non-zero value there is a different class of problem from the first
-three: `fail-order` means the terminal command itself failed; `fail-order-ignored` means the
-aggregate refused it because the order was no longer `PENDING`, so no `OrderFailedEvent`
-exists; `abandon-rejected` means the saga pool refused the disposition and it ran inline; and
+The `stage` tag has seven values here — the six every other branch emits (`reserve`, `complete`,
+`release`, `fail-order`, `fail-order-ignored`, `abandon-rejected`) plus `abandon-publish`, which
+exists only on the two `-parallel` branches. The last four are the ones that can leave an order
+non-terminal, so a non-zero value there is a different class of problem from the first three:
+`fail-order` means the terminal command itself failed; `fail-order-ignored` means the aggregate
+refused it because the order was no longer `PENDING`, so no `OrderFailedEvent` exists;
+`abandon-rejected` means the saga pool refused the disposition and it ran inline; and
 `abandon-publish` means an exhausted reserve could not publish its `SagaReserveAbandonedEvent`,
 so that line never settles, the saga waits forever and its `saga_entry` row survives the run.
 `abandon-publish` is the one series on this branch that invalidates a run on its own — check it
-before reading a `saga_entry` residue as a leak in the design.
-`python3 k6/bench/compare.py --cols saga <run-dirs>` tabulates all of them alongside the
-contention-vs-stock split.
+before reading a `saga_entry` residue as a leak in the design. `python3 k6/bench/compare.py
+--cols saga <run-dirs>` tabulates all of them alongside the contention-vs-stock split.
 
 **`REPLICAS=1` is still the measurement-grade configuration**, because at `REPLICAS>1` the
 rejection rate is an artefact of lost write races rather than of stock. Read multi-replica
