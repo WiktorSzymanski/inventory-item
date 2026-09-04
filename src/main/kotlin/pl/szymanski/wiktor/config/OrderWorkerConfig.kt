@@ -27,8 +27,10 @@ data class OrderWorkerProperties(
  *
  * The previous wiring declared `orderWorkerExecutor` (150 threads, first attempts) and a separate
  * `order-retry-*` pool (50 threads) that served the backoff and executed the retried attempt.
- * Here [OrderWorkerPool] does both at `150 + 50 = 200` threads, so total executing width and the
- * connection demand are unchanged and only retry TOPOLOGY moves. `app.order-retry` is gone;
+ * Here [OrderWorkerPool] does both. The merge itself was width-neutral — it ran at `150 + 50 =
+ * 200` so total executing width and connection demand were unchanged and only retry TOPOLOGY
+ * moved — and the width was cut to 50 afterwards, on both halves at once, because 200 bought no
+ * throughput and added row-lock contention. `app.order-retry` is gone;
  * `ORDER_RETRY_THREADS` and `ORDER_RETRY_EXECUTE_ON_RETRY_POOL` are still exported by
  * docker-compose to every TO branch and are inert here — logged at startup so a run cannot mistake
  * them for effective. No TO branch keeps the two-pool topology any more, so the contrast is with
@@ -100,9 +102,9 @@ class OrderWorkerConfig {
             "[POOLS] order-worker={} threads, serving first attempts AND retries (this branch used to " +
                 "split the same work across 150 worker + 50 retry). " +
                 "ORDER_RETRY_THREADS and ORDER_RETRY_EXECUTE_ON_RETRY_POOL are INERT — there is no " +
-                "second pool to size or to choose. A run left at docker-compose's " +
-                "ORDER_WORKER_THREADS=150 default is 50 execution threads NARROWER than every run " +
-                "taken before the merge; export ORDER_WORKER_THREADS=200.",
+                "second pool to size or to choose. docker-compose and application.yaml both default " +
+                "this to 50, so the number above is 50 unless the run exported " +
+                "ORDER_WORKER_THREADS; it is the width to trust over either file.",
             properties.threads,
         )
 
