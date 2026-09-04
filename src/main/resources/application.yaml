@@ -41,24 +41,23 @@ app:
     # OutboxPurger's OWN thread, not the shared scheduler pool, so it never competes with delivery.
     max-batches: ${OUTBOX_PURGE_MAX_BATCHES:10}           # batches per sweep
   order-worker:
-    # 200 = the 150 worker + 50 retry threads this branch used to run, merged. This ONE pool runs
-    # first attempts and retried attempts alike, so the branch has the same executing width and the
-    # same connection demand as before while having half as many pools.
+    # 50 = the width every benchmarked run has actually used. This ONE pool runs first attempts and
+    # retried attempts alike, so the branch has one executing width and one connection demand where
+    # it used to have a 150-thread worker pool and a 50-thread retry pool beside it.
     #
-    # This default is NOT what a harness run uses. docker-compose.yml sets
-    # ORDER_WORKER_THREADS=${ORDER_WORKER_THREADS:-50} for EVERY TO branch, and a compose default
-    # always SETS the variable, so it overrides the value below: a benchmarked run gets 50 and this
-    # 200 applies only to a bare `./gradlew bootRun`. Change the width in docker-compose.yml, not
-    # here — a branch cannot express a width the harness will honour. OrderWorkerConfig logs the
-    # width it actually got at startup, which is the number to trust.
+    # docker-compose.yml sets ORDER_WORKER_THREADS=${ORDER_WORKER_THREADS:-50} for EVERY TO branch,
+    # and a compose default always SETS the variable, so it overrides the value below. The two now
+    # AGREE, which is the whole point of this line: a bare `./gradlew bootRun` and a harness run get
+    # the same pool. Change the harness width in docker-compose.yml — a branch still cannot express
+    # a width the harness will honour, and OrderWorkerConfig logs the width it actually got at
+    # startup, which is still the number to trust.
     #
-    # An earlier version of this comment said compose pinned 150 and told you to export 200 from
-    # variants.d/<variant>.env. Both halves were wrong. No committed state of this repo ever held a
-    # 150: `git log --all -S ORDER_WORKER_THREADS -- docker-compose.yml` returns exactly two commits,
-    # fd5dff8 which ADDED the variable at 200 and 667d4e5 which changed it to 50. And variants.d/ was
-    # deleted on 2026-08-18 together with run-suite.sh's sourcing hook, after a committed life in
-    # which every file it held was a no-op.
-    threads: ${ORDER_WORKER_THREADS:200}                   # the one pool: first attempts AND retries
+    # THIS SHIPPED `200` UNTIL 2026-09-04 AND WAS DEAD TEXT FOR ALL OF IT. Compose has pinned 50
+    # since 667d4e5, so every archived TO run was taken at 50 whatever this file claimed, and a
+    # reader sizing an experiment off the yaml would have been wrong by 4x. The 200 was the
+    # pre-merge 150 + 50 arithmetic carried forward; measured, it is not merely neutral but worse —
+    # a pool that wide buys no throughput and adds inventory_state row-lock contention.
+    threads: ${ORDER_WORKER_THREADS:50}                    # the one pool: first attempts AND retries
     # INERT. The merged pool is a ScheduledThreadPoolExecutor and its DelayedWorkQueue is unbounded
     # by construction — which is what this default asked for anyway, so nothing a run relied on
     # changes. OrderWorkerConfig warns if it is set to anything else.
