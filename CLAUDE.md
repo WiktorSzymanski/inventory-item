@@ -243,15 +243,19 @@ KurrentDB and no R2DBC on any current branch.
   concurrent commands all load at sequence N, all append N+1, one wins, and the losers take
   `23505` → `SQLStateResolver` → `ConcurrencyException` → `ConcurrencyRetryScheduler`. A cache
   hit can still be stale — that is caught at append time and retried — but never *knowably*
-  stale: **this branch marks rather than repairs.** A losing command writes
+  stale: **`ES-4` marks rather than repairs.** A losing command writes
   `knownStoreSequence = baseSequence + 1` onto the entry (guarded on `ConcurrencyException`,
   since a mark is persistent state) and reads nothing. The next load compares
   `sequence >= knownStoreSequence`; if it holds the entry is used as-is, otherwise the loader
   reads the delta, replays it, publishes the result and runs the command on that. The check is
   exact — `sequence < knownStoreSequence` means the next append targets a taken sequence and
   *will* conflict — so the read it triggers is never speculative. An empty delta clears the mark,
-  so a mark that proves wrong costs one read, not one per load. `ES-4` is the eager-repair
-  baseline this A/Bs against. The deep copy per load is what makes all of it safe — without
+  so a mark that proves wrong costs one read, not one per load. `ES-4` REPAIRED EAGERLY until
+  2026-09-04 — every rollback paid an incremental `catchUp`, empty probes included. That code is
+  still reachable (`a0b4c9c` here, `d141755` on `ES-4-parallel`) but nothing in `variants.env`
+  builds it, so the two strategies can no longer be A/B'd from the suite. `ES-4-bounded` and
+  `ES-4-mongo` branched before the adoption and still repair eagerly, which makes each of them two
+  variables off `ES-4`, not one. The deep copy per load is what makes all of it safe — without
   a lock, concurrent commands would otherwise mutate one shared root.
   **Caffeine**, bounded by `cache.ttl` (`expireAfterAccess`, 10m)
   and `cache.maximum-size` (10000); a cache hit skips stream replay entirely. Every load
@@ -370,17 +374,19 @@ archived before the tag existed.
 merge), and `path="repair"` on `state_load_time` is the store read inside it; the gap between them
 is what the repair costs beyond reading.
 
-Two counters are specific to this branch's mark-and-resolve strategy, and both are **Grafana-only** —
+Two counters belong to the mark-and-resolve strategy — `ES-4` and `ES-4-parallel` only — and both are
+**Grafana-only**, with no panel on `main` yet —
 adding them to `k6/bench/queries.promql` would break its byte-identity across the variant branches, so
 `compare.py` does not see them:
 
 | metric | meaning |
 | --- | --- |
 | `inventory_opt_cache_stale_mark_total` | marks recorded — commands that lost a race and told the cache which sequence the winner took |
-| `inventory_opt_cache_stale_hit_total` | loads that found a known-stale entry and caught up: **doomed commands intercepted**, the headline number for this branch |
+| `inventory_opt_cache_stale_hit_total` | loads that found a known-stale entry and caught up: **doomed commands intercepted**, the headline number for the strategy |
 
-`inventory_opt_catchup_duration_seconds{outcome="noop"}` changes meaning here. On `ES-4` it is the
-empty probe every rollback paid; on this branch catch-up only runs when the entry is *known* stale, so
+`inventory_opt_catchup_duration_seconds{outcome="noop"}` changed meaning on 2026-09-04. In any run
+archived up to then it is the empty probe every rollback paid; since the mark, catch-up only runs when
+the entry is *known* stale, so
 a `noop` means a mark was set with no real conflict behind it. Its count should be near zero — if it
 is not, something is throwing `ConcurrencyException` without a duplicate key behind it.
 
