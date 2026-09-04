@@ -75,7 +75,7 @@ object OrderRetryPolicy {
      * [baseDelayMsFor] spread uniformly over `[0.5 x base, 1.5 x base)`, so the expected value is
      * the base delay itself.
      *
-     * [random] defaults to [ThreadLocalRandom] — 200 order-worker threads draw from this on every
+     * [random] defaults to [ThreadLocalRandom] — every order-worker thread draws from this on every
      * conflict, and a shared `Random` would put them in contention on one atomic seed while trying
      * to decorrelate them. It is a parameter only so the policy is testable without statistics.
      */
@@ -94,8 +94,8 @@ object OrderRetryPolicy {
  * The previous topology ran two execution lanes — `order-worker-*` (150) for first attempts and
  * `order-retry-*` (50) which served the backoff AND executed the retried attempt, mirroring the ES
  * branches where Axon's `RetryingCallback` dispatches inline onto its own retry pool. No TO branch
- * runs it that way now. Here there is a single `ScheduledThreadPoolExecutor` of `150 + 50 = 200`
- * threads, all named `order-worker-*`:
+ * runs it that way now. Here there is a single `ScheduledThreadPoolExecutor`, all of whose threads
+ * are named `order-worker-*`:
  *
  *   - [execute] is the first-attempt path, submitted by the `@ApplicationModuleListener`;
  *   - [schedule] is the retry path, called BY THE WORKER THREAD THAT JUST FAILED, which then
@@ -113,8 +113,9 @@ object OrderRetryPolicy {
  * is that no second pool exists at all, and a retry no longer crosses a pool boundary to resume.
  *
  * The width is [OrderWorkerProperties.threads][pl.szymanski.wiktor.config.OrderWorkerProperties],
- * which now defaults to 200 precisely so total executing capacity and the connection demand match
- * the 150 + 50 this branch used to run. See `application.yaml`.
+ * which defaults to 50 — the same 50 docker-compose pins, and the width every benchmarked run has
+ * actually used. The merge was sized at `150 + 50 = 200` to be width-neutral; the cut to 50 came
+ * after, and applies to first attempts and retries alike. See `application.yaml`.
  *
  * NOT a `TaskScheduler`, NOT a `ScheduledExecutorService` — deliberately, see
  * [pl.szymanski.wiktor.config.OrderWorkerConfig].
