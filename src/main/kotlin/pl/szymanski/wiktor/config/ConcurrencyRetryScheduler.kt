@@ -9,7 +9,10 @@ import org.slf4j.LoggerFactory
 import java.util.concurrent.Executor
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
+import java.util.random.RandomGenerator
+import kotlin.math.roundToLong
 
 /**
  * The retry pool TIMES the backoff; it does not execute the retried command.
@@ -33,6 +36,11 @@ import java.util.concurrent.TimeUnit
  * PORTED FROM ES-4 ON 2026-08-20, where it arrived as `ES-4-NullLock-oneExec`. ES-1, ES-2 and ES-4
  * now share this topology; ES-3 still runs the two-lane shape, so it is the one ES design point
  * where a retry executes on the retry pool.
+ *
+ * THE BACKOFF IS JITTERED HERE, as of 2026-09-04 — on ES-1, ES-1-parallel, ES-2 and ES-2-parallel,
+ * and on no other ES branch. [baseDelayMsFor] is the deterministic curve ES-3, ES-4 and its four
+ * arms, and ES-2-mongo still wait; [delayMsFor] is what this one waits, and carries the reasoning. The retry BUDGET is unchanged, so the divergence is the correlation
+ * between retrying orders and nothing else.
  */
 class ConcurrencyRetryScheduler(
     private val retryExecutor: ScheduledExecutorService,
@@ -40,10 +48,67 @@ class ConcurrencyRetryScheduler(
     private val maxRetries: Int = 5,
     private val initialDelayMs: Long = 25L,
     meterRegistry: MeterRegistry,
+    /**
+     * [ThreadLocalRandom] by default — 112 `saga-command` threads draw from this on every conflict,
+     * and a shared `Random` would put them in contention on one atomic seed while trying to
+     * decorrelate them. A parameter only so the jitter is testable without statistics.
+     */
+    private val random: RandomGenerator = ThreadLocalRandom.current(),
 ) : RetryScheduler {
 
     companion object {
         private val log = LoggerFactory.getLogger(ConcurrencyRetryScheduler::class.java)
+
+        /** The ceiling on a single backoff. Applied AFTER jitter — see [delayMsFor]. */
+        const val MAX_DELAY_MS = 500L
+
+        /** Half-width of the jitter window, as a fraction of the base delay. 0.5 = base +/- 50%. */
+        const val JITTER_RATIO = 0.5
+    }
+
+    /**
+     * The deterministic curve — 25, 50, 100, 200, 400 ms before attempts 2 through 6 — waited
+     * exactly by every ES branch that does not jitter: ES-3, ES-4 and its four arms, and
+     * ES-2-mongo. Kept separate from [delayMsFor] so the two are readable against each other and
+     * so a test can assert the curve did not move.
+     */
+    internal fun baseDelayMsFor(attempt: Int): Long =
+        (initialDelayMs * (1L shl attempt)).coerceAtMost(MAX_DELAY_MS)
+
+    /**
+     * [baseDelayMsFor] spread uniformly over `[0.5 x base, 1.5 x base)`.
+     *
+     * WHY JITTER AT ALL. Without it every order waits the same curve, so orders that collide at T
+     * both wake at T+25, collide again, both wake at T+75, and the convoy re-forms at every step.
+     * Nothing in this stack breaks that symmetry: the aggregate is lock-free, contention is
+     * resolved by the event store's `UNIQUE (aggregate_identifier, sequence_number)` and this
+     * retry, and the retried commands rejoin one FIFO together. The `-parallel` arms make it worse
+     * still, dispatching every reserve command for an order at once so the collisions arrive in
+     * tighter bunches. This is the same change TO took on 2026-08-18.
+     *
+     * WHY SYMMETRIC AND NOT AWS's FULL JITTER (`rand(0, base)`). The expected delay here is the
+     * base delay itself, so the retry BUDGET is preserved and the only thing that differs from the
+     * un-jittered ES branches is the correlation. Full jitter halves the budget — ~387 ms against
+     * 775 ms — which would move two variables at once and make a run here unreadable against ES-4.
+     *
+     * WHERE THE MEAN IS NOT EXACTLY PRESERVED. `MAX_DELAY_MS` is applied AFTER jitter, so a
+     * jittered delay can never exceed it. Unlike TO — which runs 4 retries, whose largest draw is
+     * under 300 ms, so its cap never binds — ES runs 5, and the last attempt's window `[200, 600)`
+     * IS clipped at 500:
+     *
+     *     E = (1/400) x INTEGRAL(200..500) x dx + (100/400) x 500 = 262.5 + 125 = 387.5 ms
+     *
+     * so that draw's mean is 387.5 rather than 400, and the whole budget 762.5 rather than 775 —
+     * 1.6% low. Accepted deliberately: raising the cap to 600 would be a SECOND divergence from the
+     * branches this one is read against, which is worse than a bias well inside run-to-run noise.
+     * Raise `maxRetries` further and the clipping grows, so re-derive this before doing so.
+     */
+    internal fun delayMsFor(attempt: Int): Long {
+        val base = baseDelayMsFor(attempt)
+        val factor = (1.0 - JITTER_RATIO) + (2.0 * JITTER_RATIO * random.nextDouble())
+        // At least 1 ms: a zero delay would hand the dispatch straight back to the command pool
+        // with no wait at all, which is the convoy this exists to break.
+        return (base * factor).roundToLong().coerceIn(1L, MAX_DELAY_MS)
     }
 
     private val retryCounter: Counter = Counter.builder("inventory.optimistic.retry").register(meterRegistry)
@@ -72,7 +137,7 @@ class ConcurrencyRetryScheduler(
             exhaustedCounter.increment()
             return false
         }
-        val delay = (initialDelayMs * (1L shl history.size)).coerceAtMost(500L)
+        val delay = delayMsFor(history.size)
         log.debug("[RETRY] ConcurrencyException on {} attempt={} retrying in {}ms", commandMessage.payloadType.simpleName, history.size + 1, delay)
         retryCounter.increment()
         // The hand-off is applied to the SCHEDULED task rather than to schedule() itself: the
