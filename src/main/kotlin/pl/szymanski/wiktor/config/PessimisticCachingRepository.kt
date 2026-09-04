@@ -77,6 +77,46 @@ import java.util.concurrent.Callable
  * Set `cache.enabled=false` to bypass the cache entirely (every load cold-replays) while keeping the
  * lock-free behaviour — useful for A/B measurement against the cached path.
  */
+/** Sentinel for "we have learned nothing about the store head" — see [Confirmed.knownStoreSequence]. */
+internal const val UNKNOWN_SEQUENCE = -1L
+
+/**
+ * Confirmed (persisted) aggregate state at a known sequence number, plus what we have learned the
+ * hard way about the store being ahead of it.
+ *
+ * [trigger] is cached alongside the state for the same reason Axon's `AggregateCacheEntry` keeps
+ * one: [SnapshotTriggerDefinition.prepareTrigger] hands out a trigger with a ZEROED event counter,
+ * so preparing a fresh one per cache hit would stop `EventCountSnapshotTriggerDefinition` from ever
+ * reaching its threshold and silently disable snapshotting. The live trigger is carried forward and
+ * re-attached via [SnapshotTriggerDefinition.reconfigure] instead.
+ *
+ * [knownStoreSequence] is a LOWER BOUND on the store head, not a staleness distance: the lowest
+ * sequence number some command proved exists by failing to insert it. `sequence >= knownStoreSequence`
+ * therefore means "not KNOWN to be stale" — never "provably fresh", which no cache can claim without
+ * reading the store. The converse is exact: `sequence < knownStoreSequence` means the next append
+ * from this state targets a sequence that is already taken and WILL conflict.
+ */
+internal data class Confirmed<T>(
+    val root: T,
+    val sequence: Long,
+    val deleted: Boolean,
+    val trigger: SnapshotTrigger,
+    val knownStoreSequence: Long = UNKNOWN_SEQUENCE,
+)
+
+/**
+ * The monotonic guard every cache write goes through, extracted from the `merge` lambdas so the
+ * invariant is one testable function rather than two lambdas that must stay in step.
+ *
+ * State only ever moves FORWARD, and an unresolved mark survives an advance that does not reach it:
+ * a writer landing at sequence 5 while another command already proved 7 exists must not present the
+ * entry as fresh.
+ */
+internal fun <T> mergeConfirmed(old: Confirmed<T>, candidate: Confirmed<T>): Confirmed<T> =
+    if (candidate.sequence > old.sequence)
+        candidate.copy(knownStoreSequence = maxOf(candidate.knownStoreSequence, old.knownStoreSequence))
+    else old
+
 class PessimisticCachingRepository<T : Any>(
     builder: EventSourcingRepository.Builder<T>,
     private val eventStore: EventStore,
@@ -88,20 +128,6 @@ class PessimisticCachingRepository<T : Any>(
 ) : EventSourcingRepository<T>(builder), ConfirmedStateSource {
 
     private val cacheEnabled = cacheProperties.enabled
-
-    /**
-     * [trigger] is cached alongside the state for the same reason Axon's [AggregateCacheEntry] keeps
-     * one: [SnapshotTriggerDefinition.prepareTrigger] hands out a trigger with a ZEROED event counter,
-     * so preparing a fresh one per cache hit would stop `EventCountSnapshotTriggerDefinition` from ever
-     * reaching its threshold and silently disable snapshotting. The live trigger is carried forward and
-     * re-attached via [SnapshotTriggerDefinition.reconfigure] instead.
-     */
-    private data class Confirmed<T>(
-        val root: T,
-        val sequence: Long,
-        val deleted: Boolean,
-        val trigger: SnapshotTrigger,
-    )
 
     // Metric names are deliberately identical to the ES-3-optimistic branch so the same dashboard and
     // report queries compare both variants without renaming anything.
@@ -279,7 +305,7 @@ class PessimisticCachingRepository<T : Any>(
         val entry = Confirmed(deepCopy(aggregate.aggregateRoot), newSequence, aggregate.isDeleted, aggregate.snapshotTrigger)
         // asMap() gives ConcurrentMap semantics over the Caffeine cache, so the monotonic guard is
         // as atomic here as it was on the ConcurrentHashMap this replaced.
-        confirmed.asMap().merge(id, entry) { old, candidate -> if (candidate.sequence > old.sequence) candidate else old }
+        confirmed.asMap().merge(id, entry, ::mergeConfirmed)
     }
 
     /**
@@ -321,7 +347,7 @@ class PessimisticCachingRepository<T : Any>(
             if (newSequence > current.sequence) {
                 // Keep the live trigger; only the state moved forward.
                 val entry = Confirmed(deepCopy(aggregate.aggregateRoot), newSequence, aggregate.isDeleted, current.trigger)
-                confirmed.asMap().merge(id, entry) { old, candidate -> if (candidate.sequence > old.sequence) candidate else old }
+                confirmed.asMap().merge(id, entry, ::mergeConfirmed)
                 catchupCounter.increment()
                 catchupEvents.record((newSequence - current.sequence).toDouble())
                 outcome = catchupApplied
@@ -343,6 +369,9 @@ class PessimisticCachingRepository<T : Any>(
 
     /** Testing/observability: current confirmed sequence held for an aggregate, or null if uncached. */
     fun cachedSequence(id: String): Long? = confirmed.getIfPresent(id)?.sequence
+
+    /** Testing/observability: the store sequence this entry is known to be missing, or null if uncached. */
+    fun cachedKnownSequence(id: String): Long? = confirmed.getIfPresent(id)?.knownStoreSequence
 
     /** Testing: drop an entry so the next load takes the cold-replay path. */
     fun evict(id: String) = confirmed.invalidate(id)
