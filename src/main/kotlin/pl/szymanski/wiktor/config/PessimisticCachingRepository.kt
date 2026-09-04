@@ -52,29 +52,46 @@ import java.util.concurrent.Callable
  * the previous never-evicted `ConcurrentHashMap` did; the bounds exist to stop aggregates that go
  * cold from pinning heap forever.
  *
- * **A cache hit CAN be stale, and that is by design.** [advance] runs at AFTER_COMMIT with no lock
- * held, so between a hit at sequence N and this command's append another command may have committed
- * N+1. The stale read is not a correctness hole: it is caught at append time by the unique
- * constraint, the UnitOfWork rolls back, [catchUp] pulls in the delta, and the retry runs against
- * fresh state. The cache itself never goes backwards — every write goes through a monotonic `merge`
- * — and never holds uncommitted state.
+ * **A cache hit can still be stale, but never KNOWABLY stale.** [advance] runs at AFTER_COMMIT with
+ * no lock held, so between a hit at sequence N and this command's append another command may have
+ * committed N+1. Nothing here detects that, nor a commit made on another node: the entry looks fresh,
+ * is served, and the conflict is caught at append time by the unique constraint. What the mark removes
+ * is the case this node already KNEW about — a command that lost a race recorded which sequence the
+ * winner took, and serving that entry again would be handing out a guaranteed failure.
+ * `sequence >= knownStoreSequence` therefore means "not known stale", never "fresh"; the store remains
+ * the only authority. The cache itself never goes backwards — every write goes through
+ * [mergeConfirmed] — and never holds uncommitted state.
+ *
+ * **The repair is lazy and verified, not eager and hoped.** The losing command records one number and
+ * stops; the read that resolves it happens at the next load, where its result is checked immediately
+ * before the state is used. That is what makes the check exact: `sequence < knownStoreSequence` means
+ * the next append targets a taken sequence and WILL conflict, so the read is never speculative. It
+ * also makes a failed repair recoverable — the mark survives, so the next load retries it, where the
+ * eager repair this replaced would strand the aggregate until some later rollback happened to fix it.
  *
  * Metrics: `state_load_time{phase=load}` is the write path's whole state-load cost per command
  * attempt, hits and misses pooled; `{phase=copy}` is what the hit arm pays in place of a store round
  * trip, and the `{phase=snapshot|events|replay|total, path=command}` phases decompose the miss arm.
- * The repair that follows a lost race is `inventory.opt.catchup.duration` and `path=repair`; it is
- * not part of any of them.
+ * The repair is `inventory.opt.catchup.duration` and `path=repair`; it now runs INSIDE the load, so
+ * `{phase=load}` legitimately contains it and `path=repair` is what keeps it subtractable.
+ * `inventory.opt.cache.stale.mark` counts marks recorded and `inventory.opt.cache.stale.hit` counts
+ * doomed commands intercepted; neither is in `k6/bench/queries.promql`, which is shared across
+ * branches, so both are Grafana-only.
  *
  * Cache lifecycle:
- *  - load (hit)  -> deep-copy the confirmed root, reconstruct the aggregate at seq N (NO replay),
- *                   re-attaching the cached [org.axonframework.eventsourcing.SnapshotTrigger] so the
- *                   snapshot event counter survives (see [Confirmed]).
+ *  - load (hit, unmarked) -> deep-copy the confirmed root, reconstruct the aggregate at seq N (NO
+ *                   replay), re-attaching the cached
+ *                   [org.axonframework.eventsourcing.SnapshotTrigger] so the snapshot event counter
+ *                   survives (see [Confirmed]).
+ *  - load (hit, marked)   -> the entry is KNOWN doomed (`sequence < knownStoreSequence`): read just
+ *                   the missing delta (`readEvents(id, N+1)`), replay it onto a copy, publish the
+ *                   result so concurrent losers of the same race find it fresh, and run the command
+ *                   on that instead of on a snapshot + full-tail replay.
  *  - load (miss) -> cold replay via `super` (snapshot + tail), then seed the cache.
  *  - afterCommit -> monotonically advance the cache to the just-persisted state (confirmed only).
- *  - onRollback  -> incremental catch-up: read just the missing delta (`readEvents(id, N+1)`) and
- *                   advance the cache, so the gateway retry re-runs on `cached + delta` rather than
- *                   on a snapshot + full-tail replay. Lock-free, this is the single-node repair path,
- *                   not a multi-node-only one.
+ *  - onRollback  -> on a [org.axonframework.modelling.command.ConcurrencyException] ONLY, record that
+ *                   `baseSequence + 1` exists in the store. No store read: the failure becomes one
+ *                   number, and the read that resolves it happens at the next load.
  *
  * Set `cache.enabled=false` to bypass the cache entirely (every load cold-replays) while keeping the
  * lock-free behaviour — useful for A/B measurement against the cached path.
@@ -136,24 +153,26 @@ class PessimisticCachingRepository<T : Any>(
     private val hitCounter = meterRegistry.counter("inventory.opt.cache.hit")
     private val missCounter = meterRegistry.counter("inventory.opt.cache.miss")
     private val catchupCounter = meterRegistry.counter("inventory.opt.catchup")
-    // catchUp repairs a cache entry that a foreign node moved past. It is no longer the ONLY repair
-    // path — an idle entry now expires and the next load cold-replays from the store — but it is the
-    // only one that fires while an aggregate is hot, which is exactly when it matters. A failure is
-    // therefore not cosmetic: every subsequent command on that aggregate targets an already-taken
-    // sequence number and exhausts its retries into a REJECT, until either a later rollback repairs
-    // the entry or it goes idle long enough to expire. Those rejections land in
-    // saga_completed{outcome="command_failed"} and read as contention, which is exactly the number
-    // the multi-replica story rests on. Counted so the two are separable.
+    // A failed catch-up is no longer terminal for the entry: the mark survives the failure, so the
+    // NEXT load sees the entry is still known stale and retries the repair. Under the eager repair
+    // this replaced, a failure stranded the aggregate — every later command targeted an already-taken
+    // sequence and exhausted its retries into a REJECT until some later rollback happened to fix it.
+    // Still counted, because a persistently failing store read now shows up as commands running on
+    // stale state and conflicting, which lands in saga_completed{outcome="command_failed"} and reads
+    // as contention — exactly the number the multi-replica story rests on. Counted so the two stay
+    // separable.
     private val catchupFailed = meterRegistry.counter("inventory.opt.catchup.failed")
     private val catchupEvents = DistributionSummary.builder("inventory.opt.catchup.events").register(meterRegistry)
 
     /**
-     * How long the cache repair takes — the work sitting between the conflict and the retry, timed as
-     * one operation: the delta read, the deep copy, the replay onto it, and the merge back.
+     * How long the cache repair takes — the work a doomed load does before it can run the command,
+     * timed as one operation: the delta read, the deep copy, the replay onto it, and the merge back.
      *
-     * Tagged by outcome because [catchUp] fires on EVERY rollback and usually finds nothing: the
-     * empty probe and a real replay are the same call site and differ by orders of magnitude, so a
-     * pooled histogram would report the probe as its median and hide the replay entirely.
+     * Tagged by outcome because a real replay and a mark that proved wrong are the same call site and
+     * differ by orders of magnitude, so a pooled histogram would hide one behind the other. The
+     * `noop` arm is now rare by construction — [catchUp] only runs when the entry is KNOWN stale,
+     * where before it fired on every rollback and usually found nothing — so its count is a direct
+     * read on how often a mark was set without a real conflict behind it.
      *
      * This does not duplicate the `state_load_time{phase=events|replay,path=repair}` samples the
      * storage-engine wrapper already emits for the delta read. Those are the store round trip; this

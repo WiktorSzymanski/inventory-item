@@ -242,8 +242,16 @@ KurrentDB and no R2DBC on any current branch.
   byte-identical across the eight branches. Nothing serialises commands on one aggregate, so
   concurrent commands all load at sequence N, all append N+1, one wins, and the losers take
   `23505` → `SQLStateResolver` → `ConcurrencyException` → `ConcurrencyRetryScheduler`. A cache
-  hit can therefore be stale; that is caught at append time, repaired by the rollback's
-  incremental `catchUp`, and retried. The deep copy per load is what makes this safe — without
+  hit can still be stale — that is caught at append time and retried — but never *knowably*
+  stale: **this branch marks rather than repairs.** A losing command writes
+  `knownStoreSequence = baseSequence + 1` onto the entry (guarded on `ConcurrencyException`,
+  since a mark is persistent state) and reads nothing. The next load compares
+  `sequence >= knownStoreSequence`; if it holds the entry is used as-is, otherwise the loader
+  reads the delta, replays it, publishes the result and runs the command on that. The check is
+  exact — `sequence < knownStoreSequence` means the next append targets a taken sequence and
+  *will* conflict — so the read it triggers is never speculative. An empty delta clears the mark,
+  so a mark that proves wrong costs one read, not one per load. `ES-4` is the eager-repair
+  baseline this A/Bs against. The deep copy per load is what makes all of it safe — without
   a lock, concurrent commands would otherwise mutate one shared root.
   **Caffeine**, bounded by `cache.ttl` (`expireAfterAccess`, 10m)
   and `cache.maximum-size` (10000); a cache hit skips stream replay entirely. Every load
@@ -329,11 +337,12 @@ reach it here, so two tags are needed before any phase means what it looks like:
 - `{aggregate}` — `OrderAggregate` is loaded from the store once per order, `InventoryItem` once per
   line and (on this branch) almost never, because the cache absorbs it. Without the tag one
   histogram pools both, and the p50 silently changes meaning per branch rather than changing value.
-- `{path}` — `command` is the write path; `repair` is `PessimisticCachingRepository.catchUp` reading
-  the delta *after* the command's append already failed; `snapshot` is `CacheFedSnapshotter` falling
-  back to the stock replay task, which runs inline on the command thread at `onPrepareCommit`. Only
-  an empty repair probe was ever separable before (it identifies no aggregate and lands under
-  `aggregate="unknown"`); a repair that found events looked exactly like a cold miss.
+- `{path}` — `command` is the write path; `repair` is `PessimisticCachingRepository` resolving a
+  stale mark, which on this branch runs *inside* the load, before the command executes, so
+  `{phase=load}` legitimately contains it and `path` is what keeps it subtractable; `snapshot` is
+  `CacheFedSnapshotter` falling back to the stock replay task, which runs inline on the command
+  thread at `onPrepareCommit`. Without the tag a repair that found events looks exactly like a cold
+  miss.
 
 Phases, all of which carry both tags:
 
@@ -360,6 +369,20 @@ archived before the tag existed.
 `inventory_opt_catchup_duration_seconds{outcome}` is the whole repair (delta read, copy, replay,
 merge), and `path="repair"` on `state_load_time` is the store read inside it; the gap between them
 is what the repair costs beyond reading.
+
+Two counters are specific to this branch's mark-and-resolve strategy, and both are **Grafana-only** —
+adding them to `k6/bench/queries.promql` would break its byte-identity across the variant branches, so
+`compare.py` does not see them:
+
+| metric | meaning |
+| --- | --- |
+| `inventory_opt_cache_stale_mark_total` | marks recorded — commands that lost a race and told the cache which sequence the winner took |
+| `inventory_opt_cache_stale_hit_total` | loads that found a known-stale entry and caught up: **doomed commands intercepted**, the headline number for this branch |
+
+`inventory_opt_catchup_duration_seconds{outcome="noop"}` changes meaning here. On `ES-4` it is the
+empty probe every rollback paid; on this branch catch-up only runs when the entry is *known* stale, so
+a `noop` means a mark was set with no real conflict behind it. Its count should be near zero — if it
+is not, something is throwing `ConcurrencyException` without a duplicate key behind it.
 
 ### Two traps that have caused real bugs
 
