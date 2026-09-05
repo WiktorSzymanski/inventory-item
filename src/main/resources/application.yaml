@@ -87,10 +87,22 @@ app:
     #
     # This is the knob that trades notify latency for lock-contention relief: a signal can wait up
     # to this many ms before becoming a NOTIFY, and however many orders commit inside one window
-    # collapse into ONE notify-bearing transaction. 20ms keeps that added latency well under
-    # EVENT_DELIVERY's own page-fetch cost while capping notify-bearing commits at 50/s flat,
+    # collapse into ONE notify-bearing transaction. 10ms keeps that added latency well under
+    # EVENT_DELIVERY's own page-fetch cost while capping notify-bearing commits at 100/s flat,
     # regardless of order rate — down from one per order under the trigger.
-    coalesce-interval-ms: ${OUTBOX_NOTIFY_COALESCE_INTERVAL_MS:20}
+    #
+    # WAS 20ms until 2026-09-05. Halving it halves the worst-case signal-to-NOTIFY wait and doubles
+    # the ceiling on notify-bearing commits, 50/s -> 100/s. That ceiling is the whole mechanism: it
+    # is what keeps Postgres's process-wide async-notify lock off the write path, so raising it
+    # gives back some of the contention relief this branch exists to measure. Watch the collapse
+    # rate — outbox.notify.signalled against outbox.notify.flushed — to see whether the window is
+    # still collapsing anything at the order rate under test; a ratio near 1 means it is not.
+    #
+    # V10's migration comment still says "default 20ms" and is NOT updated on purpose: Flyway
+    # checksums the whole file, comments included, and reset.sh preserves flyway_schema_history, so
+    # editing an applied migration would fail validateOnMigrate on any stack not torn down with
+    # `down -v`. THIS LINE IS THE DEFAULT; the migration describes the mechanism, not the value.
+    coalesce-interval-ms: ${OUTBOX_NOTIFY_COALESCE_INTERVAL_MS:10}
   outbox-purge:
     # Deletes delivered publications so event_publication stops growing without bound. See
     # OutboxPurger — a delivered row has served the outbox guarantee and keeping it forever cost

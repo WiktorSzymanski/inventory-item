@@ -64,7 +64,7 @@ class OutboxNotifyCoalescer(
     @Value("\${spring.datasource.url}") private val jdbcUrl: String,
     @Value("\${spring.datasource.username}") private val dbUser: String,
     @Value("\${spring.datasource.password}") private val dbPassword: String,
-    @Value("\${app.outbox-notify.coalesce-interval-ms:20}") private val coalesceIntervalMillis: Long,
+    @Value("\${app.outbox-notify.coalesce-interval-ms:10}") private val coalesceIntervalMillis: Long,
     meterRegistry: MeterRegistry,
 ) {
     /** Writes calling [signal] between two flushes; a ratio against [flushed] is the collapse rate. */
