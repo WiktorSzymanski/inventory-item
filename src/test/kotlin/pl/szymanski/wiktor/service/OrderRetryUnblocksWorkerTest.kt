@@ -26,7 +26,7 @@ import java.util.concurrent.TimeUnit
  * A worker thread parked in retry backoff is a worker thread not doing work — and on this branch
  * that pool is the ONLY pool, so the property matters more here than anywhere.
  *
- * ONE thread, two orders. The first conflicts once and must wait out its 25 ms backoff; the second is
+ * ONE thread, two orders. The first conflicts once and must wait out its 50 ms backoff; the second is
  * queued behind it and needs nothing but a thread. Because the backoff is served in the pool's
  * DelayedWorkQueue rather than by sleeping, the thread is released and the second order runs during
  * the wait, so the reserve handler sees A, B, A.
@@ -35,7 +35,7 @@ import java.util.concurrent.TimeUnit
  * of its backoff — a `Thread.sleep` in a decorator, a scheduler that runs inline — this branch would
  * have no worker left at all, where the two-pool topology would still have 150 of them.
  *
- * The ordering also pins the queue discipline: A's retry becomes due 25 ms after B was submitted, so
+ * The ordering also pins the queue discipline: A's retry becomes due 50 ms after B was submitted, so
  * B goes first. A retry does not jump ahead of work already queued.
  */
 class OrderRetryUnblocksWorkerTest {
