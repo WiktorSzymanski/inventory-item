@@ -1,10 +1,17 @@
 # Benchmark campaign runbook
 
-Every command for the campaign, in execution order. 70 runs (27 + 9 + 34), ~54 h of machine
-time including a ~10% re-run allowance. Phase-1 counts track the registry, which has changed three
-times: seven variants from 2026-08-20, eight when `TO-2-push` landed, nine when `TO-2-fix-A` was
-registered. A stale copy saying 21/7 or 24/8 predates one of those — and a copy saying 24/8 whose
-set includes `ES-3` or `TO-2-opt` predates the retirements too, and means a different eight.
+Every command for the campaign, in execution order. 66 runs (24 + 8 + 34), ~51 h of machine
+time including a ~10% re-run allowance. The ~51 h is the old ~54 h rescaled by the run count, not
+re-derived from measured runs.
+
+Phase-1 counts track the registry, which has changed four times: seven variants from 2026-08-20,
+eight when `TO-2-push` landed, nine when `TO-2-fix-A` was registered (both on 2026-08-23), and
+eight again on 2026-09-05, when the seq-cursor `TO-2` was deleted and `TO-2-fix-A` was renamed onto
+its name. A stale copy saying 21/7 or 27/9 predates one of those changes, and a copy saying 24/8
+whose set includes `ES-3` or `TO-2-opt` predates the 2026-08-20 retirements and means a different
+eight again. **24/8 alone does not date a copy**: the 2026-08-23 eight and today's eight list the
+same eight names — the difference is that `TO-2` then meant the seq cursor and now means the xid8
+watermark. Check what `TO-2` refers to, not the count.
 
 Ported from `TO-3`'s copy on 2026-08-06 and rewritten against `scripts/run-suite.sh`. The
 original drove one branch at a time — `git checkout <branch> && docker compose down -v` then
@@ -23,8 +30,8 @@ branch. As of 2026-08-06 both are, so §6 is unconstrained — any pair of winne
 
 | Knob | Honoured on | Implemented as |
 |---|---|---|
-| `PAYLOAD_BYTES` | all nine | TO: `additional_bytes` column (V6). ES: aggregate state from the creation event. |
-| `RESERVE_DELAY_MS` | all nine | TO: `reserve_delay_ms` column (V5, V2 on TO-3). ES: aggregate state, slept in the `@CommandHandler`. |
+| `PAYLOAD_BYTES` | all eight | TO: `additional_bytes` column (V6). ES: aggregate state from the creation event. |
+| `RESERVE_DELAY_MS` | all eight | TO: `reserve_delay_ms` column (V5, V2 on TO-3). ES: aggregate state, slept in the `@CommandHandler`. |
 
 `run-suite.sh` still warns if a knob is set for a variant that lacks it, reading
 `variants.env`'s capability column. Heed it if it ever fires: k6 sends both fields to every
@@ -136,22 +143,30 @@ past capacity runs exceeded — and a drain timeout is an automatic `INVALID`.
 
 ---
 
-## 2. Phase 1 — breakpoints (27 runs, ~17 h)
+## 2. Phase 1 — breakpoints (24 runs, ~15 h)
 
 Grouped **by workload point, not by variant**, so a mis-calibrated staircase surfaces on run
-1 of 9 rather than run 27 of 27. Each block below is all nine variants; `run-suite.sh` walks
-them in registry order (TO-1, TO-2, TO-2-fix-A, TO-2-push, TO-3, TO-4, then ES-1, ES-2, ES-4),
+1 of 8 rather than run 24 of 24. Each block below is all eight variants; `run-suite.sh` walks
+them in registry order (TO-1, TO-2, TO-2-push, TO-3, TO-4, then ES-1, ES-2, ES-4),
 tearing the stack down between each.
 
-**The set is nine as of 2026-08-23**, when `TO-2-fix-A` and `TO-2-push` were both registered.
-It was seven between 2026-08-20 and then. A revision of this file planning 21 or 24 runs predates
-one of those additions — and one planning 24 runs across a set containing `ES-3` or `TO-2-opt`
-predates the retirements as well and is counting a different eight. Those two went on 2026-08-20;
-see [`retired-variants.md`](retired-variants.md) for why and for what re-adding either would take.
+**The set is eight as of 2026-09-05**, when the seq-cursor `TO-2` was deleted and `TO-2-fix-A` was
+renamed onto its name. It was nine from 2026-08-23, when `TO-2-fix-A` and `TO-2-push` were both
+registered, and seven between 2026-08-20 and then. A revision of this file planning 21, 24 or 27
+runs predates one of those changes — and one planning 24 runs across a set containing `ES-3` or
+`TO-2-opt` predates the retirements as well and is counting a different eight. Those two went on
+2026-08-20; see [`retired-variants.md`](retired-variants.md) for why and for what re-adding either
+would take.
 
-**Three of the nine are arms off `TO-2`** — `TO-2` (seq cursor), `TO-2-fix-A` (xid8 watermark) and
-`TO-2-push` (payload-carrying NOTIFY). Each is single-variable against `TO-2` but NOT against the
-others, so §5's ranking must not treat them as three independent samples of one design.
+**`TO-2` CHANGED MEANING ON 2026-09-05.** It now names the xid8-watermark branch (formerly
+`TO-2-fix-A`); the seq-cursor branch it used to name was deleted. Every archived `TO-2_*` run
+measured the seq cursor, so a `TO-2` row from before that date and one from after are two different
+designs — do not mix them in Table A or B.
+
+**Two of the eight are arms off the same outbox** — `TO-2` (xid8 watermark) and `TO-2-push`
+(payload-carrying NOTIFY). They are NOT single-variable against each other: both were cut from the
+seq-cursor branch, so they differ in where the drain stops *and* in how the event reaches the
+consumer. §5's ranking must not treat them as two independent samples of one design.
 
 **`ES-1`, `ES-2` and `ES-4` mean lock-free code as of 2026-08-20** — they adopted the trees of the
 former `ES-*-NullLock` branches, which are gone. A run directory from before that date carries the
@@ -210,15 +225,15 @@ python3 k6/bench/compare.py --knee bench-results/*_capacity_W-base_*
 Record every knee in §7 Table A, then:
 
 ```
-RATE = round(0.6 x the LOWEST knee across all nine W-base runs)
+RATE = round(0.6 x the LOWEST knee across all eight W-base runs)
 ```
 
-One rate for all nine. Comparing variants at different rates measures nothing, and this soak
+One rate for all eight. Comparing variants at different rates measures nothing, and this soak
 is the headline head-to-head table. Write the number into Table A before running §4.
 
 ---
 
-## 4. Phase 1 — soaks (9 runs, ~9 h)
+## 4. Phase 1 — soaks (8 runs, ~8 h)
 
 W-base, 45 min each, all at the single `RATE` from §3. Substitute the computed number:
 
@@ -246,12 +261,12 @@ Fill §7 Table B, then, per family:
 3. **Winner** = lowest mean of the three ranks.
 4. **Tie** → lower `order_e2e` p95 (confirmed) in the W-base soak.
 
-**The TO pool is not six independent designs.** `TO-2`, `TO-2-fix-A` and `TO-2-push` are three
-arms of one branch, so this rule gives that design three chances at the family slot where `TO-1`,
-`TO-3` and `TO-4` get one each. Rank them, but pick **at most one TO-2 arm** into the final
-comparison: take the best-ranked arm, drop the other two, then apply steps 3-4 to what remains.
-Otherwise "the TO winner" can mean "TO-2 won a lottery it entered three times", and Table B reads
-as a design comparison when it is partly a within-design one.
+**The TO pool is not five independent designs.** `TO-2` and `TO-2-push` are two arms of one
+branch, so this rule gives that design two chances at the family slot where `TO-1`, `TO-3` and
+`TO-4` get one each. Rank them, but pick **at most one TO-2 arm** into the final comparison: take
+the best-ranked arm, drop the other, then apply steps 3-4 to what remains. Otherwise "the TO
+winner" can mean "TO-2 won a lottery it entered twice", and Table B reads as a design comparison
+when it is partly a within-design one.
 
 If a whole family is disqualified, re-run its failing soaks once; if they fail again, that
 failure mode is the family's result and the best-ranked variant proceeds with the caveat

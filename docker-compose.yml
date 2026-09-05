@@ -157,8 +157,11 @@ services:
       RESERVE_FANOUT_QUEUE_CAPACITY: "${RESERVE_FANOUT_QUEUE_CAPACITY:-1000}"
       HTTP_THREADS: "${HTTP_THREADS:-99}"
       # TO-1 and TO-2, and inert everywhere else (Spring ignores unknown properties). Selects how
-      # the outbox drain finds its next page: CURSOR reads `seq > cursor`, SCAN proves absence over
-      # the whole `completion_date IS NULL` region. It has to be listed HERE — compose passes only
+      # the outbox drain finds its next page: CURSOR reads forward from a cursor, SCAN proves
+      # absence over the whole `completion_date IS NULL` region. WHERE that cursor stops is a
+      # second knob, app.outbox-cursor.watermark, which is NOT routed through compose: it defaults
+      # true on TO-2 (stop at pg_snapshot_xmin) and does not exist on TO-1 (stop at the highest
+      # `seq` seen). Set OUTBOX_CURSOR_WATERMARK=false on the host to run TO-2's seq arm. It has to be listed HERE — compose passes only
       # the variables it names, so an unlisted one never reaches the container and the A/B would
       # silently not happen. The default matches BOTH branches' application.yaml, so the usual
       # compose-default trap (a default always SETS the variable, overriding the branch's own yaml)
@@ -182,11 +185,11 @@ services:
       # run that wants to tune the sweep can still do it without a rebuild.
       OUTBOX_SWEEP_INTERVAL:
       OUTBOX_SWEEP_MIN_AGE:
-      # Delivery pool width: 100 on TO-2, TO-2-fix-A and TO-2-push, up from the 20 each of them
-      # ships. NOT bare any more — a compose default overwrites the branch's own application.yaml,
-      # and here that is the point: the three arms are meant to differ in HOW the drain finds its
-      # next page, not in how wide it delivers, so the width belongs to the comparison rather than
-      # to any one branch.
+      # Delivery pool width: 100 on TO-2 and TO-2-push, up from the 20 each of them ships. NOT
+      # bare any more — a compose default overwrites the branch's own application.yaml, and here
+      # that is the point: the two arms are meant to differ in HOW the drain finds its next page,
+      # not in how wide it delivers, so the width belongs to the comparison rather than to any one
+      # branch.
       #
       # Inert on TO-3 and TO-4, which have no drain pool at all (their @ApplicationModuleListener
       # deliveries run on SimpleAsyncTaskExecutor, one unbounded thread per task), and on ES.

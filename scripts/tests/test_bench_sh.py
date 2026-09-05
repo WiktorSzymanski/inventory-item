@@ -475,7 +475,7 @@ class ServiceLogCapture(unittest.TestCase):
 
     Before this, a run archived k6's view and Prometheus' view and nothing else — so a run
     that died at reset.sh's health timeout left no record of why the API never came up, and
-    no artifact recorded which code path was live (TO-2-fix-A logs `[OUTBOX] drain
+    no artifact recorded which code path was live (TO-2 logs `[OUTBOX] drain
     mode=WATERMARK` at startup and nothing else does).
     """
 

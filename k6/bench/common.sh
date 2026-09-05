@@ -26,7 +26,7 @@ DB_SVC="${DB_SVC:-postgres}"
 # cannot see. Add a variant here in the same change that adds the port to its branch, and delete
 # the whole block once every variant has one -- it exists only to let the two kinds coexist.
 case "${VARIANT:-}" in
-    TO-2-fix-A|TO-2-fix-B)
+    TO-2|TO-2-fix-B)
         PROM_JOB="${PROM_JOB:-inventory-mgmt}"
         MGMT_PORT="${MGMT_PORT:-8090}"
         ;;
@@ -161,7 +161,7 @@ drain_wait() {
 # Until this existed a run kept k6's view and Prometheus' view and nothing the service
 # itself said. Two things that costs: a run that dies at the health timeout leaves no
 # record of WHY the API never came up, and a run whose interpretation turns on which code
-# path was live has nothing to confirm it — TO-2-fix-A logs `[OUTBOX] drain mode=WATERMARK`
+# path was live has nothing to confirm it — TO-2 logs `[OUTBOX] drain mode=WATERMARK`
 # at startup and no other artifact records the arm.
 #
 # WHICH containers: the service under test and its database. The monitoring sidecars
