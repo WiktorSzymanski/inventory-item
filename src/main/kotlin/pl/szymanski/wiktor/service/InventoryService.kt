@@ -170,7 +170,15 @@ class InventoryService(
 
     /** @return true when the next attempt is safely queued and this thread may go. */
     private fun scheduleRetry(state: OrderAttempt, firstPickupNs: Long): Boolean {
-        val delayMs = OrderRetryPolicy.delayMsFor(state.attempt)
+        // `state.attempt + 1`, not `state.attempt`: the attempt that just failed counts, so this is
+        // FAILURES SO FAR. That is what makes the curve waited here identical to the ES branches',
+        // where Axon hands `ConcurrencyRetryScheduler.scheduleRetry` a failure history that already
+        // contains the current failure (`RetryingCallback.onResult` appends before it calls), so ES
+        // evaluates `delayMsFor(history.size)` at 1 on the first retry and never waits the n=0 term.
+        // Both families therefore wait 50, 100, 200, 400 ms over their four retries. Passing
+        // `state.attempt` here made TO wait 25, 50, 100, 200 instead — same constants, curve shifted
+        // one step down, and a TO-vs-ES difference that was not the persistence design.
+        val delayMs = OrderRetryPolicy.delayMsFor(state.attempt + 1)
         val next = state.copy(
             attempt = state.attempt + 1,
             firstPickupNs = firstPickupNs,

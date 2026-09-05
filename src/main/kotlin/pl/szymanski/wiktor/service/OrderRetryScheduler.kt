@@ -13,7 +13,7 @@ import kotlin.math.roundToLong
  * Defers a conflict retry WITHOUT holding the caller's thread.
  *
  * The wait used to be Spring's `@Retryable` interceptor, which sleeps on the `order-worker` thread
- * that is retrying — so up to 375 ms of a worker's time is spent doing nothing, and under load the
+ * that is retrying — so up to 737.5 ms of a worker's time is spent doing nothing, and under load the
  * pool can be entirely parked in backoff. The rebuild moved that wait to a SECOND pool
  * (`order-retry-*`, 50 threads) which served the backoff and then executed the retried attempt.
  * This is now backed by [OrderWorkerPool] instead — the same pool that ran the first attempt — so
@@ -30,32 +30,41 @@ fun interface OrderRetryScheduler {
 }
 
 /**
- * The retry policy: the attempt budget and the backoff CURVE of the former
- * `@Retryable(maxRetries = 4, delay = 25, multiplier = 2.0, maxDelay = 500)`, plus JITTER.
+ * The retry policy: the attempt budget of the former
+ * `@Retryable(maxRetries = 4, delay = 25, multiplier = 2.0, maxDelay = 500)`, its CURVE, and JITTER.
  *
- * [baseDelayMsFor] is the curve waited exactly by the branches that do not jitter — the per-line
- * TO branches (TO-2-opt, TO-3-pessimistic, TO-3-mod-A) and every ES branch — 25, 50, 100, 200 ms
- * before attempts 2 through 5. [delayMsFor] spreads each of those uniformly over
- * `[0.5 x base, 1.5 x base)`.
+ * WHICH TERMS OF THE CURVE ARE ACTUALLY WAITED. [InventoryService.scheduleRetry] evaluates this at
+ * FAILURES SO FAR, i.e. `attempt + 1`, so the four waits are `baseDelayMsFor(1..4)` —
+ * **50, 100, 200, 400 ms** — and the n=0 term (25 ms) is never waited. That is deliberate: it is
+ * what the ES branches wait. Axon hands `ConcurrencyRetryScheduler.scheduleRetry` a failure history
+ * that already contains the current failure (`RetryingCallback.onResult` appends before calling),
+ * so ES evaluates `delayMsFor(history.size)` at 1 on the first retry. Passing the 0-based attempt
+ * index here made TO wait 25/50/100/200 against ES's 50/100/200/400 — same constants, curve shifted
+ * one step, and a TO-vs-ES difference that had nothing to do with the persistence design.
+ *
+ * The branches that do not jitter wait the same terms deterministically. [delayMsFor] spreads each
+ * of them uniformly over `[0.5 x base, 1.5 x base)`.
  *
  * WHY JITTER HERE. This branch reads outside the transaction, so conflicting orders are no longer
  * serialised by row locks and there are more of them. Without jitter they retry in lockstep: two
- * orders that collide at T both wake at T+25, collide again, both wake at T+75, and the convoy
+ * orders that collide at T both wake at T+50, collide again, both wake at T+150, and the convoy
  * re-forms at every step. Deterministic backoff is cheap when conflicts are rare and is a
  * self-inflicted wound when they are not — which is why the jitter arrived WITH the split
  * transaction rather than before it, and why the two changes are separate commits.
  *
- * WHY SYMMETRIC AND NOT AWS's FULL JITTER (`rand(0, base)`). The expected delay here is exactly
- * `base` — 375 ms of accumulated backoff across a fully exhausted order, the same figure the
- * un-jittered branches spend. Full jitter halves it, which would change the retry BUDGET as well
- * as its correlation and leave `order.retry.backoff.time` measuring a different thing here than on
- * the branches this one is compared against. Only the spread differs; the mean does not.
+ * WHY SYMMETRIC AND NOT AWS's FULL JITTER (`rand(0, base)`). The expected delay is the base delay
+ * itself, so the retry BUDGET is preserved and only the correlation changes. Full jitter would
+ * halve it, moving two variables at once and leaving `order.retry.backoff.time` measuring a
+ * different thing here than on the branches this one is compared against.
  *
- * The `MAX_DELAY_MS` cap is applied AFTER jitter, so a jittered delay can never exceed it. At
- * `MAX_RETRIES = 4` the cap never binds (the largest draw is under 300 ms) and mean preservation is
- * therefore exact; raise MAX_RETRIES and the cap starts clipping the upper tail, which biases the
- * mean DOWN. That is the trade the cap exists for, but it is worth knowing before changing the
- * budget.
+ * The `MAX_DELAY_MS` cap is applied AFTER jitter, so a jittered delay can never exceed it — and at
+ * the waited terms it now BINDS on the last one: its base is 400 ms and its window `[200, 600)`
+ * runs past the 500 ms cap, so that draw's mean is
+ *     E = (1/400) * INTEGRAL(200..500) x dx + (100/400) * 500 = 262.5 + 125 = 387.5
+ * rather than 400, and the accumulated budget across a fully exhausted order is 737.5 ms rather
+ * than the nominal 750. Identical to the ES branches, which reach the same clipped draw by the same
+ * route. Raise MAX_RETRIES and the clipping grows, biasing the mean further DOWN; re-derive this
+ * before doing so.
  *
  * Still constants, not properties. A run must not be able to vary the backoff, or a bench result
  * stops being a property of the branch.
@@ -68,7 +77,12 @@ object OrderRetryPolicy {
     /** Half-width of the jitter window, as a fraction of the base delay. 0.5 = base +/- 50%. */
     const val JITTER_RATIO = 0.5
 
-    /** The deterministic curve, without jitter: 25, 50, 100, 200 ms for attempts 0..3. */
+    /**
+     * The deterministic curve, without jitter: 25 ms doubling per step, capped at [MAX_DELAY_MS].
+     * The terms this branch actually waits are indices 1..[MAX_RETRIES] — 50, 100, 200, 400 ms —
+     * because [InventoryService.scheduleRetry] evaluates it at failures-so-far. Index 0 exists as
+     * the curve's origin and is never waited; see the class doc.
+     */
     fun baseDelayMsFor(attempt: Int): Long = (INITIAL_DELAY_MS shl attempt).coerceAtMost(MAX_DELAY_MS)
 
     /**
