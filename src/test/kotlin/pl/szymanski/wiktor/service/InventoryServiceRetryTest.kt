@@ -25,7 +25,9 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
- * Retry POLICY: 5 total attempts on the 25/50/100/200 ms curve, and the same counter arithmetic
+ * Retry POLICY: 5 total attempts on the 50/100/200/400 ms curve — the curve the ES branches wait,
+ * which this branch adopted by evaluating it at FAILURES SO FAR rather than at the 0-based attempt
+ * index (see [pl.szymanski.wiktor.service.InventoryService.scheduleRetry]) — and the same counter arithmetic
  * TO-3 produced. Only the thread the waiting happens on is different, and that is
  * [OrderRetryUnblocksWorkerTest]'s job.
  *
@@ -78,14 +80,24 @@ class InventoryServiceRetryTest {
     /**
      * One scheduled delay per retry, each inside its own attempt's jitter window. Asserting the
      * window rather than the value keeps this test deterministic without stubbing the RNG.
+     *
+     * `baseDelayMsFor(i + 1)`, because the Nth recorded delay is the one scheduled after N+1
+     * failures — the index [pl.szymanski.wiktor.service.InventoryService.scheduleRetry] actually
+     * evaluates, and the same one ES reaches through Axon's failure history. This is the assertion
+     * that ties the test to the sequence PRODUCTION walks: [OrderRetryJitterTest] exercises
+     * `delayMsFor` directly and would stay green if that call site drifted back.
+     *
+     * The window top is clipped at [OrderRetryPolicy.MAX_DELAY_MS], which now binds: the last
+     * retry's base is 400 ms and its raw window `[200, 600)` runs past the 500 ms cap.
      */
     private fun assertDelaysOnCurve(expectedRetries: Int) {
         assertEquals(expectedRetries, scheduledDelaysMs.size, "wrong number of retries scheduled")
         scheduledDelaysMs.forEachIndexed { attempt, delay ->
-            val base = OrderRetryPolicy.baseDelayMsFor(attempt)
+            val base = OrderRetryPolicy.baseDelayMsFor(attempt + 1)
+            val top = (base * 3 / 2).coerceAtMost(OrderRetryPolicy.MAX_DELAY_MS)
             assertTrue(
-                delay in (base / 2)..(base * 3 / 2),
-                "retry $attempt waited ${delay}ms, outside [${base / 2}, ${base * 3 / 2}] for a ${base}ms base",
+                delay in (base / 2)..top,
+                "retry $attempt waited ${delay}ms, outside [${base / 2}, $top] for a ${base}ms base",
             )
         }
     }
@@ -135,9 +147,9 @@ class InventoryServiceRetryTest {
 
         val backoff = meterRegistry.timer("order.retry.backoff.time", "outcome", "rejected")
         assertEquals(1L, backoff.count())
-        // 375 ms is the curve's total and the jittered EXPECTATION; one order draws somewhere in
-        // [187.5, 562.5]. What must hold is that the recorded figure is the sum of the delays
-        // actually scheduled, not the nominal curve.
+        // 737.5 ms is the curve's total and the jittered EXPECTATION; one order draws somewhere in
+        // [175, 1300], the top clipped by MAX_DELAY_MS on the last draw. What must hold is that the
+        // recorded figure is the sum of the delays actually scheduled, not the nominal curve.
         assertEquals(
             scheduledDelaysMs.sum().toDouble(),
             backoff.totalTime(TimeUnit.MILLISECONDS),
