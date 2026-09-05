@@ -116,7 +116,15 @@ class OrderRetrySchedulerWiringTest {
         // delay = 25, multiplier = 2.0, maxDelay = 500 — the waits Spring took before attempts 2..5.
         // On this branch the curve is what delayMsFor JITTERS AROUND, so the curve itself is
         // baseDelayMsFor; the spread and its mean are OrderRetryJitterTest's job.
-        assertEquals(listOf(25L, 50L, 100L, 200L), (0 until OrderRetryPolicy.MAX_RETRIES).map { OrderRetryPolicy.baseDelayMsFor(it) })
+        //
+        // The WAITED indices are 1..MAX_RETRIES, not 0 until MAX_RETRIES: scheduleRetry evaluates
+        // the curve at failures-so-far, as the ES branches do, so the n=0 term is never waited and
+        // the four waits are 50/100/200/400. That is a deliberate departure from the @Retryable
+        // policy this replaced, which started at 25.
+        assertEquals(
+            listOf(50L, 100L, 200L, 400L),
+            (1..OrderRetryPolicy.MAX_RETRIES).map { OrderRetryPolicy.baseDelayMsFor(it) },
+        )
         // The cap binds rather than the curve running away, if MAX_RETRIES is ever raised.
         assertEquals(OrderRetryPolicy.MAX_DELAY_MS, OrderRetryPolicy.baseDelayMsFor(20))
     }
